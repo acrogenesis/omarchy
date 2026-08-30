@@ -5,7 +5,9 @@ machine_marker="${OMARCHY_CUPS_MIGRATION_MARKER:-/var/lib/omarchy/migrations/178
 [[ ! -e $machine_marker ]] || exit 0
 
 # Existing releases allowed a desktop user or shared group named cups-browsed,
-# which systemd-sysusers would silently reuse for passwordless CUPS access.
+# which systemd-sysusers would silently reuse. Discovery is removed by the next
+# migration, so leave it stopped instead of running it as that account.
+cups_browsed_account_collision=0
 if omarchy-pkg-present cups; then
   cups_browsed_account=$(getent passwd cups-browsed || true)
   cups_browsed_group=$(getent group cups-browsed || true)
@@ -20,8 +22,8 @@ if omarchy-pkg-present cups; then
       [[ $cups_browsed_gid != $cups_browsed_group_gid ]] ||
       [[ $cups_browsed_description != "CUPS printer discovery" || $cups_browsed_home != "/" || $cups_browsed_shell != "/usr/bin/nologin" ]] ||
       [[ -n $cups_browsed_group_members || -n $other_primary_user ]]; then
-      echo "Cannot harden printer discovery: the existing cups-browsed user or group is not a dedicated system account." >&2
-      false
+      cups_browsed_account_collision=1
+      echo "Leaving printer discovery stopped: the existing cups-browsed user or group is not a dedicated system account." >&2
     fi
   fi
 fi
@@ -49,8 +51,9 @@ fi
 # Resume on whether the unit is enabled, not on whether it was running when this
 # run started: an interrupted earlier run leaves it stopped, and a retry that
 # recomputed that would skip the restart and still write the marker below. A
-# masked or disabled unit reports not-enabled and is left alone.
-if systemctl is-enabled --quiet cups-browsed.service 2>/dev/null; then
+# colliding account stays stopped for the removal migration; a masked or
+# disabled unit reports not-enabled and is left alone.
+if (( ! cups_browsed_account_collision )) && systemctl is-enabled --quiet cups-browsed.service 2>/dev/null; then
   sudo systemctl restart cups-browsed.service
 fi
 

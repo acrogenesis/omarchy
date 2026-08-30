@@ -52,8 +52,8 @@ grep -qxF 'CreateRemoteCUPSPrinterQueues No' "$cups_browsed_conf" ||
 
 pass "cups-browsed uses explicit supported discovery policy and an isolated cache"
 
-grep -qxF 'SystemGroup cups-browsed sys root' "$cups_files_conf" ||
-  fail "only the printer discovery account receives passwordless CUPS administration"
+grep -qxF 'SystemGroup sys root' "$cups_files_conf" ||
+  fail "the absent printer discovery account receives no CUPS administration"
 grep -qxF 'PeerCred on' "$cups_files_conf" ||
   fail "the packaged CUPS policy enables peer credentials"
 [[ $(grep -ciE '^[[:space:]]*SystemGroup[[:space:]]' "$cups_files_conf") == 1 ]] ||
@@ -144,28 +144,42 @@ export OMARCHY_CUPS_TEST_GROUP="$group_db"
 
 printf 'cups-browsed:x:1000:1000:Desktop user:/home/cups-browsed:/usr/bin/bash\n' >"$passwd_db"
 printf 'cups-browsed:x:1000:\n' >"$group_db"
-if PATH="$mock_bin:$PATH" \
+desktop_collision_log="$test_tmp/desktop-collision.log"
+desktop_collision_marker="$test_tmp/desktop-collision-marker"
+OMARCHY_CUPS_TEST_LOG="$desktop_collision_log" \
+  PATH="$mock_bin:$PATH" \
   OMARCHY_PATH="$ROOT" \
-  OMARCHY_CUPS_MIGRATION_MARKER="$test_tmp/desktop-collision-marker" \
-  bash -euo pipefail "$ROOT/migrations/1787815267.sh" 2>/dev/null; then
-  fail "the migration accepts an existing desktop user named cups-browsed"
-fi
-[[ ! -s $log ]] || fail "an account collision stops the migration before changing the system"
+  OMARCHY_CUPS_MIGRATION_MARKER="$desktop_collision_marker" \
+  bash -euo pipefail "$ROOT/migrations/1787815267.sh" 2>/dev/null
+grep -qxF $'systemctl\tstop cups-browsed.service' "$desktop_collision_log" ||
+  fail "a desktop account collision stops printer discovery"
+! grep -qxF $'systemctl\trestart cups-browsed.service' "$desktop_collision_log" ||
+  fail "a desktop account collision does not restart printer discovery"
+grep -qxF $'systemctl\ttry-reload-or-restart cups.service' "$desktop_collision_log" ||
+  fail "a desktop account collision reloads the revoked CUPS authorization"
+[[ -f $desktop_collision_marker ]] ||
+  fail "a desktop account collision completes so the removal migration can run"
 
 printf 'alice:x:1000:947:Desktop user:/home/alice:/usr/bin/bash\n' >"$passwd_db"
 printf 'cups-browsed:x:947:alice\n' >"$group_db"
-if PATH="$mock_bin:$PATH" \
+group_collision_log="$test_tmp/group-collision.log"
+group_collision_marker="$test_tmp/group-collision-marker"
+OMARCHY_CUPS_TEST_LOG="$group_collision_log" \
+  PATH="$mock_bin:$PATH" \
   OMARCHY_PATH="$ROOT" \
-  OMARCHY_CUPS_MIGRATION_MARKER="$test_tmp/group-collision-marker" \
-  bash -euo pipefail "$ROOT/migrations/1787815267.sh" 2>/dev/null; then
-  fail "the migration accepts an existing cups-browsed group with members"
-fi
-[[ ! -s $log ]] || fail "a group collision stops the migration before changing the system"
+  OMARCHY_CUPS_MIGRATION_MARKER="$group_collision_marker" \
+  bash -euo pipefail "$ROOT/migrations/1787815267.sh" 2>/dev/null
+grep -qxF $'systemctl\tstop cups-browsed.service' "$group_collision_log" ||
+  fail "a shared group collision stops printer discovery"
+! grep -qxF $'systemctl\trestart cups-browsed.service' "$group_collision_log" ||
+  fail "a shared group collision does not restart printer discovery"
+[[ -f $group_collision_marker ]] ||
+  fail "a shared group collision completes so the removal migration can run"
 
 printf 'cups-browsed:x:947:947:CUPS printer discovery:/:/usr/bin/nologin\n' >"$passwd_db"
 printf 'cups-browsed:x:947:\n' >"$group_db"
 
-pass "the migration rejects account and group collisions before changing printing"
+pass "account and group collisions revoke access and allow discovery removal to proceed"
 
 marker="$test_tmp/var/lib/omarchy/migrations/1787815267"
 PATH="$mock_bin:$PATH" \
