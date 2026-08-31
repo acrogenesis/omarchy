@@ -275,6 +275,7 @@ Item {
       property string lastDisplayedCanonical: ""
       property string lastDisplayedPath: ""
       property string lastDisplayedFill: "crop"
+      property string lastDisplayedBackdrop: "solid"
       property color lastDisplayedFillColor: Color.background
       property real lastDisplayedFocalX: 0.5
       property real lastDisplayedFocalY: 0.5
@@ -286,16 +287,18 @@ Item {
       property int incomingLockedVersion: -1
       property string incomingPath: ""
       property string incomingFill: "crop"
+      property string incomingBackdrop: "solid"
       property color incomingFillColor: Color.background
       property real incomingFocalX: 0.5
       property real incomingFocalY: 0.5
 
-      function lockIncoming(path, fillMode, tint, fx, fy) {
+      function lockIncoming(path, fillMode, backdropMode, tint, fx, fy) {
         if (incomingLockedVersion === root.backgroundVersion) return
         incomingLockedVersion = root.backgroundVersion
         incomingFallbackTimer.stop()
         incomingPath = path
         incomingFill = fillMode
+        incomingBackdrop = backdropMode
         incomingFillColor = tint
         incomingFocalX = fx
         incomingFocalY = fy
@@ -333,7 +336,7 @@ Item {
         repeat: false
         onTriggered: {
           if (root.incomingBackground === "") return
-          panel.lockIncoming(root.incomingBackground, panel.lastDisplayedFill, panel.lastDisplayedFillColor, panel.lastDisplayedFocalX, panel.lastDisplayedFocalY)
+          panel.lockIncoming(root.incomingBackground, panel.lastDisplayedFill, panel.lastDisplayedBackdrop, panel.lastDisplayedFillColor, panel.lastDisplayedFocalX, panel.lastDisplayedFocalY)
         }
       }
 
@@ -353,6 +356,7 @@ Item {
             panel.lastDisplayedCanonical = canonicalPath
             panel.lastDisplayedPath = resolvedPath
             panel.lastDisplayedFill = fill
+            panel.lastDisplayedBackdrop = backdrop
             panel.lastDisplayedFillColor = fillColor
             panel.lastDisplayedFocalX = focalX
             panel.lastDisplayedFocalY = focalY
@@ -385,7 +389,7 @@ Item {
         refreshToken: root.backgroundVersion
         onResolveVersionChanged: {
           if (!ready || root.incomingBackground === "") return
-          panel.lockIncoming(usedFallback ? root.incomingBackground : resolvedPath, fill, fillColor, focalX, focalY)
+          panel.lockIncoming(usedFallback ? root.incomingBackground : resolvedPath, fill, backdrop, fillColor, focalX, focalY)
         }
       }
 
@@ -396,6 +400,7 @@ Item {
         version: root.displayedReloads
         reloads: root.displayedReloads
         fill: panel.lastDisplayedFill
+        backdrop: panel.lastDisplayedBackdrop
         fillColor: panel.lastDisplayedFillColor
         focalX: panel.lastDisplayedFocalX
         focalY: panel.lastDisplayedFocalY
@@ -416,6 +421,7 @@ Item {
           : oldResolver.ready ? oldResolver.resolvedPath
           : root.oldBackground
         fill: panel.lastDisplayedFill
+        backdrop: panel.lastDisplayedBackdrop
         fillColor: panel.lastDisplayedFillColor
         focalX: panel.lastDisplayedFocalX
         focalY: panel.lastDisplayedFocalY
@@ -449,6 +455,7 @@ Item {
           // the whole reveal — a mid-reveal swap would blink the layer.
           path: panel.incomingPath
           fill: panel.incomingFill
+          backdrop: panel.incomingBackdrop
           fillColor: panel.incomingFillColor
           focalX: panel.incomingFocalX
           focalY: panel.incomingFocalY

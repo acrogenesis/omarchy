@@ -102,6 +102,7 @@ Item {
       path: root.loadBackground && backgroundResolver.ready ? backgroundResolver.resolvedPath : ""
       version: root.backgroundVersion
       fill: backgroundResolver.fill
+      backdrop: backgroundResolver.backdrop
       fillColor: backgroundResolver.fillColor
       focalX: backgroundResolver.focalX
       focalY: backgroundResolver.focalY
