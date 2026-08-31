@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="3840"
+     height="2160"
+     viewBox="0 0 3840 2160">
+  <!-- The source wallpaper's field is intentionally flat. -->
+  <rect width="100%" height="100%" fill="#0e1f29"/>
+
+  <!-- Keep the original mark pixel-for-pixel while its responsive viewport
+       preserves the mark's aspect ratio at any screen shape. -->
+  <svg x="10%" y="34.95%" width="80%" height="16.39%"
+       viewBox="1575 755 690 354" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <filter id="artwork-alpha" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+        <feColorMatrix type="matrix" values="
+          0.2126 0.7152 0.0722 0 0
+          0.2126 0.7152 0.0722 0 0
+          0.2126 0.7152 0.0722 0 0
+          0      0      0      1 0"/>
+        <feComponentTransfer>
+          <feFuncR type="linear" slope="1.37" intercept="-0.16"/>
+          <feFuncG type="linear" slope="1.37" intercept="-0.16"/>
+          <feFuncB type="linear" slope="1.37" intercept="-0.16"/>
+        </feComponentTransfer>
+      </filter>
+
+      <mask id="lumon-mark" maskUnits="userSpaceOnUse" x="1575" y="755" width="690" height="354">
+        <image x="0" y="0" width="3840" height="2160"
+               xlink:href="01-united-in-severance.webp"
+               filter="url(#artwork-alpha)"/>
+      </mask>
+    </defs>
+    <image x="0" y="0" width="3840" height="2160"
+           xlink:href="01-united-in-severance.webp"
+           mask="url(#lumon-mark)"/>
+  </svg>
+
+  <!-- These narrow source slices retain the original five horizontal
+       gradients and stretch only along the responsive canvas width. -->
+  <svg x="0" y="55.79%" width="100%" height="0.42%"
+       viewBox="0 1205 3840 9" preserveAspectRatio="none">
+    <image x="0" y="0" width="3840" height="2160" xlink:href="01-united-in-severance.webp"/>
+  </svg>
+  <svg x="0" y="57.78%" width="100%" height="0.42%"
+       viewBox="0 1248 3840 9" preserveAspectRatio="none">
+    <image x="0" y="0" width="3840" height="2160" xlink:href="01-united-in-severance.webp"/>
+  </svg>
+  <svg x="0" y="59.72%" width="100%" height="0.42%"
+       viewBox="0 1290 3840 9" preserveAspectRatio="none">
+    <image x="0" y="0" width="3840" height="2160" xlink:href="01-united-in-severance.webp"/>
+  </svg>
+  <svg x="0" y="61.71%" width="100%" height="0.42%"
+       viewBox="0 1333 3840 9" preserveAspectRatio="none">
+    <image x="0" y="0" width="3840" height="2160" xlink:href="01-united-in-severance.webp"/>
+  </svg>
+  <svg x="0" y="63.70%" width="100%" height="0.42%"
+       viewBox="0 1376 3840 9" preserveAspectRatio="none">
+    <image x="0" y="0" width="3840" height="2160" xlink:href="01-united-in-severance.webp"/>
+  </svg>
+
+  <!-- Preserve the custom-spaced original wordmark instead of substituting a font. -->
+  <svg x="10%" y="67.73%" width="80%" height="1.21%"
+       viewBox="1600 1463 640 26" preserveAspectRatio="xMidYMid meet">
+    <image x="0" y="0" width="3840" height="2160" xlink:href="01-united-in-severance.webp"/>
+  </svg>
+</svg>
