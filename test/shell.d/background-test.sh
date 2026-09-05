@@ -5,6 +5,7 @@ run_node_test <<'JS'
 const fs = require('fs')
 
 const backgroundQml = fs.readFileSync(path.join(root, 'shell/plugins/background/Background.qml'), 'utf8')
+const mediaQml = fs.readFileSync(path.join(root, 'shell/Ui/BackgroundMedia.qml'), 'utf8')
 
 // Extract one block by taking everything from the marker to the line whose
 // closing brace sits at the block's own indentation: a `function ...` marker
@@ -37,18 +38,16 @@ assert(
 )
 
 assert(
-  (backgroundQml.match(/BackgroundResolver\s*\{/g) || []).length === 3,
-  'each background panel resolves displayed, old, and incoming layers with its own resolvers'
+  (backgroundQml.match(/BackgroundResolver\s*\{/g) || []).length === 2,
+  'each background panel resolves displayed and incoming layers with its own resolvers'
 )
 
 const displayedResolver = blockAfter(backgroundQml, 'id: displayedResolver', 'displayed resolver block exists')
-const oldResolver = blockAfter(backgroundQml, 'id: oldResolver', 'old resolver block exists')
 const incomingResolver = blockAfter(backgroundQml, 'id: incomingResolver', 'incoming resolver block exists')
 
 assert(
-  /canonicalPath:\s*root\.displayedBackground\b/.test(displayedResolver) &&
-    /canonicalPath:\s*root\.oldBackground\b/.test(oldResolver),
-  'displayed and old resolvers key on the root canonical paths'
+  /canonicalPath:\s*root\.displayedBackground\b/.test(displayedResolver),
+  'displayed resolver keys on the displayed canonical'
 )
 
 assert(
@@ -57,16 +56,15 @@ assert(
 )
 
 assert(
-  (backgroundQml.match(/screenWidth:\s*panel\.modelData\.width/g) || []).length === 3 &&
-    (backgroundQml.match(/screenHeight:\s*panel\.modelData\.height/g) || []).length === 3,
+  (backgroundQml.match(/screenWidth:\s*panel\.modelData\.width/g) || []).length === 2 &&
+    (backgroundQml.match(/screenHeight:\s*panel\.modelData\.height/g) || []).length === 2,
   'every resolver uses its own panel screen dimensions'
 )
 
 assert(
-  /refreshToken:\s*root\.backgroundVersion/.test(oldResolver) &&
-    /refreshToken:\s*root\.backgroundVersion/.test(incomingResolver) &&
+  /refreshToken:\s*root\.backgroundVersion/.test(incomingResolver) &&
     /refreshToken:\s*root\.displayedVersion/.test(displayedResolver),
-  'a forced transition with an unchanged canonical path still re-resolves all three layers'
+  'a forced transition with an unchanged canonical path still re-resolves both layers'
 )
 
 assert(
@@ -75,16 +73,16 @@ assert(
 )
 
 const baseBlock = blockAfter(backgroundQml, 'id: base', 'base layer block exists')
-const oldFrameBlock = blockAfter(backgroundQml, 'id: oldFrame', 'old frame block exists')
 const incomingFrameBlock = blockAfter(backgroundQml, 'id: incomingFrame', 'incoming frame block exists')
 
 assert(
-  /^\s*WallpaperImage\s*\{\s*$/m.test(backgroundQml) &&
+  /^\s*BackgroundMedia\s*\{\s*$/m.test(backgroundQml) &&
+    /^\s*WallpaperImage\s*\{\s*$/m.test(backgroundQml) &&
     baseBlock.startsWith('id: base') &&
-    oldFrameBlock.startsWith('id: oldFrame') &&
     incomingFrameBlock.startsWith('id: incomingFrame') &&
-    !/\bImage\s*\{/.test(backgroundQml),
-  'all three background layers render through WallpaperImage'
+    !/\bImage\s*\{/.test(backgroundQml) &&
+    /^\s*WallpaperImage\s*\{\s*$/m.test(mediaQml),
+  'still backgrounds render responsively through the video-capable media wrapper'
 )
 
 // Per-panel incoming source lock: pixels/meta commit exactly once per
@@ -106,8 +104,9 @@ assert(
 
 assert(
   /backdrop:\s*panel\.lastDisplayedBackdrop\b/.test(baseBlock) &&
-    /backdrop:\s*panel\.lastDisplayedBackdrop\b/.test(oldFrameBlock) &&
-    /lastDisplayedBackdrop\s*=\s*backdrop/.test(displayedResolver),
+    /lastDisplayedBackdrop\s*=\s*backdrop/.test(displayedResolver) &&
+    /property string backdrop:\s*"solid"/.test(mediaQml) &&
+    /backdrop:\s*root\.backdrop/.test(mediaQml),
   'displayed and transition layers preserve the resolved backdrop mode'
 )
 
@@ -167,7 +166,7 @@ assert(
 const resolverQml = fs.readFileSync(path.join(root, 'shell/Ui/BackgroundResolver.qml'), 'utf8')
 
 assert(
-  /"omarchy-theme-bg-resolve",\s+"--screen",\s*screenWidth\s*\+\s*"x"\s*\+\s*screenHeight,\s+"--canonical",\s*canonicalPath/.test(resolverQml),
+  /"omarchy-theme-bg-resolve",\s+"--screen",\s*Math\.round\(screenWidth \* devicePixelRatio\)\s*\+\s*"x"\s*\+\s*Math\.round\(screenHeight \* devicePixelRatio\),\s+"--canonical",\s*canonicalPath/.test(resolverQml),
   'background resolver asks omarchy-theme-bg-resolve for the per-screen resolution'
 )
 
@@ -209,7 +208,7 @@ assert(
 )
 
 assert(
-  /root\.backdrop\s*===\s*"blur"/.test(wallpaperQml) &&
+  /backdrop\s*===\s*"blur"/.test(wallpaperQml) &&
     /fillMode:\s*Image\.PreserveAspectCrop/.test(wallpaperQml) &&
     /blurEnabled:\s*true/.test(wallpaperQml) &&
     /opacity:\s*0\.35/.test(wallpaperQml),
@@ -232,6 +231,59 @@ assert(
   /onSourceChanged:\s*naturalAspect\s*=\s*0/.test(wallpaperQml),
   'a new source relearns the natural aspect before re-deriving the cover decode size'
 )
+
+// Execute the production QML functions to cover channel order and physical
+// resolver arguments, including fractional scale and a scale-only change.
+const vm = require('vm')
+const context = vm.createContext({
+  Color: { background: 'fallback' },
+  Qt: { rgba: (...channels) => channels },
+  canonicalPath: '/theme/art.svg', screenWidth: 1920, screenHeight: 1080,
+  devicePixelRatio: 2, requestSeq: 1, resolveProc: {}, resolvePending: false
+})
+vm.runInContext(blockAfter(resolverQml, 'function parseFillColor', 'color parser exists') + '\n}', context)
+assertDeepEqual(Array.from(context.parseFillColor('#ff000080')), [1, 0, 0, 128 / 255], 'RGBA metadata renders translucent red')
+assertDeepEqual(Array.from(context.parseFillColor('#12345600')), [18 / 255, 52 / 255, 86 / 255, 0], 'zero alpha remains transparent')
+assertDeepEqual(Array.from(context.parseFillColor('#abcdef')), [171 / 255, 205 / 255, 239 / 255, 1], 'six-digit colors remain opaque')
+assertEqual(context.parseFillColor('#bad'), 'fallback', 'invalid colors retain the theme fallback')
+vm.runInContext(startBlock + '\n}', context)
+context.startResolve()
+assertEqual(context.resolveProc.command[2], '3840x2160', 'scale 2 resolves SVGs at physical output resolution')
+context.devicePixelRatio = 1.25
+context.startResolve()
+assertEqual(context.resolveProc.command[2], '2400x1350', 'fractional scale resolves at physical output resolution')
+assert(/property real devicePixelRatio:\s*Screen.devicePixelRatio/.test(resolverQml) &&
+  /onDevicePixelRatioChanged:\s*requestResolve\(\)/.test(resolverQml),
+  'every resolver follows its window screen scale and re-resolves on scale changes')
+
+const blurActive = wallpaperQml.match(/blurBackdropActive: (.*)/)[1]
+const backdropSource = wallpaperQml.match(/source: (.*)/)[1]
+for (const fill of ['crop', 'fit', 'center', 'tile']) {
+  for (const backdrop of ['solid', 'edge', 'blur']) {
+    const surface = { fill, backdrop, path: '/art.png', sourceVersion: 0 }
+    const scope = vm.createContext({ ...surface, root: surface, Util: { fileUrl: p => 'file://' + p } })
+    surface.blurBackdropActive = vm.runInContext(blurActive, scope)
+    assertEqual(vm.runInContext(backdropSource, scope) !== '', fill !== 'crop' && backdrop === 'blur',
+      `${fill}/${backdrop} only loads the backdrop when needed`)
+  }
+}
+assert(/sourceSize.width:\s*root.useSourceSizeCap \? image.physWidth : 0/.test(wallpaperQml) &&
+  /sourceSize.height:\s*root.useSourceSizeCap \? image.physHeight : 0/.test(wallpaperQml),
+  'active lock blur backdrops also cap their decode to the physical screen')
+assert(!backgroundQml.includes('id: oldResolver') && !backgroundQml.includes('id: oldFrame') &&
+  /path:\s*panel.lastDisplayedPath/.test(baseBlock) && /imageCache:\s*true/.test(baseBlock),
+  'outgoing transitions retain the decoded panel variant without loading the canonical snapshot')
+
+const outgoing = vm.createContext({
+  currentBackground: '/old/art.svg', displayedBackground: '/old/art.svg',
+  displayedVersion: 3, backgroundVersion: 3,
+  isVideo: () => false,
+  revealAnimation: { stop() {} }
+})
+vm.runInContext(blockAfter(backgroundQml, 'function transitionBackground(', 'transition function exists') + '\n}', outgoing)
+outgoing.transitionBackground('/snapshots/canonical.svg', '/snapshots/new.png', '/new/art.svg', false, true)
+assertEqual(outgoing.displayedBackground, '/old/art.svg', 'theme snapshots leave the per-panel base source intact during reveal')
+assertEqual(outgoing.displayedVersion, 3, 'arming a theme transition never requests a fresh decode of the outgoing wallpaper')
 
 const lockQml = fs.readFileSync(path.join(root, 'shell/plugins/lock/LockView.qml'), 'utf8')
 assert(

@@ -7,6 +7,7 @@ Item {
   property string path: ""
   property int version: 0
   property string fill: "crop"
+  property string backdrop: "solid"
   property color fillColor: "black"
   property real focalX: 0.5
   property real focalY: 0.5
@@ -85,6 +86,7 @@ Item {
       readonly property bool ready: status === Image.Ready
       path: root.path
       fill: root.fill
+      backdrop: root.backdrop
       fillColor: root.fillColor
       focalX: root.focalX
       focalY: root.focalY
