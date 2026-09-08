@@ -4,6 +4,9 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
+# The running desktop may itself be using a recovery renderer.
+unset LIBGL_ALWAYS_SOFTWARE __EGL_VENDOR_LIBRARY_FILENAMES __GLX_VENDOR_LIBRARY_NAME QSG_RHI_BACKEND
+
 test_tmp=$(mktemp -d)
 launch_pid=""
 
@@ -21,6 +24,7 @@ trap cleanup EXIT
 fake_bin="$test_tmp/bin"
 shell_root="$test_tmp/root"
 mkdir -p "$fake_bin" "$shell_root/shell"
+ln -s "$ROOT/shell/launch.py" "$shell_root/shell/launch.py"
 
 # Each launch consumes the next status from OMARCHY_TEST_QS_STATUSES; "run"
 # stands in for a healthy shell that keeps going until stopped.
@@ -30,9 +34,25 @@ cat >"$fake_bin/quickshell" <<'SH'
 printf '%s\n' "$*" >>"$OMARCHY_TEST_QS_LOG"
 printf 'watcher=%s popup=%s\n' \
   "${QS_DISABLE_FILE_WATCHER:-unset}" "${QS_NO_RELOAD_POPUP:-unset}" >>"$OMARCHY_TEST_QS_ENV_LOG"
+printf 'software=%s egl=%s glx=%s rhi=%s\n' \
+  "${LIBGL_ALWAYS_SOFTWARE:-unset}" "${__EGL_VENDOR_LIBRARY_FILENAMES:-unset}" \
+  "${__GLX_VENDOR_LIBRARY_NAME:-unset}" "${QSG_RHI_BACKEND:-unset}" >>"$OMARCHY_TEST_RENDERER_LOG"
 
 launches=$(wc -l <"$OMARCHY_TEST_QS_LOG")
 status=$(awk -v n="$launches" 'NR == n { print; found = 1 } END { if (!found) print "0" }' <<<"$OMARCHY_TEST_QS_STATUSES")
+
+case $status in
+  graphics|graphics-clean)
+    printf '  WARN: ordinary output is kept\n'
+    printf ' FATAL: Failed to initialize graphics backend for OpenGL.\n'
+    [[ $status == "graphics-clean" ]] && exit 0
+    exit 1
+    ;;
+  warning)
+    printf ' WARN: QWaylandGLContext::makeCurrent: eglError: 0x3003\n' >&2
+    exit 1
+    ;;
+esac
 
 if [[ $status == "run" ]]; then
   trap 'touch "$OMARCHY_TEST_QS_TERMINATED"; exit 143' TERM
@@ -80,6 +100,7 @@ chmod +x "$fake_bin/quickshell" "$fake_bin/systemd-cat" "$fake_bin/hyprctl" "$fa
 
 qs_log="$test_tmp/quickshell.log"
 qs_env_log="$test_tmp/quickshell-env.log"
+export OMARCHY_TEST_RENDERER_LOG="$test_tmp/renderer.log"
 logger_log="$test_tmp/logger.log"
 qs_terminated="$test_tmp/quickshell-terminated"
 hyprctl_misses="$test_tmp/hyprctl-misses"
@@ -88,6 +109,7 @@ launch_shell() {
   : >"$qs_log"
   : >"$qs_env_log"
   : >"$logger_log"
+  : >"$OMARCHY_TEST_RENDERER_LOG"
 
   PATH="$fake_bin:$PATH" \
   OMARCHY_PATH="$shell_root" \
@@ -138,6 +160,40 @@ rm -f "$hyprctl_misses"
 launch_shell $'255\n0' 0 2 || fail "a shell survives a compositor that misses a query"
 [[ $(launches) == 2 ]] || fail "a missed compositor query does not end supervision" "$(<"$qs_log")"
 pass "a compositor too busy to answer is not mistaken for one that is gone"
+
+launch_shell $'graphics\n0' || fail "fatal OpenGL initialization can recover"
+[[ $(launches) == 2 ]] || fail "one software retry follows a graphics failure"
+[[ $(head -n 1 "$OMARCHY_TEST_RENDERER_LOG") == "software=unset egl=unset glx=unset rhi=unset" ]] || fail "normal launch retains the renderer defaults"
+[[ $(tail -n 1 "$OMARCHY_TEST_RENDERER_LOG") == "software=1 egl=/usr/share/glvnd/egl_vendor.d/50_mesa.json glx=mesa rhi=opengl" ]] || fail "recovery selects Mesa software OpenGL"
+grep -F 'Mesa software rendering' "$logger_log" >/dev/null || fail "renderer fallback is recorded"
+pass "fatal graphics initialization switches only the replacement shell to Mesa"
+
+launch_shell $'graphics\n255\n0' || fail "ordinary failures remain supervised after switching renderers"
+[[ $(launches) == 3 ]] || fail "the software renderer survives an ordinary retry"
+[[ $(grep -c 'software=1' "$OMARCHY_TEST_RENDERER_LOG") == 2 ]] || fail "later retries retain software rendering"
+pass "the fallback renderer lasts for the supervisor's lifetime"
+
+LIBGL_ALWAYS_SOFTWARE=0 __EGL_VENDOR_LIBRARY_FILENAMES=/custom/vendor.json \
+__GLX_VENDOR_LIBRARY_NAME=custom QSG_RHI_BACKEND=vulkan \
+  launch_shell '0' || fail "custom renderer settings can launch normally"
+[[ $(<"$OMARCHY_TEST_RENDERER_LOG") == "software=0 egl=/custom/vendor.json glx=custom rhi=vulkan" ]] || fail "normal launches preserve explicit renderer settings"
+pass "a normal launch preserves the session's renderer choices"
+
+launch_shell $'graphics\ngraphics\n0' && fail "a broken software renderer must stop"
+[[ $(launches) == 2 ]] || fail "software graphics failures do not cause another crash loop"
+grep -F 'leaving the session lock intact' "$logger_log" >/dev/null || fail "software failure is recorded"
+pass "a software renderer that also fails is not retried indefinitely"
+
+for statuses in $'warning\n0' $'78\n0' $'graphics-clean\n0'; do
+  launch_shell "$statuses" || fail "non-fatal and unrelated exits retain existing behavior"
+  grep -F 'software=1' "$OMARCHY_TEST_RENDERER_LOG" && fail "unrelated errors or clean stops must not switch renderers"
+done
+[[ $(launches) == 1 ]] || fail "a clean stop after an internally recovered graphics failure stays stopped"
+pass "warnings, unrelated exit 78 and deliberate stops do not enable fallback"
+
+launch_shell $'graphics\n0' 1 || fail "a graphics failure during compositor shutdown exits cleanly"
+[[ $(launches) == 1 ]] || fail "fallback must not relaunch into a dead compositor"
+pass "graphics recovery respects compositor shutdown"
 
 # A signal mid-backoff only reaches the trap once the sleep is over.
 : >"$qs_log"

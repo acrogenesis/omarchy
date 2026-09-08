@@ -9,6 +9,14 @@ IPC is the canonical way for CLIs to talk to a running shell —
 (`-q` makes it quiet best-effort; `OMARCHY_SHELL_IPC_TIMEOUT` bounds the
 wait).
 
+## Graphics failure recovery
+
+`omarchy-launch-shell` journals Quickshell's output through `shell/launch.py`, which forwards signals and observes the process across its own crash-handler re-execs. If the process exits unsuccessfully after logging the exact fatal OpenGL initialization error, the observer returns the reserved status 78. Other failures retain the existing bounded restart behavior; warnings and clean stops do not request a renderer change.
+
+The launcher retries a graphics failure with process-local Mesa software OpenGL (`LIBGL_ALWAYS_SOFTWARE`, Mesa's EGL/GLX vendor, and `QSG_RHI_BACKEND=opengl`). It retains that renderer for the launcher's lifetime. A second fatal graphics initialization failure stops recovery; it does not loop between renderers. A fresh launcher starts with the session's normal rendering environment. This is different from Qt Quick's raster software backend, which cannot render the shell's shader effects.
+
+Recovery never unlocks the compositor. The lock service already detects a stranded compositor lock on startup and reacquires it; the user must still authenticate. Renderer fallback does not claim readiness from IPC alone and does not handle a shell that remains alive but stops drawing. It also does not reserve GPU memory for the desktop: GPU workloads still need enough headroom for the compositor and applications.
+
 ## Plugin manifest
 
 ```json

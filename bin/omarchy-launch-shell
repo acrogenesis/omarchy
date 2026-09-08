@@ -8,15 +8,19 @@
 # across sessions, bounded and timestamped, under the omarchy-shell tag.
 #
 # Backgrounded because bash defers a trap until a foreground command returns but
-# interrupts wait. systemd-cat execs, so the job is Quickshell itself.
+# interrupts wait. systemd-cat execs the log observer, which forwards signals
+# to Quickshell and distinguishes fatal graphics errors from other exits.
 #
 # Quickshell's own reloading is off; Omarchy restarts the shell deliberately.
 # A package upgrade rewriting $OMARCHY_PATH/shell would otherwise reload it
 # against a half-written tree, and that failed reload leaves a second engine
 # generation behind that turns the next restart's IPC kill into a crash.
 run_shell() {
+  local -a renderer=()
+  (( software_rendering )) && renderer=(--software)
+
   QS_DISABLE_FILE_WATCHER=1 QS_NO_RELOAD_POPUP=1 \
-    systemd-cat -t omarchy-shell -- quickshell -n -p "$OMARCHY_PATH/shell" &
+    systemd-cat -t omarchy-shell -- python3 "$OMARCHY_PATH/shell/launch.py" "${renderer[@]}" &
   shell_pid=$!
 
   local status
@@ -52,6 +56,7 @@ compositor_alive() {
 # session is going, and has to reach the shell the launcher used to exec.
 terminating=0
 shell_pid=""
+software_rendering=0
 
 stop() {
   terminating=1
@@ -75,6 +80,20 @@ while true; do
 
   # Relaunching into a session already tearing down burns the attempt budget.
   compositor_alive || exit 0
+
+  # The observer reserves 78 for this run's fatal OpenGL initialization error.
+  # Keep Mesa's OpenGL scene graph: Qt's raster backend drops shader effects.
+  # The lock service recovers an orphaned compositor lock on startup; never
+  # unlock it here, even if the fallback cannot initialize either.
+  if (( status == 78 )); then
+    if (( software_rendering )); then
+      logger -t omarchy-shell "OpenGL initialization also failed with Mesa software rendering; leaving the session lock intact."
+      exit 1
+    else
+      software_rendering=1
+      logger -t omarchy-shell "OpenGL initialization failed; retrying the Omarchy shell with Mesa software rendering."
+    fi
+  fi
 
   if (( SECONDS - window_started > 60 )); then
     attempts=0
