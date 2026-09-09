@@ -1212,7 +1212,6 @@ run_post_upgrade_migrations() {
 run_final_system_package_upgrade() {
   log "Checking for remaining system package updates"
   as_root env OMARCHY_UPDATE_PACMAN=1 pacman -Syu --noconfirm --ask 4 \
-    --overwrite '/etc/docker/daemon.json' \
     --overwrite '/etc/gnupg/dirmngr.conf' \
     --overwrite '/etc/mkinitcpio.conf.d/omarchy_hooks.conf' \
     --overwrite '/etc/mkinitcpio.conf.d/thunderbolt_module.conf' \
@@ -1226,10 +1225,8 @@ run_final_system_package_upgrade() {
     --overwrite '/etc/sysctl.d/99-omarchy-sysctl.conf' \
     --overwrite '/etc/systemd/logind.conf.d/10-ignore-power-button.conf' \
     --overwrite '/etc/systemd/resolved.conf.d/10-disable-multicast.conf' \
-    --overwrite '/etc/systemd/resolved.conf.d/20-docker-dns.conf' \
     --overwrite '/etc/systemd/system.conf.d/10-faster-shutdown.conf' \
     --overwrite '/etc/systemd/system/user@.service.d/10-faster-shutdown.conf' \
-    --overwrite '/etc/systemd/system/docker.service.d/no-block-boot.conf' \
     --overwrite '/etc/systemd/system/plocate-updatedb.service.d/ac-only.conf' \
     --overwrite '/etc/systemd/system.conf.d/20-omarchy-nofile.conf' \
     --overwrite '/etc/systemd/user.conf.d/20-omarchy-nofile.conf' \
@@ -1274,9 +1271,7 @@ enable_system_service() {
 apply_firewall_defaults() {
   # Run the packaged config script rather than a copy of it, the same way
   # configure_snapper_policy and configure_lock_authentication already do. The
-  # copy this replaces had drifted: it never installed the ufw-docker rules, so
-  # upgraded machines came up without the Docker firewall protections a fresh
-  # install gets.
+  # same Podman DNS and forwarding policy applies to fresh and upgraded installs.
   local firewall_script=/usr/share/omarchy/install/config/firewall.sh
 
   if ! command -v ufw >/dev/null 2>&1; then
@@ -1345,42 +1340,27 @@ apply_system_transition() {
   printf '%s\n' '{"distribution":{"require_eula":false},"browser":{"theme":{"color_scheme":0,"color_scheme2":0}}}' | \
     as_root tee /usr/lib/chromium/initial_preferences >/dev/null
 
-  # Deliberately do NOT add the user to the docker group. That group is
-  # root-equivalent, so it is opt-in now (Setup > Security > Sudoless Docker);
-  # re-granting it on upgrade would silently undo that default for everyone.
+  # The retired root-equivalent Docker group must not be re-granted.
 
   if [[ -f /usr/bin/powerprofilesctl ]]; then
     as_root sed -i '/env python3/ c\#!/bin/python3' /usr/bin/powerprofilesctl || true
   fi
 
-  as_root install -d -m 0755 /etc/systemd/resolved.conf.d /etc/docker
+  as_root install -d -m 0755 /etc/systemd/resolved.conf.d
   cat <<'EOF' | as_root tee /etc/systemd/resolved.conf.d/10-disable-multicast.conf >/dev/null
 [Resolve]
 LLMNR=no
 MulticastDNS=no
 EOF
-  cat <<'EOF' | as_root tee /etc/systemd/resolved.conf.d/20-docker-dns.conf >/dev/null
-[Resolve]
-DNSStubListenerExtra=172.17.0.1
-EOF
-  cat <<'EOF' | as_root tee /etc/docker/daemon.json >/dev/null
-{
-    "log-driver": "json-file",
-    "log-opts": { "max-size": "10m", "max-file": "5" },
-    "dns": ["172.17.0.1"],
-    "bip": "172.17.0.1/16"
-}
-EOF
   as_root ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
-  # Fresh Omarchy socket-activates Docker. Disable the old always-on service if
-  # an upgraded install had enabled it, but do not stop running containers mid-upgrade.
+  # The final migration handles retiring Docker and preserving existing data.
   as_root systemctl disable docker.service >/dev/null 2>&1 || true
 
   enable_system_service cups.service
   enable_system_service avahi-daemon.service
   enable_system_service linux-modules-cleanup.service
-  enable_system_service docker.socket
+  as_root systemctl --global enable podman.socket podman-restart.service
   enable_system_service systemd-resolved.service
   # NetworkManager replaces iwd, and both halves of that swap belong in one
   # step: a machine that boots with both enabled has two daemons fighting over
@@ -2195,7 +2175,6 @@ if [[ -d $legacy_icons_dir ]]; then
     Cliamp.png \
     Discord.png \
     "Disk Usage.png" \
-    Docker.png \
     GitHub.png \
     "Google Contacts.png" \
     "Google Maps.png" \

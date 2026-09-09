@@ -18,15 +18,14 @@ The majority of these environments are managed by [Mise](https://mise.jdx.dev/).
 
 To install, say, Ruby, you'd run `mise use -g ruby`, which will both install Ruby and set it as the global default. Or, if your project has a .ruby-version file, you can just run `mise i` in the root of that project.
 
-## Docker
+## Podman
 
-[Docker](https://www.docker.com/) hardly needs any introduction. It allows you to run isolated containers, and Omarchy installs everything needed to run it well, including Docker itself and [Docker Compose](https://docs.docker.com/compose/).
+[Podman](https://podman.io/) runs containers without a root daemon. Use `podman run`, `podman build`, and `podman-compose up`; the `d` alias also runs Podman. Omarchy includes Podman Compose and [Podman Desktop](https://podman-desktop.io/) to manage your containers and images with `Super + Shift + D`.
 
-By default your user is *not* in the `docker` group. That group is effectively passwordless root — anything in it can `docker run -v /:/host` and take over the machine — so a single rogue script or dependency running as you would otherwise be one command away from root. So on the command line you run Docker with `sudo` (`sudo docker ps`, `sudo docker compose up`), and the graphical tools that talk to the daemon — the Docker TUI on `Super + Shift + D` and the Windows VM — ask for authorization when they need it. If you want the convenience of a groupless setup back and understand the tradeoff, enable it from **Setup > Security > Sudoless Docker** (or run `omarchy-setup-security-sudoless-docker`), which adds you to the `docker` group after a warning; then plain `docker` and the `d` alias work without `sudo` again.
+Development containers run as your user. You do not need sudo or membership in a privileged group. Container images and volumes belong to your account; `sudo podman` has a separate store. The Windows VM uses that root-owned store and asks for authorization when needed.
 
-Remember to checkout the Lazydocker command to manage your containers in a cool TUI using `Super + Shift + D`; it asks for authorization the first time unless you have enabled sudoless Docker.
+Install common development databases from _Install > Development > Podman DB_. Their published ports bind to localhost. Containers with a restart policy resume through your user service when you log in. To keep your own services running after logout, enable lingering deliberately with `sudo loginctl enable-linger "$USER"`.
 
-You can setup the common databases for local development in Docker using _Install > Development > Docker DB_ in the Omarchy menu.
 
 ## GitHub CLI
 
@@ -35,3 +34,9 @@ You can setup the common databases for local development in Docker using _Instal
 You can also perform a bunch of other GitHub operations using this command. Just run `gh` to see everything that's possible.
 
 There's a lazy-installing stub for `ghui` for managing your pull requests in a TUI too. And [lazygit](https://github.com/jesseduffield/lazygit) is preinstalled, if you'd like to drive git itself from a TUI as well.
+
+## Moving existing containers
+
+During the update, Omarchy moves its development databases into the Podman store of the account running the update. It stops each database, snapshots its image and writable layer, transfers volume data with its numeric ownership, and restores its previous running state in Podman. Windows keeps its existing virtual disk and shared folder. The old Docker data stays on disk as a recovery copy. Restart when the updater asks to clear Docker's temporary networking state.
+
+Custom containers, custom networks, shared volumes, and modified database privileges or resource limits need an explicit transfer using the project's own configuration. The migration identifies these before stopping workloads and stays pending until they are moved. Back up the application data, recreate the project using `podman-compose`, verify its data and behavior, then remove the old Docker containers and retry the update. Docker is removed only after the remaining Omarchy workloads have moved successfully.

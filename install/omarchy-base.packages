@@ -20,9 +20,9 @@ cups
 cups-filters
 cups-pk-helper
 ddcutil
-docker
-docker-buildx
-docker-compose
+podman
+podman-compose
+podman-desktop
 dosfstools
 dotnet-runtime
 dua-cli
@@ -64,7 +64,6 @@ networkmanager
 jq
 kdenlive
 kernel-modules-hook
-lazydocker
 lazygit
 less
 libsecret
@@ -131,7 +130,6 @@ ttf-jetbrains-mono-nerd-basic
 tzupdate
 udiskie
 ufw
-ufw-docker
 unzip
 usage
 uwsm

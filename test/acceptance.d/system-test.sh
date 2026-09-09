@@ -52,7 +52,7 @@ verify_services() {
   local unit
 
   for unit in \
-    avahi-daemon.service docker.socket \
+    avahi-daemon.service \
     NetworkManager.service power-profiles-daemon.service sddm.service \
     systemd-resolved.service ufw.service; do
     systemctl is-enabled --quiet "$unit" || fail "core system services are enabled" "$unit is not enabled"
@@ -70,20 +70,15 @@ verify_services() {
 }
 
 verify_runtime_tools() {
-  # Docker access is intentionally NOT granted to the desktop user: the docker
-  # group is root-equivalent, so a rogue process running as the user could
-  # otherwise `docker run -v /:/host` its way to passwordless root. The daemon is
-  # still enabled (docker.socket, checked in verify_services) and reached through
-  # a polkit/sudo prompt; opting into sudoless Docker is a separate, warned step.
-  command -v docker >/dev/null 2>&1 || fail "Docker CLI is installed"
+  [[ $(timeout 10 podman info --format '{{.Host.Security.Rootless}}') == true ]] ||
+    fail "Podman runs rootless for the desktop user"
+  podman-compose --version >/dev/null || fail "Podman Compose is installed"
+  systemctl --user is-enabled --quiet podman.socket podman-restart.service ||
+    fail "Podman user services are enabled"
+  ! command -v docker >/dev/null 2>&1 || fail "Docker CLI must be absent"
+  ! systemctl is-active --quiet docker.socket docker.service || fail "Docker must not be running"
   ! id -nG | grep -qw docker || fail "desktop user must not be in the docker group"
-  # The group name being absent is not sufficient — a world-writable socket or an
-  # ACL would still hand the user the root daemon. Prove it is actually
-  # unreachable without elevation.
-  if timeout 10 docker info >/dev/null 2>&1; then
-    fail "desktop user must not reach the Docker daemon without elevation"
-  fi
-  pass "Docker is installed but unreachable by the desktop user without elevation"
+  pass "Podman is rootless and Docker is absent"
 
   nvim --headless '+qa' >/dev/null 2>&1 || fail "Neovim starts headlessly"
   pass "Neovim starts headlessly"

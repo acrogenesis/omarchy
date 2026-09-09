@@ -1,0 +1,96 @@
+#!/bin/bash
+
+set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/base-test.sh"
+
+test_dir=$(mktemp -d)
+trap 'rm -rf "$test_dir"' EXIT
+mkdir -p "$test_dir/bin" "$test_dir/home/.local/share/applications"
+export TEST_LOG="$test_dir/calls"
+export STUB_DOCKER=0 STUB_NAMES="" STUB_GROUPS=wheel
+
+cat >"$test_dir/bin/sudo" <<'SH'
+#!/bin/bash
+printf 'sudo %s\n' "$*" >>"$TEST_LOG"
+case "$1" in
+  python3) cat >/dev/null ;;
+  docker)
+    case "$2" in
+      ps) printf '%s\n' "$STUB_NAMES" ;;
+      stop) [[ $3 == '-t' && $4 == 120 && $5 == omarchy-windows ]] ;;
+      *) exit 2 ;;
+    esac ;;
+  test) exit 1 ;;
+  ufw) [[ $2 != status ]] || echo 'Status: active' ;;
+esac
+SH
+cat >"$test_dir/bin/omarchy-cmd-present" <<'SH'
+#!/bin/bash
+[[ $1 == docker && $STUB_DOCKER == 1 ]]
+SH
+cat >"$test_dir/bin/id" <<'SH'
+#!/bin/bash
+echo "$STUB_GROUPS"
+SH
+cat >"$test_dir/bin/python3" <<'SH'
+#!/bin/bash
+printf 'python3 %s\n' "$*" >>"$TEST_LOG"
+if [[ $* == *custom-project* ]]; then
+  echo 'custom-project requires its own Compose definition' >&2
+  exit 1
+fi
+SH
+for name in omarchy-pkg-add omarchy-pkg-drop systemctl podman omarchy-state; do
+  cat >"$test_dir/bin/$name" <<'SH'
+#!/bin/bash
+printf '%s %s\n' "${0##*/}" "$*" >>"$TEST_LOG"
+SH
+done
+chmod +x "$test_dir/bin"/*
+
+run_migration() {
+  : >"$TEST_LOG"
+  HOME="$test_dir/home" USER=tester OMARCHY_PATH="$ROOT" PATH="$test_dir/bin:$PATH" \
+    bash -euo pipefail "$ROOT/migrations/1788886195.sh" >"$test_dir/output" 2>&1
+}
+
+STUB_DOCKER=1 STUB_NAMES=$'omarchy-windows\ncustom-project'
+run_migration && fail "migration discarded an unmigrated database"
+! grep -q 'docker stop\|disable --now docker\|omarchy-pkg-drop' "$TEST_LOG" ||
+  fail "migration stopped or removed the old engine before workload transfer"
+grep -q custom-project "$test_dir/output" || fail "migration did not identify the pending workload"
+pass "existing workloads keep Docker and the migration pending"
+
+STUB_NAMES=omarchy-windows
+run_migration || fail "Windows-only handover failed" "$(cat "$test_dir/output")"
+grep -q 'sudo docker stop -t 120 omarchy-windows' "$TEST_LOG" || fail "Windows was not shut down gracefully"
+grep -q 'sudo systemctl disable --now docker.socket docker.service' "$TEST_LOG" || fail "old engine stays enabled"
+grep -q '^omarchy-state set reboot-required$' "$TEST_LOG" || fail "retired engine runtime did not flag a reboot"
+! grep -q 'docker rm\|podman rm\|docker volume rm' "$TEST_LOG" || fail "handover deletes existing data"
+grep -q '^omarchy-pkg-drop docker docker-buildx docker-compose ufw-docker lazydocker lazydocker-bin podman-docker$' "$TEST_LOG" ||
+  fail "Docker packages or compatibility shims remain"
+pass "Windows handover stops Docker and retains storage for Podman"
+
+STUB_DOCKER=0 STUB_NAMES="" STUB_GROUPS='wheel docker'
+printf old >"$test_dir/home/.local/share/applications/Docker.desktop"
+run_migration || fail "Docker-free migration failed"
+[[ ! -e $test_dir/home/.local/share/applications/Docker.desktop ]] || fail "old launcher remains"
+[[ -f $test_dir/home/.local/share/applications/io.podman_desktop.PodmanDesktop.desktop ]] || fail "Podman launcher is missing"
+grep -q '^sudo gpasswd -d tester docker$' "$TEST_LOG" || fail "retired group membership remains"
+grep -q '^omarchy-state set reboot-required$' "$TEST_LOG" || fail "group change did not flag a reboot"
+grep -q '^systemctl --user enable --now podman.socket$' "$TEST_LOG" || fail "rootless API socket is missing"
+pass "Docker-free retry updates the launcher, user services and group state"
+
+STUB_GROUPS=wheel
+run_migration || fail "repeat migration failed"
+! grep -q '^sudo docker ' "$TEST_LOG" || fail "retry still depends on Docker"
+! grep -q '^sudo gpasswd ' "$TEST_LOG" || fail "retry repeats an already completed group change"
+pass "completed migration can be repeated without Docker"
+
+mkdir -p "$test_dir/home/.local/state/omarchy"
+touch "$test_dir/home/.local/state/omarchy/preinstalls-removed"
+rm "$test_dir/home/.local/share/applications/io.podman_desktop.PodmanDesktop.desktop"
+run_migration || fail "preinstall opt-out migration failed"
+! grep -q '^omarchy-pkg-add podman-desktop$' "$TEST_LOG" || fail "migration restores an opted-out desktop app"
+[[ ! -e $test_dir/home/.local/share/applications/io.podman_desktop.PodmanDesktop.desktop ]] || fail "migration restores an opted-out launcher"
+pass "migration respects the preinstalled-app opt-out"

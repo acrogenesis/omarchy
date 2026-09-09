@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# omarchy:summary=Manage containers and images in Podman Desktop
+
+systemctl --user start podman.socket || exit 1
+exec podman-desktop "$@"

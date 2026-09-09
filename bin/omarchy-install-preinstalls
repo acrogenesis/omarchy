@@ -21,7 +21,7 @@ if gum confirm "Are you sure you want to restore all preinstalled web apps, TUI 
     obs-studio \
     kdenlive \
     moonlight-qt \
-    lazydocker \
+    podman-desktop \
     omacut \
     omacalc \
     omawrite; then

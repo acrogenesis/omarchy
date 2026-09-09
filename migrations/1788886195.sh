@@ -1,0 +1,136 @@
+echo "Replace Docker with Podman and enable rootless containers"
+
+omarchy-pkg-add podman podman-compose
+if [[ ! -f $HOME/.local/state/omarchy/preinstalls-removed ]]; then
+  omarchy-pkg-add podman-desktop
+fi
+
+# Check every workload before stopping any. Windows keeps its external disk;
+# stock development databases can transfer their images and volumes rootlessly.
+docker_installed=0
+database_names=()
+if omarchy-cmd-present docker; then
+  docker_installed=1
+  sudo systemctl start docker.socket
+  docker_names=$(sudo docker ps -a --format '{{.Names}}')
+  mapfile -t database_names < <(printf '%s\n' "$docker_names" | sed '/^omarchy-windows$/d; /^$/d')
+  if ! python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" --check "${database_names[@]}"; then
+    echo "Docker and its data have been retained. This migration remains pending." >&2
+    exit 1
+  fi
+fi
+
+# Serialize allocation across users. Read the complete subordinate ID maps
+# under the lock so simultaneous migrations cannot allocate overlapping ranges.
+sudo python3 - "$USER" <<'PY'
+import fcntl
+import os
+import pwd
+import subprocess
+import sys
+
+account = pwd.getpwnam(sys.argv[1])
+if account.pw_uid == 0:
+    raise SystemExit("Run the migration as the desktop user")
+fd = os.open('/run/omarchy-podman-subids.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+with os.fdopen(fd, 'w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    for path, option in [('/etc/subuid', '--add-subuids'), ('/etc/subgid', '--add-subgids')]:
+        ranges = []
+        try:
+            with open(path) as source:
+                for line in source:
+                    if line.strip() and not line.startswith('#'):
+                        name, start, count = line.strip().split(':')
+                        ranges.append((name, int(start), int(count)))
+        except FileNotFoundError:
+            pass
+        if any(name in (account.pw_name, str(account.pw_uid)) and count >= 65536
+               for name, start, count in ranges):
+            continue
+        start = max([100000] + [start + count for _, start, count in ranges])
+        subprocess.run(['usermod', option, f'{start}-{start + 65535}', account.pw_name], check=True)
+PY
+
+podman info >/dev/null
+if ((docker_installed)); then
+  python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" "${database_names[@]}"
+  if printf '%s\n' "$docker_names" | grep -qx omarchy-windows; then
+    sudo docker stop -t 120 omarchy-windows
+  fi
+  # Keep Docker's stopped containers and volume data as recovery copies.
+  sudo systemctl disable --now docker.socket docker.service
+  # Docker leaves bridge interfaces and netfilter chains behind when stopped.
+  # Reboot clears that transient state without flushing administrator rules.
+  omarchy-state set reboot-required
+fi
+sudo systemctl --global enable podman.socket podman-restart.service
+systemctl --user enable --now podman.socket
+systemctl --user enable podman-restart.service
+
+# Replace only Omarchy's Docker DNS rules, leaving unrelated firewall policy.
+sudo ufw --force delete allow in proto udp from 172.16.0.0/12 to 172.17.0.1 port 53
+sudo ufw --force delete allow in proto udp from 192.168.0.0/16 to 172.17.0.1 port 53
+sudo ufw allow in on podman+ to any port 53 proto udp comment omarchy-podman-dns
+sudo ufw allow in on podman+ to any port 53 proto tcp comment omarchy-podman-dns
+sudo ufw route allow in on podman+ comment omarchy-podman-egress
+
+# Remove the retired managed block, preserving administrator rules around it.
+# Archive it first so a later failure or a deliberate rollback is recoverable.
+sudo python3 - <<'PY'
+from pathlib import Path
+import shutil
+
+path = Path('/etc/ufw/after.rules')
+if path.exists():
+    contents = path.read_text()
+    begin, end = '# BEGIN UFW AND DOCKER', '# END UFW AND DOCKER'
+    if begin in contents and end in contents:
+        first = contents.index(begin)
+        last = contents.index(end, first) + len(end)
+        backup = path.with_name('after.rules.before-podman')
+        if not backup.exists():
+            shutil.copy2(path, backup)
+        path.write_text(contents[:first] + contents[last:].lstrip('\n'))
+PY
+
+if sudo ufw status | grep -q '^Status: active'; then
+  sudo ufw reload
+fi
+
+omarchy-pkg-drop docker docker-buildx docker-compose ufw-docker lazydocker lazydocker-bin podman-docker
+
+# Retired package config may be a .pacsave after the package transaction. Keep
+# custom content as inactive backups instead of deleting it.
+for retired in /etc/docker/daemon.json \
+  /etc/systemd/resolved.conf.d/20-docker-dns.conf \
+  /etc/systemd/system/docker.service.d/no-block-boot.conf; do
+  if sudo test -f "$retired"; then
+    sudo mv --backup=numbered -- "$retired" "$retired.before-podman"
+  fi
+done
+sudo systemctl daemon-reload
+sudo systemctl restart systemd-resolved
+
+if id -nG "$USER" | grep -qw docker; then
+  sudo gpasswd -d "$USER" docker
+  omarchy-state set reboot-required
+fi
+
+# Keep the established Windows configuration path and credentials. Only the
+# registry qualification changes; storage paths and disk contents stay intact.
+if sudo test -f /var/lib/omarchy/windows/docker-compose.yml; then
+  sudo sed -i 's|^    image: dockurr/windows$|    image: docker.io/dockurr/windows|' /var/lib/omarchy/windows/docker-compose.yml
+  sudo chown root:root /var/lib/omarchy/windows/docker-compose.yml
+  sudo chmod 0600 /var/lib/omarchy/windows/docker-compose.yml
+fi
+
+rm -f "$HOME/.local/share/applications/Docker.desktop"
+if [[ ! -f $HOME/.local/state/omarchy/preinstalls-removed ]]; then
+  install -Dm644 "$OMARCHY_PATH/applications/io.podman_desktop.PodmanDesktop.desktop" "$HOME/.local/share/applications/io.podman_desktop.PodmanDesktop.desktop"
+fi
+if [[ -f $HOME/.local/share/applications/windows-vm.desktop ]]; then
+  sed -i 's/Windows VM via Docker/Windows VM via Podman/' "$HOME/.local/share/applications/windows-vm.desktop"
+fi
+
+echo "Podman is ready. Existing Docker storage remains on disk for recovery."

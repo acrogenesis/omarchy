@@ -1,0 +1,159 @@
+"""Move Omarchy's local development databases into the desktop user's Podman store."""
+
+import json
+import re
+import subprocess
+import sys
+
+
+LABEL = "io.omarchy.docker-id"
+
+
+def run(*args, capture=False):
+    result = subprocess.run(args, check=True, text=True, capture_output=capture)
+    return result.stdout.strip() if capture else None
+
+
+def inspect(engine, kind, name):
+    command = ["sudo", "docker"] if engine == "docker" else ["podman"]
+    return json.loads(run(*command, kind, "inspect", name, capture=True))[0]
+
+
+def validate(container):
+    name = container["Name"].lstrip("/")
+    images = {
+        r"mysql\d+": "mysql",
+        r"postgres\d+": "postgres",
+        r"mariadb\d+": "mariadb",
+        r"redis": "redis",
+        r"mongodb": "mongo",
+        r"mssql": "mcr.microsoft.com/mssql/server",
+    }
+    expected = next((image for pattern, image in images.items() if re.fullmatch(pattern, name)), None)
+    image = container["Config"]["Image"].removeprefix("docker.io/").removeprefix("library/")
+    if expected is None or image.split(":")[0] != expected:
+        raise ValueError(f"{name}: migrate this custom workload with its original Compose definition")
+    host = container["HostConfig"]
+    if host.get("NetworkMode") not in ("default", "bridge"):
+        raise ValueError(f"{name}: custom networking requires its original Compose definition")
+    # The stock database installer sets none of these. Refuse custom privileges,
+    # mounts and resource constraints rather than silently discarding them.
+    for key in ("Privileged", "CapAdd", "CapDrop", "Devices", "DeviceRequests", "Binds",
+                "Links", "VolumesFrom", "SecurityOpt", "ReadonlyRootfs", "ExtraHosts",
+                "Dns", "DnsOptions", "DnsSearch", "GroupAdd", "Tmpfs", "Sysctls",
+                "Memory", "MemoryReservation", "MemorySwap", "NanoCpus", "CpuQuota",
+                "CpuPeriod", "CpuShares", "CpusetCpus", "CpusetMems", "PidsLimit",
+                "PublishAllPorts", "AutoRemove", "Ulimits", "StorageOpt", "Init"):
+        if host.get(key):
+            raise ValueError(f"{name}: custom {key} needs an explicit Podman configuration")
+    if host.get("PidMode") or host.get("UTSMode") or host.get("UsernsMode"):
+        raise ValueError(f"{name}: custom namespaces need an explicit Podman configuration")
+    if host.get("IpcMode") not in (None, "", "private"):
+        raise ValueError(f"{name}: custom IPC requires its original Compose definition")
+    for port, bindings in (host.get("PortBindings") or {}).items():
+        if not re.fullmatch(r"\d+/(tcp|udp)", port):
+            raise ValueError(f"{name}: unsupported port {port}")
+        for binding in bindings or []:
+            if binding.get("HostIp") != "127.0.0.1" or not binding.get("HostPort", "").isdigit():
+                raise ValueError(f"{name}: only the stock localhost port bindings can migrate automatically")
+    for mount in container.get("Mounts", []):
+        if mount.get("Type") != "volume" or mount.get("Driver") != "local":
+            raise ValueError(f"{name}: custom storage requires an explicit volume transfer")
+    return name
+
+
+def pipe(producer, consumer):
+    with subprocess.Popen(producer, stdout=subprocess.PIPE) as source:
+        try:
+            destination = subprocess.run(consumer, stdin=source.stdout, check=False)
+            source.stdout.close()
+            source_code = source.wait()
+        except BaseException:
+            source.kill()
+            source.wait()
+            raise
+        if source_code or destination.returncode:
+            raise RuntimeError("Container image or volume transfer failed; Docker data was retained")
+
+
+def migrate(container):
+    name = validate(container)
+    identity = container["Id"]
+    if subprocess.run(["podman", "container", "exists", name]).returncode == 0:
+        target = inspect("podman", "container", name)
+        if (target["Config"].get("Labels") or {}).get(LABEL) == identity:
+            print(f"{name}: already migrated")
+            return
+        raise ValueError(f"{name}: a different Podman container already has that name")
+
+    running = container["State"]["Running"]
+    created = False
+    new_volumes = []
+    try:
+        run("sudo", "docker", "stop", "-t", "120", identity)
+        image = f"localhost/omarchy-migrated/{name}:{identity[:12]}"
+        # Commit includes writable-layer changes and the exact image config.
+        # Volume data is copied separately while the source database is stopped.
+        run("sudo", "docker", "commit", identity, image)
+        pipe(["sudo", "docker", "image", "save", image], ["podman", "image", "load", "--quiet"])
+        arguments = ["podman", "create", "--name", name, "--label", f"{LABEL}={identity}"]
+        restart = container["HostConfig"].get("RestartPolicy") or {}
+        policy = restart.get("Name") or "no"
+        if policy == "on-failure" and restart.get("MaximumRetryCount"):
+            policy += f':{restart["MaximumRetryCount"]}'
+        arguments += ["--restart", policy]
+        for port, bindings in (container["HostConfig"].get("PortBindings") or {}).items():
+            for binding in bindings or []:
+                arguments += ["--publish", f'127.0.0.1:{binding["HostPort"]}:{port}']
+        for mount in container.get("Mounts", []):
+            volume = inspect("docker", "volume", mount["Name"])
+            if volume.get("Options"):
+                raise ValueError(f"{name}: volume driver options require an explicit transfer")
+            target = f'omarchy-migrated-{mount["Name"]}'
+            if subprocess.run(["podman", "volume", "exists", target]).returncode == 0:
+                raise ValueError(f"{name}: destination volume already exists; retained it for inspection")
+            run("podman", "volume", "create", target)
+            new_volumes.append(target)
+            pipe(["sudo", "tar", "--numeric-owner", "--sparse", "-C", volume["Mountpoint"], "-cpf", "-", "."],
+                 ["podman", "volume", "import", target, "-"])
+            access = "rw" if mount.get("RW") else "ro"
+            arguments += ["--volume", f'{target}:{mount["Destination"]}:{access}']
+        arguments.append(image)
+        run(*arguments)
+        created = True
+        if running:
+            run("podman", "start", name)
+        print(f"{name}: migrated to rootless Podman; Docker copy retained for recovery")
+    except BaseException:
+        if created:
+            run("podman", "rm", "--force", name)
+        for volume in new_volumes:
+            run("podman", "volume", "rm", volume)
+        if running:
+            run("sudo", "docker", "start", identity)
+        raise
+
+
+def main():
+    check_only = sys.argv[1:2] == ["--check"]
+    names = sys.argv[2:] if check_only else sys.argv[1:]
+    containers = [inspect("docker", "container", name) for name in names]
+    volumes = set()
+    for container in containers:
+        validate(container)
+        for mount in container.get("Mounts", []):
+            volume = inspect("docker", "volume", mount["Name"])
+            if volume.get("Options") or mount["Name"] in volumes:
+                raise ValueError("Custom or shared volumes require an explicit transfer before migration")
+            volumes.add(mount["Name"])
+    if not check_only:
+        for container in containers:
+            migrate(container)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f"Podman database migration stopped: {error}", file=sys.stderr)
+        sys.exit(1)
