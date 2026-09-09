@@ -9,7 +9,10 @@ fi
 # stock development databases can transfer their images and volumes rootlessly.
 docker_installed=0
 database_names=()
-if omarchy-cmd-present docker; then
+# The compatibility package also provides a docker command. Only the real
+# engine package needs a daemon and workload transfer on retries or other users.
+# pacman's query resolves providers too, so compare the returned package name.
+if [[ $(pacman -Qq docker 2>/dev/null) == "docker" ]]; then
   docker_installed=1
   sudo systemctl start docker.socket
   docker_names=$(sudo docker ps -a --format '{{.Names}}')
@@ -98,7 +101,10 @@ if sudo ufw status | grep -q '^Status: active'; then
   sudo ufw reload
 fi
 
-omarchy-pkg-drop docker docker-buildx docker-compose ufw-docker lazydocker lazydocker-bin podman-docker
+omarchy-pkg-drop docker docker-buildx docker-compose ufw-docker lazydocker lazydocker-bin
+# Keep the real Docker CLI until all transfers finish. Its replacement also
+# works in scripts, where an interactive shell alias would not be expanded.
+omarchy-pkg-add podman-docker
 
 # Retired package config may be a .pacsave after the package transaction. Keep
 # custom content as inactive backups instead of deleting it.

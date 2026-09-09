@@ -75,10 +75,14 @@ verify_runtime_tools() {
   podman-compose --version >/dev/null || fail "Podman Compose is installed"
   systemctl --user is-enabled --quiet podman.socket podman-restart.service ||
     fail "Podman user services are enabled"
-  ! command -v docker >/dev/null 2>&1 || fail "Docker CLI must be absent"
+  [[ $(pacman -Qqo /usr/bin/docker) == "podman-docker" ]] || fail "Docker command must be provided by Podman"
+  [[ $(timeout 10 docker info --format '{{.Host.Security.Rootless}}') == true ]] ||
+    fail "Docker compatibility command runs rootless Podman"
+  timeout 10 docker compose version >/dev/null || fail "Docker Compose compatibility command is runnable"
+  [[ $(pacman -Qq docker 2>/dev/null) != "docker" ]] || fail "Docker Engine package must be absent"
   ! systemctl is-active --quiet docker.socket docker.service || fail "Docker must not be running"
   ! id -nG | grep -qw docker || fail "desktop user must not be in the docker group"
-  pass "Podman is rootless and Docker is absent"
+  pass "Podman is rootless, Docker commands work and Docker Engine is absent"
 
   nvim --headless '+qa' >/dev/null 2>&1 || fail "Neovim starts headlessly"
   pass "Neovim starts headlessly"
