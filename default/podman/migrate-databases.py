@@ -36,6 +36,15 @@ def validate(container):
     host = container["HostConfig"]
     if host.get("NetworkMode") not in ("default", "bridge"):
         raise ValueError(f"{name}: custom networking requires its original Compose definition")
+    # Connecting another network does not update HostConfig.NetworkMode.
+    # Only the stock bridge attachment can be recreated without losing intent.
+    networks = container.get("NetworkSettings", {}).get("Networks") or {}
+    if set(networks) != {"bridge"}:
+        raise ValueError(f"{name}: custom network attachments require its original Compose definition")
+    # Docker's stock /dev/shm allocation is 64 MiB. Larger or smaller sizes
+    # must not silently become Podman's default during the transfer.
+    if host.get("ShmSize") != 64 * 1024 * 1024:
+        raise ValueError(f"{name}: custom ShmSize needs an explicit Podman configuration")
     # The stock database installer sets none of these. Refuse custom privileges,
     # mounts and resource constraints rather than silently discarding them.
     for key in ("Privileged", "CapAdd", "CapDrop", "Devices", "DeviceRequests", "Binds",
