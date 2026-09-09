@@ -30,6 +30,7 @@ assert migration.validate(container) == 'redis'
 stopped = copy.deepcopy(container)
 stopped['State']['Running'] = False
 stopped['HostConfig']['NetworkMode'] = 'bridge'
+stopped['HostConfig']['Mounts'] = []
 assert migration.validate(stopped) == 'redis'
 for field, value in [('Privileged', True), ('Binds', ['/etc:/data']), ('Memory', 1024), ('NetworkMode', 'host')]:
     changed = copy.deepcopy(container)
@@ -67,6 +68,12 @@ for size in (1024 * 1024 * 1024, 32 * 1024 * 1024, 0, None):
     changed = copy.deepcopy(container)
     changed['HostConfig']['ShmSize'] = size
     custom_cases.append(('ShmSize', changed))
+changed = copy.deepcopy(container)
+changed['HostConfig']['Mounts'] = [{
+    'Type': 'volume', 'Source': 'postgres-data', 'Target': '/data',
+    'VolumeOptions': {'Subpath': 'production'},
+}]
+custom_cases.append(('Mounts', changed))
 inspect_volume = migration.inspect
 for expected_error, changed in custom_cases:
     changed['Name'] = '/postgres18'
@@ -88,6 +95,7 @@ for expected_error, changed in custom_cases:
 migration.inspect = inspect_volume
 print('ok - additional, replacement and disconnected networks fail preflight before any workload changes')
 print('ok - nondefault shared-memory sizes fail preflight before any workload changes')
+print('ok - volume subpaths fail preflight before any workload changes')
 
 migration.migrate(container)
 create = next(call for call in calls if call[:2] == ('podman', 'create'))

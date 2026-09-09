@@ -47,7 +47,9 @@ def validate(container):
         raise ValueError(f"{name}: custom ShmSize needs an explicit Podman configuration")
     # The stock database installer sets none of these. Refuse custom privileges,
     # mounts and resource constraints rather than silently discarding them.
-    for key in ("Privileged", "CapAdd", "CapDrop", "Devices", "DeviceRequests", "Binds",
+    # HostConfig.Mounts retains --mount options (including volume subpaths)
+    # that the summarized container Mounts list does not describe.
+    for key in ("Privileged", "CapAdd", "CapDrop", "Devices", "DeviceRequests", "Binds", "Mounts",
                 "Links", "VolumesFrom", "SecurityOpt", "ReadonlyRootfs", "ExtraHosts",
                 "Dns", "DnsOptions", "DnsSearch", "GroupAdd", "Tmpfs", "Sysctls",
                 "Memory", "MemoryReservation", "MemorySwap", "NanoCpus", "CpuQuota",
