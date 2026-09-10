@@ -22,7 +22,7 @@ migration.completion_path = lambda identity: Path(state.name) / identity
 migration.oci_spec = lambda target: {'linux': {'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {'user': {'uid': 0}}}
 
 container = {
-    'Name': '/redis', 'Id': 'a' * 64, 'State': {'Running': True},
+    'Name': '/redis', 'Id': 'a' * 64, 'State': {'Running': True, 'StartedAt': 'start-1', 'FinishedAt': 'stop-1'},
     'Config': {'Image': 'redis:7', 'Healthcheck': {'Test': ['CMD', 'redis-cli', 'ping'], 'Interval': 5000000000, 'Timeout': 2000000000, 'Retries': 3}},
     'HostConfig': {
         'NetworkMode': 'default', 'IpcMode': 'private', 'ShmSize': 64 * 1024 * 1024,
@@ -63,7 +63,7 @@ migration.subprocess.run = lambda args, **kwargs: SimpleNamespace(returncode=1)
 def inspect_fixture(engine, kind, name):
     if kind == 'container':
         if engine == 'docker':
-            return {'State': {'Running': False, 'ExitCode': 0}}
+            return {'State': {'Running': False, 'ExitCode': 0, 'StartedAt': 'start-1', 'FinishedAt': 'stop-1'}}
         return {'Id': 'c' * 64, 'HostConfig': {'ShmSize': 64 * 1024 * 1024, 'PidsLimit': -1, 'Privileged': False},
                 'Mounts': [{'Type': 'volume', 'Name': 'omarchy-migrated-old-data', 'Destination': '/data', 'RW': True}],
                 'EffectiveCaps': [], 'BoundingCaps': []}
@@ -124,12 +124,36 @@ assert create[create.index('--health-cmd') + 1] == '["CMD", "redis-cli", "ping"]
 assert create[create.index('--health-interval') + 1] == '5000000000ns'
 assert ('sudo', 'docker', 'stop', '-t', '120', 'a' * 64) in calls
 assert ('podman', 'start', 'redis') in calls
+assert ('sudo', 'docker', 'update', '--restart=no', 'a' * 64) in calls
 assert not any(call[:3] == ('sudo', 'docker', 'rm') for call in calls)
 assert any(call[0][:2] == ('sudo', 'tar') and call[1][:3] == ('podman', 'unshare', 'tar')
            for call in calls if isinstance(call[0], tuple))
 print('ok - database transfer preserves ports, restart policy, image snapshot and numeric volume ownership without removing Docker data')
 
+for name in ('MyDatabase', 'app..db', 'worker_' + 'x' * 250):
+    calls.clear()
+    migration.completion_path(container['Id']).unlink()
+    renamed = copy.deepcopy(container)
+    renamed['Name'] = '/' + name
+    migration.migrate(renamed)
+    image = next(call[4] for call in calls if call[:3] == ('sudo', 'docker', 'commit'))
+    assert image == 'localhost/omarchy-migrated:' + container['Id']
+    create = next(call for call in calls if call[:2] == ('podman', 'create'))
+    assert create[-1] == image
+    assert create[create.index('--name') + 1] == name
+print('ok - uppercase, repeated-dot and long container names use a valid image reference without changing container identity')
+
 calls.clear()
+try:
+    migration.migrate(container)
+except ValueError as error:
+    assert 'destination is missing' in str(error)
+else:
+    raise AssertionError('a missing completed target caused stale source data to be migrated again')
+assert not calls
+migration.completion_path(container['Id']).unlink()
+print('ok - missing completed destinations retain their recovery copies for explicit review')
+
 inspect_clean = migration.inspect
 migration.inspect = lambda engine, kind, name: {'State': {'Running': False, 'ExitCode': 137}} if kind == 'container' else inspect_clean(engine, kind, name)
 try:
@@ -207,6 +231,23 @@ migration.verify_volume = verify
 print('ok - cleanup failures still attempt to restore the Docker workload and preserve the original error')
 
 calls.clear()
+record_completion = migration.record_completion
+def failed_receipt(*args):
+    raise RuntimeError('receipt storage failed')
+migration.record_completion = failed_receipt
+try:
+    migration.migrate(container)
+except RuntimeError as error:
+    assert 'receipt storage failed' in str(error)
+else:
+    raise AssertionError('failed receipt write was accepted')
+assert ('sudo', 'docker', 'update', '--restart=no', container['Id']) in calls
+assert ('sudo', 'docker', 'update', '--restart=unless-stopped', container['Id']) in calls
+assert ('sudo', 'docker', 'start', container['Id']) in calls
+migration.record_completion = record_completion
+print('ok - a failure after changing the source restart policy restores it during rollback')
+
+calls.clear()
 def broken_pipe(producer, consumer):
     raise RuntimeError('transfer failed')
 migration.pipe = broken_pipe
@@ -221,10 +262,23 @@ assert not any(call[:2] == ('podman', 'create') for call in calls)
 print('ok - failed transfer restores the previously running Docker database')
 
 calls.clear()
+record_completion(container, stopped['State'])
 migration.subprocess.run = lambda args, **kwargs: SimpleNamespace(returncode=0)
 migration.inspect = lambda *args: {'Id': 'c' * 64, 'Config': {'Labels': {migration.LABEL: 'a' * 64}}}
-migration.migrate(container)
+migration.migrate(stopped)
 assert not calls
+for source_state in ({'Running': True, 'StartedAt': 'start-1', 'FinishedAt': 'stop-1'},
+                     {'Running': False, 'StartedAt': 'start-2', 'FinishedAt': 'stop-2'}):
+    resumed = copy.deepcopy(container)
+    resumed['State'] = source_state
+    try:
+        migration.migrate(resumed)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('a resumed source reused a stale completion receipt')
+    assert not calls
+print('ok - completed sources cannot resume on daemon restart and restarted sources require review even after stopping again')
 migration.completion_path('a' * 64).unlink()
 try:
     migration.migrate(container)

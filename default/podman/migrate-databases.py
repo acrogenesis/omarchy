@@ -224,17 +224,32 @@ def completed(container, target):
     if (target["Config"].get("Labels") or {}).get(LABEL) != container["Id"]:
         return False
     receipt = completion_path(container["Id"])
-    return receipt.is_file() and receipt.read_text().strip() == target.get("Id")
+    if not receipt.is_file():
+        return False
+    try:
+        saved = json.loads(receipt.read_text())
+        return (saved["target"] == target.get("Id") and
+                saved["source"] == stopped_identity(container["State"]))
+    except (ValueError, KeyError, TypeError):
+        # Older identity-only receipts cannot prove the source stayed stopped.
+        return False
 
 
-def record_completion(container):
+def stopped_identity(state):
+    if state["Running"] or not state.get("StartedAt") or not state.get("FinishedAt"):
+        raise ValueError("Docker source was restarted or its stopped state cannot be verified")
+    return {key: state[key] for key in ("StartedAt", "FinishedAt")}
+
+
+def record_completion(container, source_state):
     target = inspect("podman", "container", container["Name"].lstrip("/"))
     receipt = completion_path(container["Id"])
     receipt.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = receipt.with_suffix(f".tmp-{os.getpid()}")
     try:
         with temporary.open("x") as output:
-            output.write(target["Id"] + "\n")
+            json.dump({"target": target["Id"], "source": stopped_identity(source_state)}, output)
+            output.write("\n")
             output.flush()
             os.fsync(output.fileno())
         temporary.replace(receipt)
@@ -246,6 +261,8 @@ def validate(container):
     name = container["Name"].lstrip("/")
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name):
         raise ValueError("Unsupported container name")
+    if not re.fullmatch(r"[a-f0-9]{64}", container["Id"]):
+        raise ValueError("Unsupported Docker container identity")
     validate_security(container)
     health = container["Config"].get("Healthcheck") or {}
     if health.get("StartInterval"):
@@ -341,9 +358,12 @@ def migrate(container):
             print(f"{name}: already migrated")
             return
         raise ValueError(f"{name}: an existing Podman container needs review; no completed transfer matches it")
+    if completion_path(identity).exists():
+        raise ValueError(f"{name}: a previously migrated destination is missing; inspect retained data before retrying")
 
     running = container["State"]["Running"]
     created = False
+    restart_changed = False
     new_volumes = []
     verified_volumes = {}
     try:
@@ -351,7 +371,10 @@ def migrate(container):
         state = inspect("docker", "container", identity)["State"]
         if state["Running"] or (running and state["ExitCode"] in (137, 139)):
             raise RuntimeError(f"{name}: container did not stop cleanly; transfer aborted")
-        image = f"localhost/omarchy-migrated/{name}:{identity[:12]}"
+        stopped_identity(state)
+        # Container names allow uppercase, repeated dots and lengths that image
+        # repositories reject. The full engine ID is a valid, unique image tag.
+        image = f"localhost/omarchy-migrated:{identity}"
         # Commit includes writable-layer changes and the exact image config.
         # Volume data is copied separately while the source container is stopped.
         run("sudo", "docker", "commit", identity, image)
@@ -410,11 +433,18 @@ def migrate(container):
         verify_runtime(container)
         for target, expected in verified_volumes.items():
             verify_volume(target, expected)
+        # A later workload may fail, leaving Docker installed. Prevent a daemon
+        # restart from reviving this stale source alongside its migrated copy.
+        restart_changed = True
+        run("sudo", "docker", "update", "--restart=no", identity)
+        latest_state = inspect("docker", "container", identity)["State"]
+        if stopped_identity(latest_state) != stopped_identity(state):
+            raise RuntimeError(f"{name}: Docker source restarted during transfer; inspect both engines")
         if running:
             run("podman", "start", name)
         # A crash before this receipt leaves the destination for review. Its
         # label alone must never turn a partial transfer into a successful retry.
-        record_completion(container)
+        record_completion(container, state)
         print(f"{name}: migrated to rootless Podman; Docker copy retained for recovery")
     except BaseException:
         recovery = []
@@ -422,6 +452,8 @@ def migrate(container):
             recovery.append(("podman", "rm", "--force", name))
         for volume in new_volumes:
             recovery.append(("podman", "volume", "rm", volume))
+        if restart_changed:
+            recovery.append(("sudo", "docker", "update", f"--restart={policy}", identity))
         if running:
             recovery.append(("sudo", "docker", "start", identity))
         for command in recovery:
@@ -465,6 +497,8 @@ def main():
                 if not completed(container, target):
                     raise ValueError(f"{name}: an existing Podman container needs review; no completed transfer matches it")
                 continue
+            if completion_path(container["Id"]).exists():
+                raise ValueError(f"{name}: a previously migrated destination is missing; inspect retained data before retrying")
             for mount in container.get("Mounts", []):
                 if exists("volume", destination_volume(container, mount)):
                     raise ValueError(f"{name}: destination volume already exists; retained it for inspection")
