@@ -19,7 +19,7 @@ spec.loader.exec_module(migration)
 migration.daemon_security = lambda: ['name=seccomp,profile=builtin', 'name=cgroupns']
 state = tempfile.TemporaryDirectory()
 migration.completion_path = lambda identity: Path(state.name) / identity
-migration.oci_spec = lambda target: {'linux': {'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {}}
+migration.oci_spec = lambda target: {'linux': {'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {'user': {'uid': 0}}}
 
 container = {
     'Name': '/redis', 'Id': 'a' * 64, 'State': {'Running': True},
@@ -65,6 +65,7 @@ def inspect_fixture(engine, kind, name):
         if engine == 'docker':
             return {'State': {'Running': False, 'ExitCode': 0}}
         return {'Id': 'c' * 64, 'HostConfig': {'ShmSize': 64 * 1024 * 1024, 'PidsLimit': -1, 'Privileged': False},
+                'Mounts': [{'Type': 'volume', 'Name': 'omarchy-migrated-old-data', 'Destination': '/data', 'RW': True}],
                 'EffectiveCaps': [], 'BoundingCaps': []}
     return {'Mountpoint': '/var/lib/docker/volumes/old-data/_data', 'Options': None}
 migration.inspect = inspect_fixture

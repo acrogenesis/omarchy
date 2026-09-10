@@ -49,6 +49,11 @@ assert 'no-new-privileges' in args
 assert m.destination_volume(c, c['Mounts'][0]) == 'project-data'
 assert '--privileged' not in args and 'sudo' not in args
 print('ok - custom unprivileged containers preserve resource limits, private volume names and restrictive security settings')
+nonroot = copy.deepcopy(c)
+nonroot['HostConfig']['CapDrop'] = []
+assert '--cap-add' not in m.runtime_arguments(nonroot)
+assert m.allowed_capabilities(nonroot) == set()
+print('ok - non-root users do not gain effective or ambient capabilities from explicit cap-add flags')
 
 cases = [('Runtime', 'nvidia'), ('Privileged', True), ('CapAdd', ['SYS_ADMIN']),
          ('Devices', [{'PathOnHost': '/dev/kvm'}]), ('DeviceRequests', [{'Driver': 'nvidia'}]),
@@ -85,9 +90,10 @@ print('ok - migration commands pin local engines instead of following saved remo
 h = copy.deepcopy(c['HostConfig'])
 h['Privileged'] = False
 h['CpuQuota'], h['CpuPeriod'] = 50000, 100000
-target = {'HostConfig': h, 'EffectiveCaps': [], 'BoundingCaps': []}
+target = {'HostConfig': h, 'EffectiveCaps': [], 'BoundingCaps': [], 'Mounts': copy.deepcopy(c['Mounts'])}
 runtime = {'linux': {'maskedPaths': sorted(m.MASKED_PATHS), 'readonlyPaths': sorted(m.READONLY_PATHS),
-                     'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {'noNewPrivileges': True}}
+                     'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}},
+           'process': {'user': {'uid': 1000}, 'noNewPrivileges': True}}
 m.oci_spec = lambda target: runtime
 m.inspect = lambda *args: target
 m.verify_runtime(c)
@@ -101,8 +107,16 @@ except RuntimeError:
 else:
     raise AssertionError('missing capability evidence was accepted')
 target['EffectiveCaps'], target['BoundingCaps'] = [], []
-for field, value in [('Memory', 0), ('PidsLimit', -1), ('SecurityOpt', []), ('CpuQuota', 100000)]:
-    original = h[field]
+runtime['process']['capabilities'] = {'ambient': ['CAP_CHOWN']}
+try:
+    m.verify_runtime(c)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('OCI non-root ambient capabilities were accepted')
+runtime['process']['capabilities'] = {}
+for field, value in [('Memory', 0), ('PidsLimit', -1), ('SecurityOpt', []), ('CpuQuota', 100000), ('Devices', [{'PathOnHost': '/dev/kvm'}])]:
+    original = h.get(field)
     h[field] = value
     try:
         m.verify_runtime(c)
@@ -111,6 +125,14 @@ for field, value in [('Memory', 0), ('PidsLimit', -1), ('SecurityOpt', []), ('Cp
     else:
         raise AssertionError(f'ignored {field} constraint was accepted')
     h[field] = original
+target['Mounts'].append({'Type': 'bind', 'Source': '/home/example', 'Destination': '/host'})
+try:
+    m.verify_runtime(c)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('implicit host mount from destination defaults was accepted')
+target['Mounts'].pop()
 for field in ('maskedPaths', 'readonlyPaths', 'seccomp'):
     original = runtime['linux'][field]
     runtime['linux'][field] = []

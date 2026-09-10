@@ -117,6 +117,11 @@ def runtime_arguments(container):
 
 
 def allowed_capabilities(container):
+    # Explicit --cap-add gives even non-root Podman processes effective and
+    # ambient capabilities. Docker's default non-root process has neither.
+    user = (container["Config"].get("User") or "").split(":")[0]
+    if user not in ("", "0", "root"):
+        return set()
     dropped = {capability.removeprefix("CAP_") for capability in container["HostConfig"].get("CapDrop") or []}
     return set() if "ALL" in dropped else DOCKER_CAPABILITIES - dropped
 
@@ -127,6 +132,14 @@ def verify_runtime(container):
     source_host, target_host = container["HostConfig"], target["HostConfig"]
     if target_host.get("Privileged") is not False:
         raise RuntimeError(f"{name}: refusing privileged destination")
+    if target_host.get("Devices") or target_host.get("DeviceRequests") or target_host.get("DeviceCgroupRules"):
+        raise RuntimeError(f"{name}: refusing destination device access")
+    expected_mounts = sorted((mount["Destination"], destination_volume(container, mount), bool(mount.get("RW")))
+                             for mount in container.get("Mounts", []))
+    actual_mounts = target.get("Mounts") or []
+    if (any(mount.get("Type") != "volume" for mount in actual_mounts) or
+            sorted((mount["Destination"], mount["Name"], bool(mount.get("RW"))) for mount in actual_mounts) != expected_mounts):
+        raise RuntimeError(f"{name}: destination mounts differ from the validated private volumes")
     expected = {"ShmSize": source_host["ShmSize"], "PidsLimit": source_host.get("PidsLimit") or -1}
     expected.update({key: source_host[key] for key in RESOURCE_FLAGS if source_host.get(key)})
     for key, value in expected.items():
@@ -150,6 +163,11 @@ def verify_runtime(container):
     # Docker-compatible inspect omits OCI masking on Podman. Read the runtime's
     # generated specification after init, before its application can execute.
     specification = oci_spec(target)
+    process = specification["process"]
+    # Named image users can resolve differently from their spelling. Never
+    # grant capabilities to a nonzero UID through the root-name branch above.
+    if process["user"]["uid"] != 0 and any((process.get("capabilities") or {}).values()):
+        raise RuntimeError(f"{name}: refusing capabilities on a non-root application")
     linux = specification["linux"]
     if not linux.get("seccomp"):
         raise RuntimeError(f"{name}: destination seccomp confinement is missing")
