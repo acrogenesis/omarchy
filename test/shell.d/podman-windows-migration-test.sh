@@ -50,6 +50,9 @@ with tempfile.TemporaryDirectory() as temporary:
                    for path, target in zip(paths, ('/storage', '/shared'))],
     }
     w.validate(container, image, document, account)
+    container['Config']['User'] = ''
+    container['HostConfig']['CapAdd'] = ['CAP_NET_ADMIN']
+    w.validate(container, image, document, account)
     assert (home / '.windows/disk.img').read_text() == 'existing Windows disk'
     print('ok - managed legacy Windows paths and escaped credentials pass without changing the disk')
 

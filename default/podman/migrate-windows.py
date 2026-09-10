@@ -136,7 +136,11 @@ def validate(container, image, document, account):
     if container.get('Name') != '/' + NAME or config.get('Image') not in IMAGES or image['Id'] != container['Image']:
         raise ValueError('container is not the managed Windows image')
     baseline = image['Config']
-    for key in ('Cmd', 'Entrypoint', 'User', 'WorkingDir', 'Healthcheck', 'StopSignal', 'Volumes'):
+    # Docker materializes an omitted image User as an empty string in the
+    # container. Both mean the image's default root user, not an override.
+    if (config.get('User') or '') != (baseline.get('User') or ''):
+        raise ValueError('custom Windows User needs explicit review')
+    for key in ('Cmd', 'Entrypoint', 'WorkingDir', 'Healthcheck', 'StopSignal', 'Volumes'):
         if config.get(key) != baseline.get(key):
             raise ValueError(f'custom Windows {key} needs explicit review')
     expected_env = dict(value.split('=', 1) for value in baseline.get('Env') or [])
@@ -157,7 +161,8 @@ def validate(container, image, document, account):
                      for device in host.get('Devices') or [])
     if devices != [('/dev/kvm', '/dev/kvm', 'rwm'), ('/dev/net/tun', '/dev/net/tun', 'rwm')]:
         raise ValueError('custom Windows devices need explicit review')
-    if (host.get('CapAdd') != ['NET_ADMIN'] or host.get('PortBindings') != PORTS or
+    capabilities = [value.removeprefix('CAP_') for value in host.get('CapAdd') or []]
+    if (capabilities != ['NET_ADMIN'] or host.get('PortBindings') != PORTS or
             host.get('RestartPolicy') != {'Name': 'no', 'MaximumRetryCount': 0} or
             host.get('ShmSize') != 67108864 or host.get('IpcMode') != 'private'):
         raise ValueError('custom Windows runtime settings need explicit review')
