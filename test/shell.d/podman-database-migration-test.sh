@@ -74,6 +74,9 @@ changed['HostConfig']['Mounts'] = [{
     'VolumeOptions': {'Subpath': 'production'},
 }]
 custom_cases.append(('Mounts', changed))
+changed = copy.deepcopy(container)
+changed['Config']['Healthcheck']['StartInterval'] = 1000000000
+custom_cases.append(('health start intervals', changed))
 inspect_volume = migration.inspect
 for expected_error, changed in custom_cases:
     changed['Name'] = '/postgres18'
@@ -96,6 +99,7 @@ migration.inspect = inspect_volume
 print('ok - additional, replacement and disconnected networks fail preflight before any workload changes')
 print('ok - nondefault shared-memory sizes fail preflight before any workload changes')
 print('ok - volume subpaths fail preflight before any workload changes')
+print('ok - unsupported health start intervals fail batch preflight before any workload changes')
 
 migration.migrate(container)
 create = next(call for call in calls if call[:2] == ('podman', 'create'))
@@ -124,6 +128,25 @@ assert not any(call[:3] == ('sudo', 'docker', 'commit') for call in calls)
 assert ('sudo', 'docker', 'start', 'a' * 64) in calls
 migration.inspect = inspect_clean
 print('ok - forced shutdown aborts before copying and restarts the source')
+
+calls.clear()
+record_run = migration.run
+def mismatched_manifest(*args, capture=False):
+    record_run(*args, capture=capture)
+    if capture:
+        return 'source-digest' if args[0] == 'sudo' else 'different-target-digest'
+migration.run = mismatched_manifest
+try:
+    migration.migrate(container)
+except RuntimeError as error:
+    assert 'metadata verification failed' in str(error), error
+else:
+    raise AssertionError('mismatched volume metadata was accepted')
+assert not any(call[:2] == ('podman', 'create') for call in calls)
+assert ('podman', 'volume', 'rm', 'omarchy-migrated-old-data') in calls
+assert ('sudo', 'docker', 'start', 'a' * 64) in calls
+migration.run = record_run
+print('ok - metadata mismatch removes only the new volume and restores the source before container creation')
 
 calls.clear()
 def broken_pipe(producer, consumer):
