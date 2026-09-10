@@ -10,6 +10,4 @@ if [[ ! -S $XDG_RUNTIME_DIR/podman/podman.sock ]]; then
   systemctl --user restart podman.socket || exit 1
 fi
 
-# The app daemon has its own environment; carry the adapter path as part of
-# the command so Desktop runs in app.slice with the scoped compatibility shim.
-exec setsid uwsm-app -- env PATH="$OMARCHY_PATH/default/podman/desktop:$PATH" /usr/bin/podman-desktop "$@"
+PATH="$OMARCHY_PATH/default/podman/desktop:$PATH" exec /usr/bin/podman-desktop "$@"
