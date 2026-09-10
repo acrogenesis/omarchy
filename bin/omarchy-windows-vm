@@ -1358,6 +1358,21 @@ remove_windows() {
   echo "Windows VM removal completed!"
 }
 
+load_rdp_credentials() {
+  # RDP credentials come from the private per-user file. Fall back to the compose
+  # only when it is readable, reversing the writer's escaping.
+  WIN_USER=$(read_credential USERNAME) || WIN_USER=""
+  WIN_PASS=$(read_credential PASSWORD) || WIN_PASS=""
+  if [[ -z $WIN_USER || -z $WIN_PASS ]] && [[ -r $COMPOSE_FILE ]]; then
+    [[ -z $WIN_USER ]] && WIN_USER=$(unescape "$(read_compose_value USERNAME "$COMPOSE_FILE")")
+    [[ -z $WIN_PASS ]] && WIN_PASS=$(unescape "$(read_compose_value PASSWORD "$COMPOSE_FILE")")
+  fi
+  if [[ -z $WIN_USER || -z $WIN_PASS ]]; then
+    echo "Windows RDP credentials are missing. Restore $CREDENTIALS_FILE from your saved Windows configuration before launching." >&2
+    return 1
+  fi
+}
+
 launch_windows() {
   KEEP_ALIVE=false
   if [[ $1 = "--keep-alive" ]] || [[ $1 = "-k" ]]; then
@@ -1370,17 +1385,7 @@ launch_windows() {
       exit 1
     fi
   fi
-
-  # RDP credentials come from the private per-user file. Fall back to the compose
-  # only when it is readable, reversing the writer's escaping.
-  WIN_USER=$(read_credential USERNAME) || WIN_USER=""
-  WIN_PASS=$(read_credential PASSWORD) || WIN_PASS=""
-  if [[ -z $WIN_USER || -z $WIN_PASS ]] && [[ -r $COMPOSE_FILE ]]; then
-    [[ -z $WIN_USER ]] && WIN_USER=$(unescape "$(read_compose_value USERNAME "$COMPOSE_FILE")")
-    [[ -z $WIN_PASS ]] && WIN_PASS=$(unescape "$(read_compose_value PASSWORD "$COMPOSE_FILE")")
-  fi
-  [[ -z $WIN_USER ]] && WIN_USER="docker"
-  [[ -z $WIN_PASS ]] && WIN_PASS="admin"
+  load_rdp_credentials || return 1
 
   echo "Starting Windows VM (this may prompt for authorization)..."
   if ! priv up_wait; then

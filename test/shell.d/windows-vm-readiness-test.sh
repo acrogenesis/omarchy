@@ -39,3 +39,22 @@ state=running
 nc() { return 1; }
 __priv_up_wait 2>/dev/null && fail "launch succeeded without RDP"
 pass "unavailable RDP reaches a bounded failure"
+
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' EXIT
+COMPOSE_FILE="$fixture/missing-compose"
+CREDENTIALS_FILE="$fixture/config/credentials"
+migrate_legacy_compose() { :; }
+priv() { fail "missing credentials must not start the VM"; }
+launch_windows "" >"$fixture/output" 2>&1 && fail "missing credentials used a guessed Windows login"
+grep -q 'credentials are missing' "$fixture/output" || fail "missing credentials did not explain recovery"
+for username in omarchy docker custom_user; do
+  write_credentials "$username" 'p=a$$w"x'
+  load_rdp_credentials || fail "saved credentials were rejected"
+  [[ $WIN_USER == "$username" && $WIN_PASS == 'p=a$$w"x' ]] || fail "saved Windows account changed"
+done
+rm "$CREDENTIALS_FILE"
+printf 'USERNAME: "legacy"\nPASSWORD: "from compose"\n' >"$COMPOSE_FILE"
+load_rdp_credentials || fail "readable legacy compose fallback was rejected"
+[[ $WIN_USER == "legacy" && $WIN_PASS == "from compose" ]] || fail "legacy Windows account changed"
+pass "missing credentials stop before VM launch; saved new, legacy and custom accounts are preserved"

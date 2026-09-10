@@ -34,6 +34,8 @@ This checks configuration and data preservation, not arbitrary application readi
 
 The Windows exception requires a canonical root-owned private managed Compose file and matching inspected image, process, environment, mounts, network and runtime settings. Familiar user storage and both established protected-anchor layouts are checked against the original disk/shared directories. A container name alone never grants the exception. Customized or unverified Windows configurations remain pending, and a forced Windows shutdown prevents Docker retirement.
 
+The Windows launcher uses saved credentials or its readable legacy configuration. Missing credentials stop the launch with a recovery message; the launcher does not guess either the old or new default account.
+
 Each successful transfer records both container identities and the source's stopped lifecycle timestamps under the user's `omarchy/podman-migration` state directory. The retained Docker source has its restart policy disabled so a daemon restart cannot revive it beside the active Podman copy. A failed transfer restores that policy along with the previously running source. Retries require the receipt and an unchanged, stopped source; a matching label alone cannot hide a crash or a restarted source. Older identity-only receipts, incomplete destinations, and missing previously migrated destinations require inspection. Recovery is per container: previously completed transfers stay on Podman if a later transfer fails, and the remaining Docker engine/data stay available.
 
 ## Explicit custom migration work
@@ -43,6 +45,8 @@ Custom Compose networks, shared volumes, bind mounts and moved host paths, GPUs/
 Rootful and rootless stores are independent. Keep privileged services rootful when required, and use scoped privileges. User lingering and rootful service startup are operator choices for these workloads; a desktop database restart policy normally resumes on login. Check actual workload readiness, data and startup after reboot.
 
 Stock transfers let Podman allocate its default network. Explicit custom transfers may need different subnets while Docker networks still exist. The updater retires only managed Docker firewall rules and asks for a reboot to clear transient engine state without flushing unrelated administrator rules.
+
+Both IPv4 `after.rules` and IPv6 `after6.rules` retain a `.before-podman` backup before their managed ufw-docker blocks are removed. The real migration fixture seeds both legacy blocks and checks both firewall families after reboot.
 
 Snapshots, package archives and development-only package holds are recovery/deployment choices, not changes to the ordinary migration's package selection. A root snapshot can exclude the home subvolume and its rootless data. Retained Docker data is a checkpoint; preserve subsequent Podman writes before rolling back.
 
