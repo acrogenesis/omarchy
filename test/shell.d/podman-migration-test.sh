@@ -7,13 +7,19 @@ test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir/bin" "$test_dir/home/.local/share/applications"
 export TEST_LOG="$test_dir/calls"
-export STUB_DOCKER=0 STUB_NAMES="" STUB_GROUPS=wheel
+export STUB_DOCKER=0 STUB_NAMES="" STUB_GROUPS=wheel STUB_WINDOWS=managed
 
 cat >"$test_dir/bin/sudo" <<'SH'
 #!/bin/bash
 printf 'sudo %s\n' "$*" >>"$TEST_LOG"
 case "$1" in
-  python3) cat >/dev/null ;;
+  python3)
+    if [[ $2 == */migrate-windows.py ]]; then
+      [[ $STUB_WINDOWS != invalid ]] || exit 1
+      [[ $STUB_WINDOWS != forced || $3 != --stop ]] || exit 1
+    else
+      cat >/dev/null
+    fi ;;
   docker)
     [[ $2 == --host && $3 == unix:///var/run/docker.sock ]] || exit 2
     shift 2
@@ -66,6 +72,18 @@ run_migration() {
     bash -euo pipefail "$ROOT/migrations/1788886195.sh" >"$test_dir/output" 2>&1
 }
 
+STUB_DOCKER=1 STUB_NAMES=$'redis\nomarchy-windows' STUB_WINDOWS=invalid
+run_migration && fail "unmanaged Windows name bypassed preflight"
+! grep -q 'migrate-databases.py\|--stop tester\|disable --now docker\|omarchy-pkg-drop' "$TEST_LOG" ||
+  fail "invalid Windows handover changed a workload"
+pass "unmanaged Windows name blocks the complete batch before any source stops"
+
+STUB_NAMES=omarchy-windows STUB_WINDOWS=forced
+run_migration && fail "forced Windows shutdown retired Docker"
+! grep -q 'disable --now docker\|omarchy-pkg-drop' "$TEST_LOG" || fail "unclean Windows shutdown removed Docker"
+pass "Windows shutdown failure retains the engine and leaves migration pending"
+STUB_WINDOWS=managed
+
 STUB_DOCKER=1 STUB_NAMES=$'omarchy-windows\ncustom-project'
 run_migration && fail "migration discarded an unmigrated database"
 ! grep -q 'docker stop\|disable --now docker\|omarchy-pkg-drop' "$TEST_LOG" ||
@@ -77,7 +95,7 @@ pass "existing workloads keep Docker and the migration pending"
 
 STUB_NAMES=omarchy-windows
 run_migration || fail "Windows-only handover failed" "$(cat "$test_dir/output")"
-grep -q 'sudo docker --host unix:///var/run/docker.sock stop -t 120 omarchy-windows' "$TEST_LOG" || fail "Windows was not shut down gracefully"
+grep -q 'sudo python3 .*migrate-windows.py --stop tester' "$TEST_LOG" || fail "Windows was not shut down gracefully"
 grep -q 'sudo systemctl disable --now docker.socket docker.service' "$TEST_LOG" || fail "old engine stays enabled"
 grep -q '^omarchy-state set reboot-required$' "$TEST_LOG" || fail "retired engine runtime did not flag a reboot"
 ! grep -q 'docker rm\|podman rm\|docker volume rm' "$TEST_LOG" || fail "handover deletes existing data"

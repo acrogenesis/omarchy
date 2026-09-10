@@ -16,6 +16,9 @@ if [[ $(pacman -Qq docker 2>/dev/null) == "docker" ]]; then
   docker_installed=1
   sudo systemctl start docker.socket
   docker_names=$(sudo docker --host unix:///var/run/docker.sock ps -a --format '{{.Names}}')
+  if printf '%s\n' "$docker_names" | grep -qx omarchy-windows; then
+    sudo python3 "$OMARCHY_PATH/default/podman/migrate-windows.py" --check "$USER"
+  fi
   mapfile -t container_names < <(printf '%s\n' "$docker_names" | sed '/^omarchy-windows$/d; /^$/d')
   if ! python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" --check "${container_names[@]}"; then
     echo "Docker and its data have been retained. This migration remains pending." >&2
@@ -59,7 +62,7 @@ podman --remote=false info >/dev/null
 if ((docker_installed)); then
   python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" "${container_names[@]}"
   if printf '%s\n' "$docker_names" | grep -qx omarchy-windows; then
-    sudo docker --host unix:///var/run/docker.sock stop -t 120 omarchy-windows
+    sudo python3 "$OMARCHY_PATH/default/podman/migrate-windows.py" --stop "$USER"
   fi
   # Keep Docker's stopped containers and volume data as recovery copies.
   sudo systemctl disable --now docker.socket docker.service
