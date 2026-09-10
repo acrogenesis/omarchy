@@ -13,7 +13,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[[ ${DOCKER_HOST:-} == "unix://$socket" ]] || fail "Docker API defaults to the user socket"
+# The harness enters over SSH, which does not inherit the graphical session's
+# generated environment. Inspect a real user-manager child, like a launched app.
+endpoint=$(systemd-run --user --quiet --pipe --wait /usr/bin/printenv DOCKER_HOST)
+[[ $endpoint == "unix://$socket" ]] || fail "Docker API defaults to the user socket"
 systemctl --user start podman.socket
 api_ready() {
   [[ $(curl -fsS --max-time 5 --unix-socket "$socket" http://localhost/_ping) == "OK" ]]
