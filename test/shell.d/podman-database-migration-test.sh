@@ -16,6 +16,7 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('migration', os.path.join(os.environ['ROOT'], 'default/podman/migrate-databases.py'))
 migration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(migration)
+migration.daemon_security = lambda: ['name=seccomp,profile=builtin', 'name=cgroupns']
 state = tempfile.TemporaryDirectory()
 migration.completion_path = lambda identity: Path(state.name) / identity
 migration.oci_spec = lambda target: {'linux': {'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {}}

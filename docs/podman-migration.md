@@ -20,6 +20,8 @@ The volume manifest includes file contents, types, permissions, numeric IDs, nan
 
 The local Docker socket is pinned explicitly, and Podman uses its absolute installed binary with remote mode disabled. Saved CLI contexts must not redirect image or volume data to another host. The automatic helper refuses root execution and never falls back to sudo Podman.
 
+Daemon-wide custom confinement and user remapping also require review: those settings can affect a container without appearing in its HostConfig. Automatic transfer accepts Docker's built-in seccomp/cgroup namespace defaults; it does not discard inherited no-new-privileges, custom seccomp profiles, MAC policies or remapped ownership.
+
 Unprivileged containers with arbitrary names/images can migrate on the default bridge, with localhost published ports, private local volumes, and supported CPU, memory, PID and shared-memory limits. Simple `-v NAME:/path[:rw|ro]` volumes retain their names and labels. Image-created anonymous volumes retain the existing migration naming convention. The migration uses the exact committed image and writable layer with pulling disabled; it does not execute project Compose files or rebuild images.
 
 All nondefault HostConfig fields must be accounted for. Privileged mode, added capabilities, device requests/rules, alternate runtimes, host mounts/sockets, host namespaces, altered masking, MAC profiles, custom networking, shared volumes and unknown settings require review. The complete batch reports blocked containers without dumping environment variables. A blocked workload does not trigger permission changes, a rootful retry, global sysctl relaxation or disabled confinement.

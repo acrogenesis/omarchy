@@ -14,6 +14,17 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('migration', os.path.join(os.environ['ROOT'], 'default/podman/migrate-databases.py'))
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+m.daemon_security = lambda: ['name=seccomp,profile=builtin', 'name=cgroupns']
+m.validate_daemon(m.daemon_security())
+for options in (None, [], ['name=no-new-privileges'], ['name=userns'], ['name=rootless'],
+                ['name=seccomp,profile=/etc/docker/restrictive.json'], ['name=apparmor']):
+    try:
+        m.validate_daemon(options)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f'daemon confinement was silently discarded: {options}')
+print('ok - inherited daemon confinement and user mappings require explicit migration')
 c = {
     'Name': '/project-worker', 'Id': 'b' * 64, 'State': {'Running': True},
     'Config': {'Image': 'local/custom-worker:v1', 'User': '1000', 'Env': ['PRIVATE=do-not-log']},
@@ -135,6 +146,14 @@ except ValueError as error:
     assert 'PRIVATE' not in text and 'do-not-log' not in text
 else:
     raise AssertionError('blocked batch passed')
+m.daemon_security = lambda: ['name=no-new-privileges']
+m.inspect = lambda *args: (_ for _ in ()).throw(AssertionError('daemon preflight proceeded to workloads'))
+try:
+    m.main()
+except ValueError as error:
+    assert 'daemon confinement' in str(error)
+else:
+    raise AssertionError('inherited daemon no-new-privileges was dropped')
 m.os.geteuid = lambda: 0
 try:
     m.main()

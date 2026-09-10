@@ -28,6 +28,19 @@ RESOURCE_FLAGS = {
 }
 
 
+def daemon_security():
+    return json.loads(run("sudo", "docker", "info", "--format", "{{json .SecurityOptions}}", capture=True))
+
+
+def validate_daemon(options):
+    # Daemon defaults (including no-new-privileges and seccomp profiles) need
+    # not appear in individual HostConfig records. Userns remapping also changes
+    # the meaning of numeric volume ownership. Do not guess these policies.
+    defaults = {"name=seccomp,profile=builtin", "name=seccomp,profile=default", "name=cgroupns"}
+    if not isinstance(options, list) or not options or set(options) - defaults:
+        raise ValueError("Docker daemon confinement or user mapping needs an explicit migration")
+
+
 def validate_volumes(container):
     name = container["Name"].lstrip("/")
     mounts = container.get("Mounts", [])
@@ -407,6 +420,8 @@ def main():
         raise ValueError("Run the migration as the desktop user; automatic transfer never creates rootful containers")
     check_only = sys.argv[1:2] == ["--check"]
     names = sys.argv[2:] if check_only else sys.argv[1:]
+    if names:
+        validate_daemon(daemon_security())
     containers = [inspect("docker", "container", name) for name in names]
     volumes = set()
     blockers = []
