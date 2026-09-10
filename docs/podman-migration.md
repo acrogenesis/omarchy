@@ -48,6 +48,8 @@ Stock transfers let Podman allocate its default network. Explicit custom transfe
 
 Both IPv4 `after.rules` and IPv6 `after6.rules` retain a `.before-podman` backup before their managed ufw-docker blocks are removed. The real migration fixture seeds both legacy blocks and checks both firewall families after reboot.
 
+The migration restores the local user runtime environment for sudo-invoked upgrades and checks the user manager before changing Docker. If that manager is unavailable, log in as the target user and rerun the migration. Docker and its compatibility provider are replaced in one package transaction, preserving dependencies such as `once-bin`. Package repair leaves the compatibility package pending while the real Docker engine remains installed.
+
 Snapshots, package archives and development-only package holds are recovery/deployment choices, not changes to the ordinary migration's package selection. A root snapshot can exclude the home subvolume and its rootless data. Retained Docker data is a checkpoint; preserve subsequent Podman writes before rolling back.
 
 ## Verification

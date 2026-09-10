@@ -1,5 +1,19 @@
 echo "Replace Docker with Podman and enable rootless containers"
 
+# sudo-run upgrades drop the session environment when returning to this user.
+# Pin the local user runtime before Podman opens its database or Docker changes.
+migration_uid=$(id -u)
+if (( migration_uid == 0 )); then
+  echo "Run the migration as the desktop user" >&2
+  exit 1
+fi
+export XDG_RUNTIME_DIR="/run/user/$migration_uid"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+if ! systemctl --user show-environment >/dev/null; then
+  echo "Log in as $USER and rerun omarchy-migrate. Docker has not been changed." >&2
+  exit 1
+fi
+
 omarchy-pkg-add podman podman-compose
 if [[ ! -f $HOME/.local/state/omarchy/preinstalls-removed ]]; then
   omarchy-pkg-add podman-desktop
@@ -114,10 +128,12 @@ if sudo ufw status | grep -q '^Status: active'; then
   sudo ufw reload
 fi
 
-omarchy-pkg-drop docker docker-buildx docker-compose ufw-docker lazydocker lazydocker-bin
 # Keep the real Docker CLI until all transfers finish. Its replacement also
-# works in scripts, where an interactive shell alias would not be expanded.
-omarchy-pkg-add podman-docker
+# provides docker to packages such as once-bin. Replace the engine in the same
+# transaction so those dependencies remain satisfied. --ask 4 accepts only
+# package-conflict removal, which --noconfirm alone would refuse.
+sudo pacman -S --needed --noconfirm --ask 4 podman-docker
+omarchy-pkg-drop docker-buildx docker-compose ufw-docker lazydocker lazydocker-bin
 
 # Retired package config may be a .pacsave after the package transaction. Keep
 # custom content as inactive backups instead of deleting it.

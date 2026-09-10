@@ -15,4 +15,9 @@ sudo env OMARCHY_UPDATE_PACMAN=1 pacman -Suu --noconfirm
 
 # Ensure all packages are installed
 mapfile -t packages < <(grep -v '^#' "$OMARCHY_PATH/install/omarchy-base.packages" | grep -v '^$')
+# A pending workload migration must keep the real Docker engine and CLI.
+# Its migration installs the compatibility package after transferring data.
+if [[ $(pacman -Qq docker 2>/dev/null) == "docker" ]]; then
+  mapfile -t packages < <(printf '%s\n' "${packages[@]}" | grep -vx 'podman-docker')
+fi
 sudo env OMARCHY_UPDATE_PACMAN=1 pacman -Syu --noconfirm --needed "${packages[@]}"

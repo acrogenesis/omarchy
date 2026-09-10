@@ -48,7 +48,11 @@ fi
 SH
 cat >"$test_dir/bin/id" <<'SH'
 #!/bin/bash
-echo "$STUB_GROUPS"
+if [[ $1 == -u ]]; then
+  echo 1000
+else
+  echo "$STUB_GROUPS"
+fi
 SH
 cat >"$test_dir/bin/python3" <<'SH'
 #!/bin/bash
@@ -88,7 +92,7 @@ STUB_DOCKER=1 STUB_NAMES=$'omarchy-windows\ncustom-project'
 run_migration && fail "migration discarded an unmigrated database"
 ! grep -q 'docker stop\|disable --now docker\|omarchy-pkg-drop' "$TEST_LOG" ||
   fail "migration stopped or removed the old engine before workload transfer"
-! grep -q '^omarchy-pkg-add podman-docker$' "$TEST_LOG" ||
+! grep -q '^sudo pacman .*podman-docker$' "$TEST_LOG" ||
   fail "migration replaced the Docker CLI before workload transfer"
 grep -q custom-project "$test_dir/output" || fail "migration did not identify the pending workload"
 pass "existing workloads keep Docker and the migration pending"
@@ -99,12 +103,13 @@ grep -q 'sudo python3 .*migrate-windows.py --stop tester' "$TEST_LOG" || fail "W
 grep -q 'sudo systemctl disable --now docker.socket docker.service' "$TEST_LOG" || fail "old engine stays enabled"
 grep -q '^omarchy-state set reboot-required$' "$TEST_LOG" || fail "retired engine runtime did not flag a reboot"
 ! grep -q 'docker rm\|podman rm\|docker volume rm' "$TEST_LOG" || fail "handover deletes existing data"
-grep -q '^omarchy-pkg-drop docker docker-buildx docker-compose ufw-docker lazydocker lazydocker-bin$' "$TEST_LOG" ||
-  fail "Docker Engine packages remain"
-engine_removed=$(grep -n '^omarchy-pkg-drop docker ' "$TEST_LOG" | cut -d: -f1)
-shim_installed=$(grep -n '^omarchy-pkg-add podman-docker$' "$TEST_LOG" | cut -d: -f1)
-[[ -n $shim_installed ]] && (( engine_removed < shim_installed )) ||
-  fail "Docker compatibility package must be installed after engine removal"
+grep -q '^omarchy-pkg-drop docker-buildx docker-compose ufw-docker lazydocker lazydocker-bin$' "$TEST_LOG" ||
+  fail "retired Docker tools remain"
+engine_stopped=$(grep -n '^sudo systemctl disable --now docker.socket docker.service$' "$TEST_LOG" | cut -d: -f1)
+shim_installed=$(grep -n '^sudo pacman -S --needed --noconfirm --ask 4 podman-docker$' "$TEST_LOG" | cut -d: -f1)
+[[ -n $shim_installed ]] && (( engine_stopped < shim_installed )) ||
+  fail "Docker provider must be replaced atomically after handover"
+! grep -q '^omarchy-pkg-drop docker ' "$TEST_LOG" || fail "Docker removal breaks dependent packages"
 pass "Windows handover stops Docker and retains storage for Podman"
 
 STUB_DOCKER=0 STUB_NAMES="" STUB_GROUPS='wheel docker'
@@ -123,7 +128,7 @@ run_migration || fail "repeat migration failed"
 ! grep -q '^sudo docker ' "$TEST_LOG" || fail "retry still depends on Docker"
 ! grep -q '^sudo gpasswd ' "$TEST_LOG" || fail "retry repeats an already completed group change"
 ! grep -q 'systemctl start docker.socket' "$TEST_LOG" || fail "retry mistakes the Podman shim for Docker Engine"
-grep -q '^omarchy-pkg-add podman-docker$' "$TEST_LOG" || fail "retry does not retain Docker command compatibility"
+grep -q '^sudo pacman .*podman-docker$' "$TEST_LOG" || fail "retry does not retain Docker command compatibility"
 pass "completed migration can be repeated with the Docker compatibility command present"
 
 mkdir -p "$test_dir/home/.local/state/omarchy"
