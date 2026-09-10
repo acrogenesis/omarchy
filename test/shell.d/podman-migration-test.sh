@@ -50,7 +50,7 @@ if [[ $* == *custom-project* ]]; then
   exit 1
 fi
 SH
-for name in omarchy-pkg-add omarchy-pkg-drop systemctl podman omarchy-state; do
+for name in omarchy-pkg-add omarchy-pkg-drop systemctl podman omarchy-state dbus-update-activation-environment; do
   cat >"$test_dir/bin/$name" <<'SH'
 #!/bin/bash
 printf '%s %s\n' "${0##*/}" "$*" >>"$TEST_LOG"
@@ -95,7 +95,8 @@ run_migration || fail "Docker-free migration failed"
 grep -q '^sudo gpasswd -d tester docker$' "$TEST_LOG" || fail "retired group membership remains"
 grep -q '^omarchy-state set reboot-required$' "$TEST_LOG" || fail "group change did not flag a reboot"
 grep -q '^systemctl --user enable --now podman.socket$' "$TEST_LOG" || fail "rootless API socket is missing"
-pass "Docker-free retry updates the launcher, user services and group state"
+grep -q '^dbus-update-activation-environment --systemd DOCKER_HOST$' "$TEST_LOG" || fail "Docker API activation environment was not refreshed"
+pass "Docker-free retry updates the launcher, user services, Docker API environment and group state"
 
 STUB_GROUPS=wheel
 run_migration || fail "repeat migration failed"

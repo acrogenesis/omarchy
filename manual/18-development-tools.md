@@ -22,7 +22,7 @@ To install, say, Ruby, you'd run `mise use -g ruby`, which will both install Rub
 
 [Podman](https://podman.io/) runs containers without a root daemon. Use `podman run`, `podman build`, and `podman-compose up`; the `d` alias also runs Podman. Omarchy includes Podman Compose and [Podman Desktop](https://podman-desktop.io/) to manage your containers and images with `Super + Shift + D`.
 
-The `docker` command is provided by `podman-docker` and forwards to Podman, including in scripts. You can keep using commands such as `docker ps`, `docker build`, and `docker compose up`. Docker Engine is not installed; compatibility follows Podman's supported commands and Compose options.
+The `docker` command is provided by `podman-docker` and forwards to Podman, including in scripts. You can keep using commands such as `docker ps`, `docker build`, and `docker compose up`. Docker Engine is not installed; compatibility follows Podman's supported commands and Compose options. Docker SDK clients in the desktop session use the rootless socket through `DOCKER_HOST`. An explicitly configured endpoint is preserved. For an SSH session or a tool with its own environment, set `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock` as needed.
 
 Development containers run as your user. You do not need sudo or membership in a privileged group. Container images and volumes belong to your account; `sudo podman` has a separate store. The Windows VM uses that root-owned store and asks for authorization when needed.
 
@@ -39,6 +39,14 @@ There's a lazy-installing stub for `ghui` for managing your pull requests in a T
 
 ## Moving existing containers
 
-During the update, Omarchy moves its development databases into the Podman store of the account running the update. It stops each database, snapshots its image and writable layer, transfers volume data with its numeric ownership, and restores its previous running state in Podman. Windows keeps its existing virtual disk and shared folder. The old Docker data stays on disk as a recovery copy. Restart when the updater asks to clear Docker's temporary networking state.
+During the update, Omarchy moves its development databases into the Podman store of the account running the update. It stops each database, snapshots its image and writable layer, transfers and verifies volume contents, numeric ownership, permissions, timestamps, ACLs and extended attributes, and restores its previous running state in Podman. Windows keeps its existing virtual disk and shared folder. The old Docker data stays on disk as a recovery copy. Restart when the updater asks to clear Docker's temporary networking state.
 
 Custom containers, custom networks, shared volumes, and modified database privileges or resource limits need an explicit transfer using the project's own configuration. The migration identifies these before stopping workloads and stays pending until they are moved. Back up the application data, recreate the project using `podman-compose`, verify its data and behavior, then remove the old Docker containers and retry the update. Docker is removed only after the remaining Omarchy workloads have moved successfully.
+
+The automatic transfer is deliberately limited to these stock configurations. It does not transfer every cached image, unused volume, GPU worker, CI runner, or persistent BuildKit builder. A familiar database name does not make a custom configuration safe to migrate automatically.
+
+For a custom transfer, inventory all containers, images, volumes and networks first, including stopped containers and unattached volumes. Keep the original image versions and writable layers, mount options, health checks, resource limits, network aliases, and running/stopped state. Transfer volume contents only while their writers are stopped; preserve and verify metadata as well as file contents. Do not let a newer project Compose file implicitly upgrade an old database's major version.
+
+Privileged Docker-in-Docker runners may need rootful Podman; rootless and rootful stores are separate. NVIDIA workloads require the NVIDIA Container Toolkit's CDI devices and a real GPU test. A persistent BuildKit daemon can use the optional `buildkit` client through `sudo buildctl --addr=podman-container://CONTAINER ...`; Podman's `buildx` compatibility does not cover every Docker Buildx workflow. Enable startup for these custom services deliberately and verify it after reboot.
+
+Retained Docker data is a recovery checkpoint, not a synchronized backup. After Podman accepts new writes, preserve those writes before rolling back. Root filesystem snapshots may exclude your home directory and its rootless containers. Keep application backups and recovery copies until you have verified the migrated workloads and reboot behavior.

@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 
 LABEL = "io.omarchy.docker-id"
@@ -33,6 +34,9 @@ def validate(container):
     image = container["Config"]["Image"].removeprefix("docker.io/").removeprefix("library/")
     if expected is None or image.split(":")[0] != expected:
         raise ValueError(f"{name}: migrate this custom workload with its original Compose definition")
+    health = container["Config"].get("Healthcheck") or {}
+    if health.get("StartInterval"):
+        raise ValueError(f"{name}: custom health start intervals require an explicit configuration")
     host = container["HostConfig"]
     if host.get("NetworkMode") not in ("default", "bridge"):
         raise ValueError(f"{name}: custom networking requires its original Compose definition")
@@ -87,6 +91,38 @@ def pipe(producer, consumer):
             raise RuntimeError("Container image or volume transfer failed; Docker data was retained")
 
 
+def health_arguments(config):
+    health = config.get("Healthcheck") or {}
+    test = health.get("Test") or []
+    if not test:
+        return []
+    if test == ["NONE"]:
+        return ["--no-healthcheck"]
+    arguments = ["--health-cmd", json.dumps(test)]
+    for field, flag in (("Interval", "--health-interval"), ("Timeout", "--health-timeout"),
+                        ("StartPeriod", "--health-start-period")):
+        if health.get(field):
+            arguments += [flag, f"{health[field]}ns"]
+    if health.get("Retries"):
+        arguments += ["--health-retries", str(health["Retries"])]
+    return arguments
+
+
+def transfer_volume(volume, target):
+    destination = inspect("podman", "volume", target)["Mountpoint"]
+    # Native tar in the destination user namespace preserves the volume root's
+    # mode too; volume import can reset it. PAX retains subsecond timestamps.
+    pipe(["sudo", "tar", "--format=pax", "--numeric-owner", "--sparse", "--acls", "--xattrs",
+          "--xattrs-include=*", "-C", volume["Mountpoint"], "-cpf", "-", "."],
+         ["podman", "unshare", "tar", "--numeric-owner", "--same-owner", "--same-permissions",
+          "--sparse", "--acls", "--xattrs", "--xattrs-include=*", "-C", destination, "-xpf", "-"])
+    manifest = str(Path(__file__).with_name("volume-manifest.py"))
+    source_digest = run("sudo", "python3", manifest, volume["Mountpoint"], capture=True)
+    target_digest = run("podman", "unshare", "python3", manifest, destination, capture=True)
+    if source_digest != target_digest:
+        raise RuntimeError("Volume content or metadata verification failed; Docker data was retained")
+
+
 def migrate(container):
     name = validate(container)
     identity = container["Id"]
@@ -102,12 +138,26 @@ def migrate(container):
     new_volumes = []
     try:
         run("sudo", "docker", "stop", "-t", "120", identity)
+        state = inspect("docker", "container", identity)["State"]
+        if state["Running"] or (running and state["ExitCode"] in (137, 139)):
+            raise RuntimeError(f"{name}: database did not stop cleanly; transfer aborted")
         image = f"localhost/omarchy-migrated/{name}:{identity[:12]}"
         # Commit includes writable-layer changes and the exact image config.
         # Volume data is copied separately while the source database is stopped.
         run("sudo", "docker", "commit", identity, image)
         pipe(["sudo", "docker", "image", "save", image], ["podman", "image", "load", "--quiet"])
         arguments = ["podman", "create", "--name", name, "--label", f"{LABEL}={identity}"]
+        # Podman's default PID limit differs from Docker's unlimited default.
+        arguments += ["--pids-limit=-1", "--log-driver", "k8s-file", "--log-opt", "max-size=10mb"]
+        config = container["Config"]
+        if config.get("Hostname"):
+            arguments += ["--hostname", config["Hostname"]]
+        if config.get("Tty"):
+            arguments += ["--tty"]
+        if config.get("OpenStdin"):
+            arguments += ["--interactive"]
+        # commit/load does not reliably retain runtime health-check overrides.
+        arguments += health_arguments(config)
         restart = container["HostConfig"].get("RestartPolicy") or {}
         policy = restart.get("Name") or "no"
         if policy == "on-failure" and restart.get("MaximumRetryCount"):
@@ -125,10 +175,9 @@ def migrate(container):
                 raise ValueError(f"{name}: destination volume already exists; retained it for inspection")
             run("podman", "volume", "create", target)
             new_volumes.append(target)
-            pipe(["sudo", "tar", "--numeric-owner", "--sparse", "-C", volume["Mountpoint"], "-cpf", "-", "."],
-                 ["podman", "volume", "import", target, "-"])
+            transfer_volume(volume, target)
             access = "rw" if mount.get("RW") else "ro"
-            arguments += ["--volume", f'{target}:{mount["Destination"]}:{access}']
+            arguments += ["--volume", f'{target}:{mount["Destination"]}:{access},nocopy']
         arguments.append(image)
         run(*arguments)
         created = True

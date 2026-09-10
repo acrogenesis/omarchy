@@ -17,7 +17,7 @@ spec.loader.exec_module(migration)
 
 container = {
     'Name': '/redis', 'Id': 'a' * 64, 'State': {'Running': True},
-    'Config': {'Image': 'redis:7'},
+    'Config': {'Image': 'redis:7', 'Healthcheck': {'Test': ['CMD', 'redis-cli', 'ping'], 'Interval': 5000000000, 'Timeout': 2000000000, 'Retries': 3}},
     'HostConfig': {
         'NetworkMode': 'default', 'IpcMode': 'private', 'ShmSize': 64 * 1024 * 1024,
         'PortBindings': {'6379/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '6379'}]},
@@ -54,7 +54,7 @@ print('ok - database preflight accepts stock settings and rejects custom privile
 calls = []
 migration.run = lambda *args, **kwargs: calls.append(args)
 migration.subprocess.run = lambda args, **kwargs: SimpleNamespace(returncode=1)
-migration.inspect = lambda engine, kind, name: {'Mountpoint': '/var/lib/docker/volumes/old-data/_data', 'Options': None}
+migration.inspect = lambda engine, kind, name: {'State': {'Running': False, 'ExitCode': 0}} if kind == 'container' else {'Mountpoint': '/var/lib/docker/volumes/old-data/_data', 'Options': None}
 migration.pipe = lambda producer, consumer: calls.append((tuple(producer), tuple(consumer)))
 
 # Run the entire batch preflight with a valid database first. Neither check-only
@@ -100,13 +100,30 @@ print('ok - volume subpaths fail preflight before any workload changes')
 migration.migrate(container)
 create = next(call for call in calls if call[:2] == ('podman', 'create'))
 assert '127.0.0.1:6379:6379/tcp' in create
-assert 'omarchy-migrated-old-data:/data:rw' in create
+assert 'omarchy-migrated-old-data:/data:rw,nocopy' in create
+assert '--pids-limit=-1' in create
+assert create[create.index('--health-cmd') + 1] == '["CMD", "redis-cli", "ping"]'
+assert create[create.index('--health-interval') + 1] == '5000000000ns'
 assert ('sudo', 'docker', 'stop', '-t', '120', 'a' * 64) in calls
 assert ('podman', 'start', 'redis') in calls
 assert not any(call[:3] == ('sudo', 'docker', 'rm') for call in calls)
-assert any(call[0][:2] == ('sudo', 'tar') and call[1][:3] == ('podman', 'volume', 'import')
+assert any(call[0][:2] == ('sudo', 'tar') and call[1][:3] == ('podman', 'unshare', 'tar')
            for call in calls if isinstance(call[0], tuple))
 print('ok - database transfer preserves ports, restart policy, image snapshot and numeric volume ownership without removing Docker data')
+
+calls.clear()
+inspect_clean = migration.inspect
+migration.inspect = lambda engine, kind, name: {'State': {'Running': False, 'ExitCode': 137}} if kind == 'container' else inspect_clean(engine, kind, name)
+try:
+    migration.migrate(container)
+except RuntimeError as error:
+    assert 'stop cleanly' in str(error)
+else:
+    raise AssertionError('SIGKILL shutdown was accepted')
+assert not any(call[:3] == ('sudo', 'docker', 'commit') for call in calls)
+assert ('sudo', 'docker', 'start', 'a' * 64) in calls
+migration.inspect = inspect_clean
+print('ok - forced shutdown aborts before copying and restarts the source')
 
 calls.clear()
 def broken_pipe(producer, consumer):

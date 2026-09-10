@@ -71,6 +71,14 @@ sudo systemctl --global enable podman.socket podman-restart.service
 systemctl --user enable --now podman.socket
 systemctl --user enable podman-restart.service
 
+# Packages provide the default for future sessions. Refresh activation for apps
+# launched now, while preserving an explicitly configured Docker endpoint.
+systemctl --user daemon-reload
+if [[ -z ${DOCKER_CONTEXT:-} ]]; then
+  export DOCKER_HOST="${DOCKER_HOST:-unix://$XDG_RUNTIME_DIR/podman/podman.sock}"
+  dbus-update-activation-environment --systemd DOCKER_HOST
+fi
+
 # Replace only Omarchy's Docker DNS rules, leaving unrelated firewall policy.
 sudo ufw --force delete allow in proto udp from 172.16.0.0/12 to 172.17.0.1 port 53
 sudo ufw --force delete allow in proto udp from 192.168.0.0/16 to 172.17.0.1 port 53
