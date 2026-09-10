@@ -50,6 +50,8 @@ Both IPv4 `after.rules` and IPv6 `after6.rules` retain a `.before-podman` backup
 
 The migration restores the local user runtime environment for sudo-invoked upgrades and checks the user manager before changing Docker. If that manager is unavailable, log in as the target user and rerun the migration. Docker and its compatibility provider are replaced in one package transaction, preserving dependencies such as `once-bin`. Package repair leaves the compatibility package pending while the real Docker engine remains installed.
 
+Settings packages retain the legacy Docker configuration paths and backup metadata in their payload so an in-place package upgrade cannot remove live configuration before a blocked migration runs. For Podman sources, the install script retires those files only when the real Docker engine is absent: stock defaults are removed, and custom files are archived without overwriting earlier backups. This also prevents later package upgrades or reinstalls from reactivating retired defaults. The absent compatibility files remain recorded in package metadata; the reference copies under `/usr/share/omarchy/retired-docker/` distinguish stock content from custom configuration.
+
 Snapshots, package archives and development-only package holds are recovery/deployment choices, not changes to the ordinary migration's package selection. A root snapshot can exclude the home subvolume and its rootless data. Retained Docker data is a checkpoint; preserve subsequent Podman writes before rolling back.
 
 ## Verification
