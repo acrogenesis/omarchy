@@ -30,6 +30,15 @@ if [[ $* == '--user restart podman.socket' ]]; then
 fi
 ''')
     script(binary / 'real-podman', '#!/bin/bash\nprintf "backend %s\\n" "$*" >>"$TEST_LOG"\n')
+    script(binary / 'setsid', '#!/bin/bash\nexec "$@"\n')
+    script(binary / 'uwsm-app', '''#!/bin/bash
+printf 'uwsm-app %s\\n' "$*" >>"$TEST_LOG"
+[[ $1 == -- && $2 == env && $3 == PATH=* ]] || exit 1
+shift
+# Model the app daemon inheriting its own PATH instead of the launcher's.
+export PATH=/usr/bin
+exec "$@"
+''')
     script(binary / 'desktop', '#!/bin/bash\nprintf "desktop %s\\n" "$*" >>"$TEST_LOG"\npodman system service --time=0\npodman version\n')
     script(adapter / 'podman', (root / 'default/podman/desktop/podman').read_text().replace('/usr/bin/podman', str(binary / 'real-podman')))
     launcher = fixture / 'launch'
@@ -42,6 +51,7 @@ fi
         assert endpoint.stat().st_ino == inode
     calls = log.read_text()
     assert 'desktop --test-argument' in calls and 'backend version' in calls
+    assert 'uwsm-app -- env PATH=' in calls
     assert 'backend system service' not in calls
     assert 'stop podman.service' not in calls
     endpoint.unlink();log.write_text('')

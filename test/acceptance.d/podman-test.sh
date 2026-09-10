@@ -28,6 +28,7 @@ wait_until "previous Podman windows are closed" 10 window_absent "$class"
 launch_app "omarchy-launch-podman"
 wait_until "Podman Desktop opens" 30 window_present "$class"
 desktop_pid=$(hyprctl -j clients | jq -r --arg class "$class" '.[] | select(.class == $class) | .pid' | head -n 1)
+grep -q '/app.slice/' "/proc/$desktop_pid/cgroup" || fail "Podman Desktop runs in the managed application slice"
 # Let the bundled Linux extension finish starting its API connection.
 sleep 5
 wait_until "Docker API responds while Desktop is open" 15 api_ready
