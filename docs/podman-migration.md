@@ -1,6 +1,6 @@
 # Podman migration boundaries
 
-The automatic migration handles stock Omarchy development databases and the Windows disk handover. It rejects unsupported workloads before stopping any container. Successful custom migrations require an explicit plan; they are not evidence that the automatic path supports arbitrary Docker configuration.
+The automatic migration handles compatible unprivileged containers, including stock Omarchy development databases, and the established Windows disk handover. Eligibility follows inspected configuration rather than names or image labels. It rejects unsupported workloads before stopping any container; successful transfers are not evidence of arbitrary Docker compatibility.
 
 ## Findings carried into the implementation
 
@@ -8,7 +8,7 @@ The automatic migration handles stock Omarchy development databases and the Wind
 | --- | --- |
 | `podman volume import` changed the volume root's mode | Transfer with native GNU tar in `podman unshare`, preserving numeric ownership, PAX timestamps, ACLs, xattrs, sparse files and links. Compare content/metadata manifests before creating the container. |
 | Committed images did not reliably retain runtime health checks | Recreate health commands, intervals, timeouts, start periods and retries explicitly. Reject unsupported start intervals during batch preflight. |
-| Podman's default PID limit differs from Docker's unlimited default | Explicitly retain the unlimited limit for accepted stock databases. Custom PID limits remain outside the automatic path. |
+| Podman's default PID limit differs from Docker's unlimited default | Retain unlimited defaults and explicit PID, memory, CPU and shared-memory limits. Verify the configured limits before starting the application. |
 | A newly created volume may receive image data when first mounted | Mount restored volumes with `nocopy`. |
 | A successful `docker stop` can still mean forced termination | Inspect the stopped state and refuse to copy an originally running database after SIGKILL or a segmentation fault; restart the source on failure. |
 | Desktop's Linux extension starts another service on systemd's API socket and removes it on exit | The Omarchy launcher gives Desktop a scoped Podman subprocess adapter that reuses the user socket. Other commands dispatch to the real Podman binary. Recover an already-unlinked API socket without stopping containers. |
@@ -16,9 +16,23 @@ The automatic migration handles stock Omarchy development databases and the Wind
 
 The volume manifest includes file contents, types, permissions, numeric IDs, nanosecond modification times, xattrs (including POSIX ACLs), symlink targets, hardlink relationships, and device numbers. Transient Unix sockets are excluded because tar does not copy them. A mismatch aborts the transfer and retains the Docker source.
 
+## Secure automatic transfer
+
+The local Docker socket is pinned explicitly, and Podman uses its absolute installed binary with remote mode disabled. Saved CLI contexts must not redirect image or volume data to another host. The automatic helper refuses root execution and never falls back to sudo Podman.
+
+Unprivileged containers with arbitrary names/images can migrate on the default bridge, with localhost published ports, private local volumes, and supported CPU, memory, PID and shared-memory limits. Simple `-v NAME:/path[:rw|ro]` volumes retain their names and labels. Image-created anonymous volumes retain the existing migration naming convention. The migration uses the exact committed image and writable layer with pulling disabled; it does not execute project Compose files or rebuild images.
+
+All nondefault HostConfig fields must be accounted for. Privileged mode, added capabilities, device requests/rules, alternate runtimes, host mounts/sockets, host namespaces, altered masking, MAC profiles, custom networking, shared volumes and unknown settings require review. The complete batch reports blocked containers without dumping environment variables. A blocked workload does not trigger permission changes, a rootful retry, global sysctl relaxation or disabled confinement.
+
+Destination containers explicitly use private PID, IPC, UTS and cgroup namespaces, the standard rootless user mapping, a rootless bridge, the packaged seccomp profile and a capability ceiling derived from Docker's defaults minus the source's dropped capabilities. Source no-new-privileges and masked/read-only paths are retained. The runtime is initialized without starting the application, then resource limits, capability sets, confinement and volume manifests are checked again. A failed check removes only newly created destinations and restores originally running Docker sources. Existing destination containers and volumes are never overwritten.
+
+This checks configuration and data preservation, not arbitrary application readiness. The operator still needs application-specific checks for production services. Unsupported cases retain Docker and remain pending; rootful conversion requires an explicit workload-specific plan. Windows remains the separate known rootful case handled by its authenticated launcher.
+
+Each successful transfer records both container identities under the user's `omarchy/podman-migration` state directory. Retries require that completion receipt; a matching label alone cannot hide a crash during transfer or initialization. Incomplete destinations remain for inspection. Recovery is per container: previously completed transfers stay on Podman if a later transfer fails, and the remaining Docker engine/data stay available.
+
 ## Explicit custom migration work
 
-Custom Compose networks, shared volumes, bind mounts and moved host paths, GPUs/CDI, privileged Docker-in-Docker, persistent BuildKit, low host ports, and nondefault resource settings need their own configuration and verification. Preserve source image versions instead of applying a newer Compose definition that changes database major versions. Moving all cached images and unattached volumes is also outside the automatic stock-database transfer.
+Custom Compose networks, shared volumes, bind mounts and moved host paths, GPUs/CDI, privileged Docker-in-Docker, persistent BuildKit, low host ports, and unsupported resource or confinement settings need their own configuration and verification. Preserve source image versions instead of applying a newer Compose definition that changes database major versions. Moving all cached images and unattached volumes is also outside the automatic transfer.
 
 Rootful and rootless stores are independent. Keep privileged services rootful when required, and use scoped privileges. User lingering and rootful service startup are operator choices for these workloads; a desktop database restart policy normally resumes on login. Check actual workload readiness, data and startup after reboot.
 
@@ -28,4 +42,4 @@ Snapshots, package archives and development-only package holds are recovery/depl
 
 ## Verification
 
-Focused shell tests cover preflight, transfer failures, forced shutdown, volume metadata and environment defaults. The graphical acceptance suite exercises Desktop open/close and API reactivation on the same socket. The companion ISO `podman-migration` integration scenario creates real legacy Redis/PostgreSQL fixtures in a disposable guest, checks data/metadata and health preservation, rejects an unsupported workload before mutation, retries after engine removal, and verifies running/stopped state after reboot.
+Focused shell tests cover preflight, interrupted transfers, rollback failures, forced shutdown, volume metadata, runtime confinement and environment defaults. The graphical acceptance suite exercises Desktop open/close and API reactivation on the same socket. The companion ISO `podman-migration` integration scenario creates real legacy Redis/PostgreSQL fixtures and a custom UID-1000 worker in a disposable guest. It checks data/metadata, health, resource limits and confinement, rejects privileged/device workloads before mutation, retries after engine removal, and verifies running/stopped state after reboot.

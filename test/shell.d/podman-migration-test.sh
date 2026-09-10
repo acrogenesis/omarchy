@@ -15,6 +15,8 @@ printf 'sudo %s\n' "$*" >>"$TEST_LOG"
 case "$1" in
   python3) cat >/dev/null ;;
   docker)
+    [[ $2 == --host && $3 == unix:///var/run/docker.sock ]] || exit 2
+    shift 2
     case "$2" in
       ps) printf '%s\n' "$STUB_NAMES" ;;
       stop) [[ $3 == '-t' && $4 == 120 && $5 == omarchy-windows ]] ;;
@@ -75,7 +77,7 @@ pass "existing workloads keep Docker and the migration pending"
 
 STUB_NAMES=omarchy-windows
 run_migration || fail "Windows-only handover failed" "$(cat "$test_dir/output")"
-grep -q 'sudo docker stop -t 120 omarchy-windows' "$TEST_LOG" || fail "Windows was not shut down gracefully"
+grep -q 'sudo docker --host unix:///var/run/docker.sock stop -t 120 omarchy-windows' "$TEST_LOG" || fail "Windows was not shut down gracefully"
 grep -q 'sudo systemctl disable --now docker.socket docker.service' "$TEST_LOG" || fail "old engine stays enabled"
 grep -q '^omarchy-state set reboot-required$' "$TEST_LOG" || fail "retired engine runtime did not flag a reboot"
 ! grep -q 'docker rm\|podman rm\|docker volume rm' "$TEST_LOG" || fail "handover deletes existing data"

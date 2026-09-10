@@ -6,18 +6,18 @@ if [[ ! -f $HOME/.local/state/omarchy/preinstalls-removed ]]; then
 fi
 
 # Check every workload before stopping any. Windows keeps its external disk;
-# stock development databases can transfer their images and volumes rootlessly.
+# compatible unprivileged containers transfer their images and volumes rootlessly.
 docker_installed=0
-database_names=()
+container_names=()
 # The compatibility package also provides a docker command. Only the real
 # engine package needs a daemon and workload transfer on retries or other users.
 # pacman's query resolves providers too, so compare the returned package name.
 if [[ $(pacman -Qq docker 2>/dev/null) == "docker" ]]; then
   docker_installed=1
   sudo systemctl start docker.socket
-  docker_names=$(sudo docker ps -a --format '{{.Names}}')
-  mapfile -t database_names < <(printf '%s\n' "$docker_names" | sed '/^omarchy-windows$/d; /^$/d')
-  if ! python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" --check "${database_names[@]}"; then
+  docker_names=$(sudo docker --host unix:///var/run/docker.sock ps -a --format '{{.Names}}')
+  mapfile -t container_names < <(printf '%s\n' "$docker_names" | sed '/^omarchy-windows$/d; /^$/d')
+  if ! python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" --check "${container_names[@]}"; then
     echo "Docker and its data have been retained. This migration remains pending." >&2
     exit 1
   fi
@@ -55,11 +55,11 @@ with os.fdopen(fd, 'w') as lock:
         subprocess.run(['usermod', option, f'{start}-{start + 65535}', account.pw_name], check=True)
 PY
 
-podman info >/dev/null
+podman --remote=false info >/dev/null
 if ((docker_installed)); then
-  python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" "${database_names[@]}"
+  python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" "${container_names[@]}"
   if printf '%s\n' "$docker_names" | grep -qx omarchy-windows; then
-    sudo docker stop -t 120 omarchy-windows
+    sudo docker --host unix:///var/run/docker.sock stop -t 120 omarchy-windows
   fi
   # Keep Docker's stopped containers and volume data as recovery copies.
   sudo systemctl disable --now docker.socket docker.service

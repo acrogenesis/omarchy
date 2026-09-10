@@ -8,12 +8,17 @@ import copy
 import importlib.util
 import os
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location('migration', os.path.join(os.environ['ROOT'], 'default/podman/migrate-databases.py'))
 migration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(migration)
+state = tempfile.TemporaryDirectory()
+migration.completion_path = lambda identity: Path(state.name) / identity
+migration.oci_spec = lambda target: {'linux': {'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {}}
 
 container = {
     'Name': '/redis', 'Id': 'a' * 64, 'State': {'Running': True},
@@ -32,7 +37,7 @@ stopped['State']['Running'] = False
 stopped['HostConfig']['NetworkMode'] = 'bridge'
 stopped['HostConfig']['Mounts'] = []
 assert migration.validate(stopped) == 'redis'
-for field, value in [('Privileged', True), ('Binds', ['/etc:/data']), ('Memory', 1024), ('NetworkMode', 'host')]:
+for field, value in [('Privileged', True), ('Binds', ['/etc:/data']), ('DeviceCgroupRules', ['c 1:3 rwm']), ('NetworkMode', 'host')]:
     changed = copy.deepcopy(container)
     changed['HostConfig'][field] = value
     try:
@@ -42,19 +47,26 @@ for field, value in [('Privileged', True), ('Binds', ['/etc:/data']), ('Memory',
     else:
         raise AssertionError(f'custom {field} was silently discarded')
 changed = copy.deepcopy(container)
-changed['Config']['Image'] = 'unrelated/image:7'
-try:
-    migration.validate(changed)
-except ValueError:
-    pass
-else:
-    raise AssertionError('a familiar name hid a custom image')
-print('ok - database preflight accepts stock settings and rejects custom privileges, resources, networking and images')
+changed['Name'] = '/project-worker'
+changed['Config']['Image'] = 'local/project-worker:tested'
+assert migration.validate(changed) == 'project-worker'
+print('ok - eligibility follows actual configuration instead of database names and image labels')
 
 calls = []
-migration.run = lambda *args, **kwargs: calls.append(args)
+def record_run(*args, capture=False):
+    calls.append(args)
+    if capture:
+        return '[0,0]' if args[:2] == ('sudo', 'stat') else 'verified'
+migration.run = record_run
 migration.subprocess.run = lambda args, **kwargs: SimpleNamespace(returncode=1)
-migration.inspect = lambda engine, kind, name: {'State': {'Running': False, 'ExitCode': 0}} if kind == 'container' else {'Mountpoint': '/var/lib/docker/volumes/old-data/_data', 'Options': None}
+def inspect_fixture(engine, kind, name):
+    if kind == 'container':
+        if engine == 'docker':
+            return {'State': {'Running': False, 'ExitCode': 0}}
+        return {'Id': 'c' * 64, 'HostConfig': {'ShmSize': 64 * 1024 * 1024, 'PidsLimit': -1, 'Privileged': False},
+                'EffectiveCaps': [], 'BoundingCaps': []}
+    return {'Mountpoint': '/var/lib/docker/volumes/old-data/_data', 'Options': None}
+migration.inspect = inspect_fixture
 migration.pipe = lambda producer, consumer: calls.append((tuple(producer), tuple(consumer)))
 
 # Run the entire batch preflight with a valid database first. Neither check-only
@@ -64,7 +76,7 @@ for networks in ({'bridge': {}, 'project_net': {'Aliases': ['db']}}, {'project_n
     changed = copy.deepcopy(container)
     changed['NetworkSettings']['Networks'] = networks
     custom_cases.append(('network attachments', changed))
-for size in (1024 * 1024 * 1024, 32 * 1024 * 1024, 0, None):
+for size in (0, None):
     changed = copy.deepcopy(container)
     changed['HostConfig']['ShmSize'] = size
     custom_cases.append(('ShmSize', changed))
@@ -97,7 +109,7 @@ for expected_error, changed in custom_cases:
         assert not calls, f'workloads changed before rejecting custom {expected_error}: {calls}'
 migration.inspect = inspect_volume
 print('ok - additional, replacement and disconnected networks fail preflight before any workload changes')
-print('ok - nondefault shared-memory sizes fail preflight before any workload changes')
+print('ok - missing or invalid shared-memory sizes fail preflight before any workload changes')
 print('ok - volume subpaths fail preflight before any workload changes')
 print('ok - unsupported health start intervals fail batch preflight before any workload changes')
 
@@ -133,6 +145,8 @@ calls.clear()
 record_run = migration.run
 def mismatched_manifest(*args, capture=False):
     record_run(*args, capture=capture)
+    if args[:2] == ('sudo', 'stat'):
+        return '[0,0]'
     if capture:
         return 'source-digest' if args[0] == 'sudo' else 'different-target-digest'
 migration.run = mismatched_manifest
@@ -147,6 +161,48 @@ assert ('podman', 'volume', 'rm', 'omarchy-migrated-old-data') in calls
 assert ('sudo', 'docker', 'start', 'a' * 64) in calls
 migration.run = record_run
 print('ok - metadata mismatch removes only the new volume and restores the source before container creation')
+
+calls.clear()
+verify = migration.verify_volume
+verifications = 0
+def changed_after_init(*args):
+    global verifications
+    verifications += 1
+    if verifications == 2:
+        raise RuntimeError('metadata changed during runtime initialization')
+    verify(*args)
+migration.verify_volume = changed_after_init
+try:
+    migration.migrate(container)
+except RuntimeError as error:
+    assert 'runtime initialization' in str(error)
+else:
+    raise AssertionError('runtime volume changes passed verification')
+assert ('podman', 'init', 'redis') in calls
+assert ('podman', 'start', 'redis') not in calls
+assert ('podman', 'rm', '--force', 'redis') in calls
+assert ('sudo', 'docker', 'start', 'a' * 64) in calls
+print('ok - post-init metadata changes roll back before starting the application')
+
+calls.clear()
+verifications = 0
+def failed_cleanup(*args, capture=False):
+    result = record_run(*args, capture=capture)
+    if args[:2] == ('podman', 'rm'):
+        raise RuntimeError('cleanup failed')
+    return result
+migration.run = failed_cleanup
+try:
+    migration.migrate(container)
+except RuntimeError as error:
+    assert 'runtime initialization' in str(error)
+else:
+    raise AssertionError('failed cleanup was reported as successful')
+assert ('sudo', 'docker', 'start', 'a' * 64) in calls
+assert ('podman', 'start', 'redis') not in calls
+migration.run = record_run
+migration.verify_volume = verify
+print('ok - cleanup failures still attempt to restore the Docker workload and preserve the original error')
 
 calls.clear()
 def broken_pipe(producer, consumer):
@@ -164,8 +220,16 @@ print('ok - failed transfer restores the previously running Docker database')
 
 calls.clear()
 migration.subprocess.run = lambda args, **kwargs: SimpleNamespace(returncode=0)
-migration.inspect = lambda *args: {'Config': {'Labels': {migration.LABEL: 'a' * 64}}}
+migration.inspect = lambda *args: {'Id': 'c' * 64, 'Config': {'Labels': {migration.LABEL: 'a' * 64}}}
 migration.migrate(container)
+assert not calls
+migration.completion_path('a' * 64).unlink()
+try:
+    migration.migrate(container)
+except ValueError as error:
+    assert 'no completed transfer' in str(error)
+else:
+    raise AssertionError('an interrupted transfer was accepted as complete')
 assert not calls
 migration.inspect = lambda *args: {'Config': {'Labels': {migration.LABEL: 'different'}}}
 try:
@@ -175,5 +239,5 @@ except ValueError:
 else:
     raise AssertionError('unrelated destination container was overwritten')
 assert not calls
-print('ok - retries recognize the original Docker identity and refuse destination collisions')
+print('ok - retries require a completion receipt matching both engines and retain interrupted or unrelated destinations')
 PY

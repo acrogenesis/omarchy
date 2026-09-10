@@ -1,0 +1,146 @@
+#!/bin/bash
+
+set -euo pipefail
+source "$(dirname -- "${BASH_SOURCE[0]}")/base-test.sh"
+
+python3 - <<'PY'
+import copy
+import importlib.util
+import os
+import sys
+from types import SimpleNamespace
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('migration', os.path.join(os.environ['ROOT'], 'default/podman/migrate-databases.py'))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+c = {
+    'Name': '/project-worker', 'Id': 'b' * 64, 'State': {'Running': True},
+    'Config': {'Image': 'local/custom-worker:v1', 'User': '1000', 'Env': ['PRIVATE=do-not-log']},
+    'HostConfig': {
+        'NetworkMode': 'bridge', 'IpcMode': 'private', 'ShmSize': 128 * 1024 * 1024,
+        'Binds': ['project-data:/data:rw'], 'Memory': 128 * 1024 * 1024,
+        'MemorySwap': 256 * 1024 * 1024, 'PidsLimit': 64, 'NanoCpus': 500000000,
+        'CapDrop': ['ALL'], 'SecurityOpt': ['no-new-privileges'],
+        'MaskedPaths': sorted(m.MASKED_PATHS), 'ReadonlyPaths': sorted(m.READONLY_PATHS),
+        'Runtime': 'runc', 'CgroupnsMode': 'private', 'ConsoleSize': [0, 0],
+        'LogConfig': {'Type': 'json-file', 'Config': {'max-size': '10m', 'max-file': '5'}},
+    },
+    'NetworkSettings': {'Networks': {'bridge': {}}},
+    'Mounts': [{'Type': 'volume', 'Driver': 'local', 'Name': 'project-data', 'Destination': '/data', 'RW': True}],
+}
+assert m.validate(c) == 'project-worker'
+args = m.runtime_arguments(c)
+assert '--pids-limit=64' in args
+for flag, value in [('--shm-size', '134217728'), ('--memory', '134217728'), ('--memory-swap', '268435456'), ('--cpus', '0.5'), ('--cap-drop', 'ALL')]:
+    assert args[args.index(flag) + 1] == value
+assert 'no-new-privileges' in args
+assert m.destination_volume(c, c['Mounts'][0]) == 'project-data'
+assert '--privileged' not in args and 'sudo' not in args
+print('ok - custom unprivileged containers preserve resource limits, private volume names and restrictive security settings')
+
+cases = [('Runtime', 'nvidia'), ('Privileged', True), ('CapAdd', ['SYS_ADMIN']),
+         ('Devices', [{'PathOnHost': '/dev/kvm'}]), ('DeviceRequests', [{'Driver': 'nvidia'}]),
+         ('DeviceCgroupRules', ['a *:* rwm']), ('CgroupnsMode', 'host'),
+         ('SecurityOpt', ['seccomp=unconfined']), ('MaskedPaths', []),
+         ('ReadonlyPaths', []), ('FuturePrivilegeOption', {'enabled': True}),
+         ('Binds', ['/var/run/docker.sock:/var/run/docker.sock:rw']),
+         ('Binds', ['/home/example/project:/data:ro']),
+         ('Binds', ['project-data:/data:rw,Z'])]
+for field, value in cases:
+    modified = copy.deepcopy(c)
+    modified['HostConfig'][field] = value
+    try:
+        m.validate(modified)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f'{field} silently passed: {value}')
+for profile in ('AppArmorProfile', 'ProcessLabel'):
+    modified = copy.deepcopy(c)
+    modified[profile] = 'custom-confinement'
+    try:
+        m.validate(modified)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f'{profile} was discarded')
+print('ok - elevated privileges, devices, host sockets/mounts, confinement changes and unknown options require explicit review')
+
+assert m.local_command(['podman', 'image', 'load']) == ['/usr/bin/podman', '--remote=false', 'image', 'load']
+assert m.local_command(['sudo', 'docker', 'inspect', 'worker']) == ['sudo', '/usr/bin/docker', '--host', 'unix:///var/run/docker.sock', 'inspect', 'worker']
+print('ok - migration commands pin local engines instead of following saved remote contexts')
+
+h = copy.deepcopy(c['HostConfig'])
+h['Privileged'] = False
+h['CpuQuota'], h['CpuPeriod'] = 50000, 100000
+target = {'HostConfig': h, 'EffectiveCaps': [], 'BoundingCaps': []}
+runtime = {'linux': {'maskedPaths': sorted(m.MASKED_PATHS), 'readonlyPaths': sorted(m.READONLY_PATHS),
+                     'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {'noNewPrivileges': True}}
+m.oci_spec = lambda target: runtime
+m.inspect = lambda *args: target
+m.verify_runtime(c)
+target['EffectiveCaps'], target['BoundingCaps'] = None, None
+m.verify_runtime(c)
+del target['EffectiveCaps']
+try:
+    m.verify_runtime(c)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('missing capability evidence was accepted')
+target['EffectiveCaps'], target['BoundingCaps'] = [], []
+for field, value in [('Memory', 0), ('PidsLimit', -1), ('SecurityOpt', []), ('CpuQuota', 100000)]:
+    original = h[field]
+    h[field] = value
+    try:
+        m.verify_runtime(c)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError(f'ignored {field} constraint was accepted')
+    h[field] = original
+for field in ('maskedPaths', 'readonlyPaths', 'seccomp'):
+    original = runtime['linux'][field]
+    runtime['linux'][field] = []
+    try:
+        m.verify_runtime(c)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError(f'OCI {field} was not verified')
+    runtime['linux'][field] = original
+target['EffectiveCaps'] = ['CAP_SYS_ADMIN']
+try:
+    m.verify_runtime(c)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError('restored capabilities were accepted')
+print('ok - ignored limits, dropped confinement and added capabilities fail verification before the application starts')
+
+first, second = copy.deepcopy(c), copy.deepcopy(c)
+first['Name'], second['Name'] = '/blocked-one', '/blocked-two'
+first['HostConfig']['Privileged'] = True
+second['HostConfig']['Runtime'] = 'nvidia'
+records = {'blocked-one': first, 'blocked-two': second}
+m.inspect = lambda engine, kind, name: records[name]
+m.run = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('preflight changed a workload'))
+sys.argv = ['migrate-databases.py', '--check', 'blocked-one', 'blocked-two']
+try:
+    m.main()
+except ValueError as error:
+    text = str(error)
+    assert 'blocked-one' in text and 'blocked-two' in text
+    assert 'PRIVATE' not in text and 'do-not-log' not in text
+else:
+    raise AssertionError('blocked batch passed')
+m.os.geteuid = lambda: 0
+try:
+    m.main()
+except ValueError as error:
+    assert 'desktop user' in str(error)
+else:
+    raise AssertionError('rootful automatic migration was accepted')
+print('ok - complete batch preflight reports blockers without secrets or mutations and refuses rootful execution')
+PY
