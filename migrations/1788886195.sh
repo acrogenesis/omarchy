@@ -95,14 +95,16 @@ sudo python3 - <<'PY'
 from pathlib import Path
 import shutil
 
-path = Path('/etc/ufw/after.rules')
-if path.exists():
+for name in ('after.rules', 'after6.rules'):
+    path = Path('/etc/ufw') / name
+    if not path.exists():
+        continue
     contents = path.read_text()
     begin, end = '# BEGIN UFW AND DOCKER', '# END UFW AND DOCKER'
     if begin in contents and end in contents:
         first = contents.index(begin)
         last = contents.index(end, first) + len(end)
-        backup = path.with_name('after.rules.before-podman')
+        backup = path.with_name(name + '.before-podman')
         if not backup.exists():
             shutil.copy2(path, backup)
         path.write_text(contents[:first] + contents[last:].lstrip('\n'))
