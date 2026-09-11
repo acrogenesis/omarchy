@@ -54,6 +54,7 @@ assert migration.validate(changed) == 'project-worker'
 print('ok - eligibility follows actual configuration instead of database names and image labels')
 
 calls = []
+current_source = container
 def record_run(*args, capture=False):
     calls.append(args)
     if capture:
@@ -63,7 +64,10 @@ migration.subprocess.run = lambda args, **kwargs: SimpleNamespace(returncode=1)
 def inspect_fixture(engine, kind, name):
     if kind == 'container':
         if engine == 'docker':
-            return {'State': {'Running': False, 'ExitCode': 0, 'StartedAt': 'start-1', 'FinishedAt': 'stop-1'}}
+            source = copy.deepcopy(current_source)
+            if any(call[:3] == ('sudo', 'docker', 'stop') for call in calls):
+                source['State'].update(Running=False, ExitCode=0)
+            return source
         return {'Id': 'c' * 64, 'Config': {'Env': []}, 'HostConfig': {'ShmSize': 64 * 1024 * 1024, 'PidsLimit': -1, 'Privileged': False},
                 'Mounts': [{'Type': 'volume', 'Name': 'omarchy-migrated-old-data', 'Destination': '/data', 'RW': True}],
                 'EffectiveCaps': [], 'BoundingCaps': []}
@@ -137,6 +141,7 @@ for name in ('MyDatabase', 'app..db', 'worker_' + 'x' * 250):
     migration.completion_path(container['Id']).unlink()
     renamed = copy.deepcopy(container)
     renamed['Name'] = '/' + name
+    current_source = renamed
     migration.migrate(renamed)
     image = next(call[4] for call in calls if call[:3] == ('sudo', 'docker', 'commit'))
     assert image == 'localhost/omarchy-migrated:' + container['Id']
@@ -144,6 +149,7 @@ for name in ('MyDatabase', 'app..db', 'worker_' + 'x' * 250):
     assert create[-1] == image
     assert create[create.index('--name') + 1] == name
 print('ok - uppercase, repeated-dot and long container names use a valid image reference without changing container identity')
+current_source = container
 
 calls.clear()
 try:
@@ -157,7 +163,12 @@ migration.completion_path(container['Id']).unlink()
 print('ok - missing completed destinations retain their recovery copies for explicit review')
 
 inspect_clean = migration.inspect
-migration.inspect = lambda engine, kind, name: {'State': {'Running': False, 'ExitCode': 137}} if kind == 'container' else inspect_clean(engine, kind, name)
+def forced_stop(engine, kind, name):
+    result = inspect_clean(engine, kind, name)
+    if engine == 'docker' and kind == 'container' and any(call[:3] == ('sudo', 'docker', 'stop') for call in calls):
+        result['State']['ExitCode'] = 137
+    return result
+migration.inspect = forced_stop
 try:
     migration.migrate(container)
 except RuntimeError as error:
@@ -266,13 +277,15 @@ print('ok - failed transfer restores the previously running Docker database')
 calls.clear()
 record_completion(container, stopped['State'])
 migration.subprocess.run = lambda args, **kwargs: SimpleNamespace(returncode=0)
-migration.inspect = lambda *args: {'Id': 'c' * 64, 'Config': {'Labels': {migration.LABEL: 'a' * 64}}}
+migration.inspect = lambda engine, *args: copy.deepcopy(current_source) if engine == 'docker' else {'Id': 'c' * 64, 'Config': {'Labels': {migration.LABEL: 'a' * 64}}}
+current_source = stopped
 migration.migrate(stopped)
 assert not calls
 for source_state in ({'Running': True, 'StartedAt': 'start-1', 'FinishedAt': 'stop-1'},
                      {'Running': False, 'StartedAt': 'start-2', 'FinishedAt': 'stop-2'}):
     resumed = copy.deepcopy(container)
     resumed['State'] = source_state
+    current_source = resumed
     try:
         migration.migrate(resumed)
     except ValueError:
@@ -282,6 +295,7 @@ for source_state in ({'Running': True, 'StartedAt': 'start-1', 'FinishedAt': 'st
     assert not calls
 print('ok - completed sources cannot resume on daemon restart and restarted sources require review even after stopping again')
 migration.completion_path('a' * 64).unlink()
+current_source = container
 try:
     migration.migrate(container)
 except ValueError as error:
@@ -289,7 +303,7 @@ except ValueError as error:
 else:
     raise AssertionError('an interrupted transfer was accepted as complete')
 assert not calls
-migration.inspect = lambda *args: {'Config': {'Labels': {migration.LABEL: 'different'}}}
+migration.inspect = lambda engine, *args: copy.deepcopy(current_source) if engine == 'docker' else {'Config': {'Labels': {migration.LABEL: 'different'}}}
 try:
     migration.migrate(container)
 except ValueError:

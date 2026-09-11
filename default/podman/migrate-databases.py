@@ -369,11 +369,32 @@ def verify_volume(target, expected):
         raise RuntimeError("Volume content or metadata verification failed; Docker data was retained")
 
 
+def source_snapshot(container):
+    # Health probes and process IDs are observations, not workload settings.
+    # Keep lifecycle timestamps/flags, complete creation/runtime configuration,
+    # attachments and security labels so a batch cannot use an obsolete plan.
+    fields = ("Id", "Name", "Image", "Config", "HostConfig", "Mounts", "NetworkSettings",
+              "AppArmorProfile", "ProcessLabel", "MountLabel", "RestartCount")
+    snapshot = {field: container.get(field) for field in fields}
+    snapshot["State"] = {key: value for key, value in container["State"].items() if key not in ("Health", "Pid")}
+    return snapshot
+
+
+def refresh_source(container):
+    latest = inspect("docker", "container", container["Id"])
+    if source_snapshot(latest) != source_snapshot(container):
+        raise ValueError(f'{container["Name"].lstrip("/")}: Docker source changed after preflight; rerun migration after workloads are stable')
+    validate(latest)
+    return latest
+
+
 def migrate(container):
-    name = validate(container)
+    container = refresh_source(container)
+    name = container["Name"].lstrip("/")
     identity = container["Id"]
     if exists("container", name):
         target = inspect("podman", "container", name)
+        container = refresh_source(container)
         if completed(container, target):
             print(f"{name}: already migrated")
             return
@@ -381,6 +402,7 @@ def migrate(container):
     if completion_path(identity).exists():
         raise ValueError(f"{name}: a previously migrated destination is missing; inspect retained data before retrying")
 
+    container = refresh_source(container)
     running = container["State"]["Running"]
     created = False
     restart_changed = False
