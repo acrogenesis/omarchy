@@ -39,7 +39,11 @@ case "$name" in
       *) exit 94;;
     esac ;;
   pacman)
-    if [[ $* == '-Qq docker' ]]; then echo "$TEST_ENGINE"; fi ;;
+    [[ $TEST_ENGINE != broken ]] || exit 2
+    if [[ $* == '-Qq docker' ]]; then
+      [[ $TEST_ENGINE != missing ]] || exit 1
+      echo "$TEST_ENGINE"
+    fi ;;
   python3|docker|podman|ufw|omarchy-pkg-add|omarchy-pkg-drop|omarchy-state|dbus-update-activation-environment|omarchy-refresh-pacman) ;;
   *) exit 95;;
 esac
@@ -74,11 +78,24 @@ esac
     print('ok - migration restores the local user environment, refuses a missing bus before changes and swaps the Docker provider after transfer')
 
     repair = root / 'bin/omarchy-reinstall-pkgs'
-    for engine in ('docker', 'podman-docker', 'missing'):
+    for engine in ('docker', 'docker-git'):
+        result, calls = run(migration, TEST_ENGINE=engine)
+        assert result.returncode == 0, (engine, result.stderr)
+        swap = next(i for i, c in enumerate(calls) if c.startswith('pacman|-S --needed --noconfirm --ask 4 podman-docker|'))
+        transfer = next((i for i, c in enumerate(calls) if c.startswith('python3|') and 'migrate-databases.py' in c and '--check' not in c), None)
+        assert transfer is not None and transfer < swap, (engine, 'provider replaced without workload transfer', calls)
+    print('ok - alternate Docker providers receive full workload preflight and transfer before replacement')
+
+    for engine in ('docker', 'docker-git', 'podman-docker', 'missing'):
         result, calls = run(repair, TEST_ENGINE=engine)
         assert result.returncode == 0, result.stderr
         install = next(c.split('|')[1].split() for c in calls if c.startswith('pacman|-Syu '))
-        assert ('podman-docker' in install) == (engine != 'docker'), (engine, install)
+        assert ('podman-docker' in install) == (engine not in ('docker', 'docker-git')), (engine, install)
         assert 'podman' in install and 'podman-compose' in install, install
-    print('ok - package repair retains Docker while migration is pending and installs compatibility defaults otherwise')
+    print('ok - package repair retains all real Docker providers while migration is pending')
+    for path in (migration, repair):
+        result, calls = run(path, TEST_ENGINE='broken')
+        assert result.returncode != 0, (path, 'failed package query treated as no engine')
+        assert not any(c.startswith(('omarchy-pkg-add|', 'podman|', 'pacman|-Syu ')) for c in calls), calls
+    print('ok - failed provider/database queries prevent engine replacement')
 PYTEST

@@ -14,6 +14,13 @@ if ! systemctl --user show-environment >/dev/null; then
   exit 1
 fi
 
+# Pacman resolves virtual providers too. A failed package database query must
+# not turn an installed engine into an apparently empty machine.
+if ! docker_provider=$(pacman -Qq docker 2>/dev/null); then
+  pacman -Qq >/dev/null
+  docker_provider=""
+fi
+
 omarchy-pkg-add podman podman-compose
 if [[ ! -f $HOME/.local/state/omarchy/preinstalls-removed ]]; then
   omarchy-pkg-add podman-desktop
@@ -23,10 +30,9 @@ fi
 # compatible unprivileged containers transfer their images and volumes rootlessly.
 docker_installed=0
 container_names=()
-# The compatibility package also provides a docker command. Only the real
-# engine package needs a daemon and workload transfer on retries or other users.
-# pacman's query resolves providers too, so compare the returned package name.
-if [[ $(pacman -Qq docker 2>/dev/null) == "docker" ]]; then
+# Only the Podman shim is already migrated. Alternate real engines need the
+# same workload inventory and verification before their provider is replaced.
+if [[ -n $docker_provider && $docker_provider != "podman-docker" ]]; then
   docker_installed=1
   sudo systemctl start docker.socket
   docker_names=$(sudo docker --host unix:///var/run/docker.sock ps -a --format '{{.Names}}')
