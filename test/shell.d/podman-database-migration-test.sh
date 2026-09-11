@@ -19,7 +19,7 @@ spec.loader.exec_module(migration)
 migration.daemon_security = lambda: ['name=seccomp,profile=builtin', 'name=cgroupns']
 state = tempfile.TemporaryDirectory()
 migration.completion_path = lambda identity: Path(state.name) / identity
-migration.oci_spec = lambda target: {'linux': {'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {'user': {'uid': 0}}}
+migration.oci_spec = lambda target: {'linux': {'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}}, 'process': {'user': {'uid': 0}, 'env': []}}
 
 container = {
     'Name': '/redis', 'Id': 'a' * 64, 'State': {'Running': True, 'StartedAt': 'start-1', 'FinishedAt': 'stop-1'},
@@ -64,7 +64,7 @@ def inspect_fixture(engine, kind, name):
     if kind == 'container':
         if engine == 'docker':
             return {'State': {'Running': False, 'ExitCode': 0, 'StartedAt': 'start-1', 'FinishedAt': 'stop-1'}}
-        return {'Id': 'c' * 64, 'HostConfig': {'ShmSize': 64 * 1024 * 1024, 'PidsLimit': -1, 'Privileged': False},
+        return {'Id': 'c' * 64, 'Config': {'Env': []}, 'HostConfig': {'ShmSize': 64 * 1024 * 1024, 'PidsLimit': -1, 'Privileged': False},
                 'Mounts': [{'Type': 'volume', 'Name': 'omarchy-migrated-old-data', 'Destination': '/data', 'RW': True}],
                 'EffectiveCaps': [], 'BoundingCaps': []}
     return {'Mountpoint': '/var/lib/docker/volumes/old-data/_data', 'Options': None}
@@ -120,6 +120,8 @@ create = next(call for call in calls if call[:2] == ('podman', 'create'))
 assert '127.0.0.1:6379:6379/tcp' in create
 assert 'omarchy-migrated-old-data:/data:rw,nocopy' in create
 assert '--pids-limit=-1' in create
+assert '--http-proxy=false' in create
+assert '--env-host=false' in create
 assert create[create.index('--health-cmd') + 1] == '["CMD", "redis-cli", "ping"]'
 assert create[create.index('--health-interval') + 1] == '5000000000ns'
 assert ('sudo', 'docker', 'stop', '-t', '120', 'a' * 64) in calls

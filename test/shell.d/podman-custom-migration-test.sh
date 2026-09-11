@@ -90,13 +90,38 @@ print('ok - migration commands pin local engines instead of following saved remo
 h = copy.deepcopy(c['HostConfig'])
 h['Privileged'] = False
 h['CpuQuota'], h['CpuPeriod'] = 50000, 100000
-target = {'HostConfig': h, 'EffectiveCaps': [], 'BoundingCaps': [], 'Mounts': copy.deepcopy(c['Mounts'])}
+target = {'Config': copy.deepcopy(c['Config']), 'HostConfig': h, 'EffectiveCaps': [], 'BoundingCaps': [], 'Mounts': copy.deepcopy(c['Mounts'])}
 runtime = {'linux': {'maskedPaths': sorted(m.MASKED_PATHS), 'readonlyPaths': sorted(m.READONLY_PATHS),
                      'seccomp': {'defaultAction': 'SCMP_ACT_ERRNO'}},
-           'process': {'user': {'uid': 1000}, 'noNewPrivileges': True}}
+           'process': {'user': {'uid': 1000}, 'noNewPrivileges': True, 'env': list(c['Config']['Env'])}}
 m.oci_spec = lambda target: runtime
 m.inspect = lambda *args: target
 m.verify_runtime(c)
+# Both inspect and the final OCI environment are checked before application start.
+for environment in (target['Config']['Env'], runtime['process']['env']):
+    original = list(environment)
+    for values in (original + ['HTTPS_PROXY=http://fixture:secret@proxy.invalid'],
+                   ['PRIVATE=changed'], [], original + ['PRIVATE=duplicate'],
+                   original + ['EXTRA_CONFIG=unexpected']):
+        environment[:] = values
+        try:
+            m.verify_runtime(c)
+        except RuntimeError as error:
+            assert 'secret' not in str(error) and 'PRIVATE' not in str(error)
+        else:
+            raise AssertionError('destination environment drift was accepted')
+    environment[:] = original + ['HOME=/home/worker', 'HOSTNAME=worker', 'container=podman']
+    m.verify_runtime(c)
+    environment[:] = original
+# A proxy explicitly present in the Docker source must survive byte-for-byte.
+for config in (c['Config'], target['Config']):
+    config['Env'].append('HTTPS_PROXY=http://source-proxy.invalid')
+runtime['process']['env'].append('HTTPS_PROXY=http://source-proxy.invalid')
+m.verify_runtime(c)
+for config in (c['Config'], target['Config']):
+    config['Env'].pop()
+runtime['process']['env'].pop()
+print('ok - both destination environments preserve source variables, reject injected proxies and allow missing-source engine defaults')
 target['EffectiveCaps'], target['BoundingCaps'] = None, None
 m.verify_runtime(c)
 del target['EffectiveCaps']

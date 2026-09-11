@@ -126,9 +126,28 @@ def allowed_capabilities(container):
     return set() if "ALL" in dropped else DOCKER_CAPABILITIES - dropped
 
 
+def verify_environment(container, values):
+    # Docker and Podman synthesize these process defaults when absent from the
+    # image. All source values must survive, and no other variables may appear.
+    defaults = {"HOME", "HOSTNAME", "PATH", "TERM", "container"}
+    def mapping(entries):
+        if not isinstance(entries, list) or any(not isinstance(entry, str) or "=" not in entry for entry in entries):
+            raise RuntimeError("Cannot verify container environment")
+        result = dict(entry.split("=", 1) for entry in entries)
+        if len(result) != len(entries):
+            raise RuntimeError("Cannot verify duplicate container environment variables")
+        return result
+    source = mapping(container["Config"].get("Env") or [])
+    target = mapping(values)
+    if any(target.get(key) != value for key, value in source.items()) or set(target) - set(source) - defaults:
+        # Environment names and values may contain secrets. Never print them.
+        raise RuntimeError("Podman did not preserve the source environment; application was not started")
+
+
 def verify_runtime(container):
     name = container["Name"].lstrip("/")
     target = inspect("podman", "container", name)
+    verify_environment(container, target["Config"].get("Env"))
     source_host, target_host = container["HostConfig"], target["HostConfig"]
     if target_host.get("Privileged") is not False:
         raise RuntimeError(f"{name}: refusing privileged destination")
@@ -164,6 +183,7 @@ def verify_runtime(container):
     # generated specification after init, before its application can execute.
     specification = oci_spec(target)
     process = specification["process"]
+    verify_environment(container, process.get("env"))
     # Named image users can resolve differently from their spelling. Never
     # grant capabilities to a nonzero UID through the root-name branch above.
     if process["user"]["uid"] != 0 and any((process.get("capabilities") or {}).values()):
@@ -379,7 +399,7 @@ def migrate(container):
         # Volume data is copied separately while the source container is stopped.
         run("sudo", "docker", "commit", identity, image)
         pipe(["sudo", "docker", "image", "save", image], ["podman", "image", "load", "--quiet"])
-        arguments = ["podman", "create", "--pull=never", "--systemd=false", "--name", name, "--label", f"{LABEL}={identity}"]
+        arguments = ["podman", "create", "--pull=never", "--systemd=false", "--http-proxy=false", "--env-host=false", "--name", name, "--label", f"{LABEL}={identity}"]
         # In rootless Podman, "host" selects the user's existing Podman user
         # namespace, also used by unshare/tar; it does not grant host root.
         arguments += ["--privileged=false", "--userns=host", "--pid=private", "--ipc=private",
