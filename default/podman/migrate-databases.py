@@ -518,7 +518,8 @@ def migrate(container):
 def main():
     if os.geteuid() == 0:
         raise ValueError("Run the migration as the desktop user; automatic transfer never creates rootful containers")
-    check_only = sys.argv[1:2] == ["--check"]
+    check_completed = sys.argv[1:2] == ["--check-completed"]
+    check_only = check_completed or sys.argv[1:2] == ["--check"]
     names = sys.argv[2:] if check_only else sys.argv[1:]
     if names:
         validate_daemon(daemon_security())
@@ -538,6 +539,14 @@ def main():
             volumes.add(mount["Name"])
     if blockers:
         raise ValueError("\n".join(blockers))
+    if check_completed:
+        for container in containers:
+            name = container["Name"].lstrip("/")
+            if (not exists("container", name) or
+                    not completed(container, inspect("podman", "container", name)) or
+                    (container["HostConfig"].get("RestartPolicy") or {}).get("Name") != "no"):
+                raise ValueError(f"{name}: completed transfer changed; Docker must remain available for recovery")
+        return
     if not check_only:
         # Check all destination names before stopping the first source.
         for container in containers:

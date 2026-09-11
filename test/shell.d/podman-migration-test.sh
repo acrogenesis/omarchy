@@ -7,7 +7,7 @@ test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir/bin" "$test_dir/home/.local/share/applications"
 export TEST_LOG="$test_dir/calls"
-export STUB_DOCKER=0 STUB_NAMES="" STUB_GROUPS=wheel STUB_WINDOWS=managed
+export STUB_DOCKER=0 STUB_NAMES="" STUB_GROUPS=wheel STUB_WINDOWS=managed STUB_CHANGED=0 STUB_COMPLETED=valid
 
 cat >"$test_dir/bin/sudo" <<'SH'
 #!/bin/bash
@@ -24,7 +24,17 @@ case "$1" in
     [[ $2 == --host && $3 == unix:///var/run/docker.sock ]] || exit 2
     shift 2
     case "$2" in
-      ps) printf '%s\n' "$STUB_NAMES" ;;
+      ps)
+        if [[ $* == *'{{.ID}}'* ]]; then
+          while read -r name; do
+            [[ -z $name ]] || printf 'fixture-id-%s %s\n' "$name" "$name"
+          done <<<"$STUB_NAMES"
+        else
+          printf '%s\n' "$STUB_NAMES"
+        fi
+        if [[ $STUB_CHANGED == 1 ]] && grep -q 'migrate-databases.py --check-completed' "$TEST_LOG"; then
+          printf 'new-id new-container\n'
+        fi ;;
       stop) [[ $3 == '-t' && $4 == 120 && $5 == omarchy-windows ]] ;;
       *) exit 2 ;;
     esac ;;
@@ -57,6 +67,7 @@ SH
 cat >"$test_dir/bin/python3" <<'SH'
 #!/bin/bash
 printf 'python3 %s\n' "$*" >>"$TEST_LOG"
+if [[ $* == *--check-completed* && $STUB_COMPLETED == changed ]]; then exit 1; fi
 if [[ $* == *custom-project* ]]; then
   echo 'custom-project requires its own Compose definition' >&2
   exit 1
@@ -97,6 +108,15 @@ run_migration && fail "migration discarded an unmigrated database"
 grep -q custom-project "$test_dir/output" || fail "migration did not identify the pending workload"
 pass "existing workloads keep Docker and the migration pending"
 
+STUB_NAMES=redis STUB_CHANGED=1
+run_migration && fail "new Docker container was ignored before engine retirement"
+! grep -q 'disable --now docker\|sudo pacman .*podman-docker' "$TEST_LOG" || fail "new inventory retired the engine"
+pass "new containers during transfer keep Docker installed and available"
+STUB_CHANGED=0 STUB_COMPLETED=changed
+run_migration && fail "changed completed source was ignored before retirement"
+! grep -q 'disable --now docker\|sudo pacman .*podman-docker' "$TEST_LOG" || fail "changed completed transfer retired Docker"
+pass "resumed completed sources prevent engine retirement"
+STUB_COMPLETED=valid
 STUB_NAMES=omarchy-windows
 run_migration || fail "Windows-only handover failed" "$(cat "$test_dir/output")"
 grep -q 'sudo python3 .*migrate-windows.py --stop tester' "$TEST_LOG" || fail "Windows was not shut down gracefully"

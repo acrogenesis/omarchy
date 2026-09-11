@@ -35,7 +35,8 @@ container_names=()
 if [[ -n $docker_provider && $docker_provider != "podman-docker" ]]; then
   docker_installed=1
   sudo systemctl start docker.socket
-  docker_names=$(sudo docker --host unix:///var/run/docker.sock ps -a --format '{{.Names}}')
+  docker_inventory=$(sudo docker --host unix:///var/run/docker.sock ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
+  docker_names=$(printf '%s\n' "$docker_inventory" | awk '{print $2}')
   if printf '%s\n' "$docker_names" | grep -qx omarchy-windows; then
     sudo python3 "$OMARCHY_PATH/default/podman/migrate-windows.py" --check "$USER"
   fi
@@ -83,6 +84,15 @@ if ((docker_installed)); then
   python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" "${container_names[@]}"
   if printf '%s\n' "$docker_names" | grep -qx omarchy-windows; then
     sudo python3 "$OMARCHY_PATH/default/podman/migrate-windows.py" --stop "$USER"
+  fi
+  # A long transfer is not a lock on the Docker daemon. Confirm every completed
+  # source still matches its receipt, and catch added/replaced/renamed containers
+  # before retiring the engine. Any change keeps the migration pending.
+  python3 "$OMARCHY_PATH/default/podman/migrate-databases.py" --check-completed "${container_names[@]}"
+  latest_inventory=$(sudo docker --host unix:///var/run/docker.sock ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
+  if [[ $latest_inventory != "$docker_inventory" ]]; then
+    echo "Docker containers changed during migration. Docker and its data have been retained; rerun after reviewing both engines." >&2
+    exit 1
   fi
   # Keep Docker's stopped containers and volume data as recovery copies.
   sudo systemctl disable --now docker.socket docker.service

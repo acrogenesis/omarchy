@@ -6,6 +6,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/base-test.sh"
 python3 - <<'PY'
 import copy
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -334,4 +335,30 @@ else:
 assert not calls
 print('ok - retries require a completion receipt matching both engines and retain interrupted or unrelated destinations')
 
+completed_source = copy.deepcopy(stopped)
+completed_source['Mounts'] = []
+completed_source['HostConfig']['RestartPolicy'] = {'Name': 'no'}
+completed_target = {'Id': 'c' * 64, 'Config': {'Labels': {migration.LABEL: container['Id']}}}
+migration.completion_path(container['Id']).write_text(json.dumps({'target': completed_target['Id'], 'source': migration.stopped_identity(stopped['State'])}))
+migration.run = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError('final completion check mutated an engine'))
+for change in ('none', 'running', 'restarted', 'restart-policy', 'missing-target', 'replaced-target'):
+    source, target = copy.deepcopy(completed_source), copy.deepcopy(completed_target)
+    if change == 'running':
+        source['State']['Running'] = True
+    elif change == 'restarted':
+        source['State']['StartedAt'] = 'new-start'
+    elif change == 'restart-policy':
+        source['HostConfig']['RestartPolicy']['Name'] = 'always'
+    elif change == 'replaced-target':
+        target['Id'] = 'd' * 64
+    migration.inspect = lambda engine, *args: copy.deepcopy(source if engine == 'docker' else target)
+    migration.exists = lambda *args: change != 'missing-target'
+    sys.argv = ['migrate-databases.py', '--check-completed', 'redis']
+    try:
+        migration.main()
+    except ValueError as error:
+        assert change != 'none' and 'completed transfer changed' in str(error), (change, error)
+    else:
+        assert change == 'none', change
+print('ok - final completion check is read-only and rejects resumed sources, changed policy and missing/replaced destinations')
 PY
