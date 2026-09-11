@@ -5,11 +5,8 @@
 # omarchy:requires-sudo=true
 
 # The Windows VM runs a privileged container (KVM, /dev/net/tun, NET_ADMIN), so
-# it needs the root-owned Docker daemon. By default the user is NOT in the docker
-# group (that group is root-equivalent), so Docker access is gated behind a
-# single polkit prompt. If the user opted into sudoless Docker
-# (omarchy-setup-security-sudoless-docker), the socket is reachable directly and
-# no prompt appears.
+# it cannot use the rootless development daemon. Every operation uses the
+# root-owned Docker socket through an authenticated sudo or polkit boundary.
 #
 # The compose file lives in a root-owned directory and is only ever written by
 # the elevated, input-validated write_compose action below. That is the whole
@@ -22,9 +19,9 @@
 RUNTIME_DIR="${OMARCHY_WINDOWS_DIR:-/var/lib/omarchy/windows}"
 COMPOSE_FILE="$RUNTIME_DIR/docker-compose.yml"
 LEGACY_COMPOSE_FILE="$HOME/.config/windows/docker-compose.yml"
-# The guest password lives in the root-owned compose (readable by root and the
-# docker group), but RDP needs it as the user. Keep a private copy here, 0600 in
-# the user's own config, so the plaintext password is never world-readable.
+# The guest password lives in the root-only compose, but RDP needs it as the
+# user. Keep a private copy in the user's own config, mode 0600, so the
+# plaintext password is never world-readable.
 CREDENTIALS_FILE="$HOME/.config/windows/credentials"
 IMAGE="dockurr/windows"
 CONTAINER="omarchy-windows"
@@ -47,12 +44,6 @@ if ((EUID == 0)); then
 fi
 
 # --- privilege helpers -------------------------------------------------------
-
-# True when this session can reach the Docker socket directly (sudoless Docker
-# on and in effect). Asking about the socket rather than the configured groups
-# keeps the prompt in place through the window where sudoless Docker is enabled
-# but the reboot that grants the group has not happened yet.
-docker_needs_sudo() { omarchy-sudo-docker; }
 
 # The command to hand pkexec for the privileged re-exec. pkexec runs whatever
 # executable it is given (after authorization) and only shows the path in the
@@ -77,47 +68,39 @@ priv_target() {
   printf '%s\n' "$candidate"
 }
 
-# Run a privileged VM action. write_compose always elevates (the compose is
-# root-owned); the daemon operations run directly when sudoless Docker is on and
-# otherwise behind a polkit prompt. The stock org.freedesktop.policykit.exec
-# policy is auth_admin (not auth_admin_keep), so each elevated action prompts:
-# a launch asks once to start and, unless authorization is still cached by the
-# agent, again to stop.
+# Run every VM action through authentication. A visible terminal uses sudo so
+# the password prompt stays in that terminal; graphical launches use polkit.
 priv() {
-  local action="$1"
+  local action="$1" target
   shift
-  if [[ $action != write_compose && $action != remove ]] && ! docker_needs_sudo; then
-    # Bring-up normally runs directly for a docker-group user, but recreating
-    # the protected bind anchors after reboot (or migrating an old compose)
-    # still needs one privileged invocation.
-    if [[ -d $VM_LOCK_DIR && ! -L $VM_LOCK_DIR && -r $VM_LOCK_DIR && -x $VM_LOCK_DIR ]] && {
-      [[ $action != up && $action != up_wait ]] || {
-        ! compose_needs_security_migration && mounts_ready >/dev/null 2>&1
-      }
-    }; then
-      with_vm_lock "__priv_$action" "$@"
-      return
-    fi
-  fi
-  local target
   target=$(priv_target) || {
     echo "omarchy-windows-vm: refusing to run a non-root-owned command as root" >&2
     return 1
   }
-  pkexec "$target" __priv "$action" "$@"
+  if [[ -t 0 || -t 1 || -t 2 ]]; then
+    sudo "$target" __priv "$action" "$@"
+  else
+    pkexec "$target" __priv "$action" "$@"
+  fi
 }
 
-dc() { docker-compose -f "$COMPOSE_FILE" "$@"; }
+# Pin Windows to the rootful socket even when the caller's session exports the
+# rootless DOCKER_HOST. Socket activation keeps that rootful daemon off until an
+# authenticated VM operation needs it.
+docker() {
+  if ((EUID == 0)); then
+    /usr/bin/systemctl start docker.socket || return 1
+  fi
+  command /usr/bin/docker --host unix:///run/docker.sock "$@"
+}
+
+dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
 
 with_vm_lock() {
   local fd rc=0
   if ((EUID == 0)); then
     assert_boundary_dir /run 0 && assert_boundary_dir /run/lock 0 || return 1
-    if getent group docker >/dev/null 2>&1; then
-      install -d -o root -g docker -m 0750 -- "$VM_LOCK_DIR" || return 1
-    else
-      install -d -o root -g root -m 0700 -- "$VM_LOCK_DIR" || return 1
-    fi
+    install -d -o root -g root -m 0700 -- "$VM_LOCK_DIR" || return 1
   fi
   assert_boundary_dir "$VM_LOCK_DIR" 0 || return 1
   # Flock the directory inode itself. Concurrent first callers may both run
@@ -151,20 +134,21 @@ valid_priv_action() {
   esac
 }
 
-# --- privileged actions (run as root via pkexec, or directly when sudoless) ---
+# --- privileged actions (run as root via sudo or pkexec) ---------------------
 
-# Resolve the account that authorized pkexec. Never trust HOME or a caller-
-# supplied mount path in the privileged process: pkexec can reset HOME, and the
+# Resolve the account that authorized sudo or pkexec. Never trust HOME or a
+# caller-supplied mount path in the privileged process: pkexec can reset HOME, and the
 # old path arguments were the source of an arbitrary host bind-mount primitive.
 resolve_caller() {
-  local entry canonical parent owner mode
+  local entry canonical parent owner mode authorized_uid
 
   if ((EUID == 0)); then
-    [[ ${PKEXEC_UID:-} =~ ^[0-9]{1,10}$ ]] && ((10#$PKEXEC_UID > 0)) || {
+    authorized_uid=${SUDO_UID:-${PKEXEC_UID:-}}
+    [[ $authorized_uid =~ ^[0-9]{1,10}$ ]] && ((10#$authorized_uid > 0)) || {
       echo "omarchy-windows-vm: cannot identify the user who authorized this action" >&2
       return 1
     }
-    CALLER_UID=$((10#$PKEXEC_UID))
+    CALLER_UID=$((10#$authorized_uid))
   else
     CALLER_UID=$(id -u)
   fi
@@ -232,8 +216,7 @@ resolve_caller() {
 }
 
 boundary_owner() {
-  # Production boundaries remain root-owned even when a docker-group user runs
-  # the read-only bring-up checks directly. A non-standard runtime is supported
+  # Production boundaries are always root-owned. A non-standard runtime is supported
   # only for unprivileged tests/development and is owned by that caller.
   if ((EUID == 0)) || [[ $RUNTIME_DIR == /var/lib/omarchy/windows ]]; then
     printf '0'
@@ -725,9 +708,9 @@ services:
     restart: "no"
     stop_grace_period: 2m
 EOF
-  chmod 0640 "$tmp" || exit 1
+  chmod 0600 "$tmp" || exit 1
   if ((EUID == 0)); then
-    chown root:docker "$tmp" 2>/dev/null || chown root:root "$tmp" || exit 1
+    chown root:root "$tmp" || exit 1
   fi
   mv -fT -- "$tmp" "$COMPOSE_FILE" || exit 1
   tmp=""
@@ -760,7 +743,7 @@ __priv_write_compose() {
   valid_password "$password" || { echo "invalid password" >&2; exit 2; }
   valid_tz "$tz" || tz="UTC"
   prepare_caller_mounts || exit 2
-  # Readable by root and the docker group only. Any failure after mounting rolls
+  # Readable by root only. Any failure after mounting rolls
   # back just the binds this writer created and leaves an old compose untouched.
   write_compose_atomically "$ram" "$cores" "$disk" "$username" "$password" "$tz" || exit 2
 }
@@ -771,7 +754,7 @@ get_mount_source() {
 }
 
 # True only when a trusted compose has an exact security upgrade path. The
-# result forces a one-time elevated migration for sudoless-Docker users. An
+# result forces a one-time authenticated migration. An
 # arbitrary or mixed bind pair is never classified as migratable.
 compose_needs_security_migration() {
   local storage shared
@@ -783,7 +766,9 @@ compose_needs_security_migration() {
   if compose_mount_pair_is_migratable "$storage" "$shared"; then
     return 0
   fi
-  [[ $storage == "$EXPECTED_STORAGE" && $shared == "$EXPECTED_SHARED" ]] && ! compose_web_protected
+  [[ $storage == "$EXPECTED_STORAGE" && $shared == "$EXPECTED_SHARED" ]] && {
+    ! compose_web_protected || ! compose_root_private
+  }
 }
 
 compose_mount_pair_is_migratable() {
@@ -802,6 +787,12 @@ compose_web_protected() {
     $(sed -n 's/^[[:space:]]*PROTECT:[[:space:]]*"Y"[[:space:]]*$/x/p' "$COMPOSE_FILE" | wc -l) == 1 ]]
 }
 
+compose_root_private() {
+  local expected
+  expected=$(boundary_owner)
+  [[ $(stat -Lc '%u:%g:%a' "$COMPOSE_FILE" 2>/dev/null) == "$expected:$expected:600" ]]
+}
+
 rewrite_compose_security() {
   local tmp
   tmp=$(mktemp "$RUNTIME_DIR/.compose.XXXXXX") || return 1
@@ -817,9 +808,9 @@ rewrite_compose_security() {
     rm -f "$tmp"
     return 1
   }
-  chmod 0640 "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 0600 "$tmp" || { rm -f "$tmp"; return 1; }
   if ((EUID == 0)); then
-    chown root:docker "$tmp" 2>/dev/null || chown root:root "$tmp" || {
+    chown root:root "$tmp" || {
       rm -f "$tmp"
       return 1
     }
@@ -876,14 +867,21 @@ assert_mounts_safe() {
     needs_rewrite=1
   fi
 
+  if ! compose_root_private; then
+    ((EUID == 0)) || {
+      echo "omarchy-windows-vm: compose permissions need an authorized migration" >&2
+      return 1
+    }
+    needs_rewrite=1
+  fi
+
   if ((needs_rewrite)) && ! rewrite_compose_security; then
     if ((mounts_prepared)); then rollback_new_caller_mounts || true; fi
     return 1
   fi
 
   # Mounts disappear at reboot. Root recreates them from the already-opened,
-  # caller-owned sources; a docker-group invocation may proceed directly only
-  # while the exact pinned pair is still present.
+  # caller-owned sources before Docker consumes the protected compose.
   if ((EUID == 0)); then
     prepare_caller_mounts || return 1
   fi
@@ -1306,8 +1304,8 @@ EOF
   local tz
   tz=$(timedatectl show -p Timezone --value 2>/dev/null || echo UTC)
 
-  # Write the root-owned compose from the validated settings (one prompt if
-  # sudoless Docker is off). The writer pins the familiar home directories (or
+  # Write the root-owned compose from the validated settings. The writer pins
+  # the familiar home directories (or
   # their legitimate symlink targets) into root-protected bind anchors.
   write_compose "$SELECTED_RAM" "$SELECTED_CORES" "$SELECTED_DISK" \
     "$USERNAME" "$PASSWORD" "$tz" || {
@@ -1326,11 +1324,11 @@ EOF
   echo "Monitor installation progress at: http://127.0.0.1:8006"
   echo ""
 
-  echo "Starting Windows VM with docker-compose..."
+  echo "Starting Windows VM with rootful Docker Compose..."
   if ! priv up; then
     echo "❌ Failed to start Windows VM!"
     echo "   Common issues:"
-    echo "   - Docker daemon not running: sudo systemctl start docker"
+    echo "   - Rootful Docker socket could not start"
     echo "   - Port already in use: check if another VM is running"
     exit 1
   fi
@@ -1396,8 +1394,8 @@ launch_windows() {
     fi
   fi
 
-  # RDP credentials come from the private per-user file. Fall back to the compose
-  # only when it is readable (sudoless mode), reversing the writer's escaping.
+  # RDP credentials come from the private per-user file. Older installs may
+  # still have a readable compose, so retain that migration fallback.
   WIN_USER=$(read_credential USERNAME) || WIN_USER=""
   WIN_PASS=$(read_credential PASSWORD) || WIN_PASS=""
   if [[ -z $WIN_USER || -z $WIN_PASS ]] && [[ -r $COMPOSE_FILE ]]; then

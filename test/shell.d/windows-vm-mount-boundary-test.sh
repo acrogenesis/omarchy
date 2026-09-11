@@ -152,7 +152,7 @@ pass "disk-space accounting measures the actual storage filesystem, not home"
 # Exercise the real root writer and final guard against the production paths.
 printf 'RAM=4G\nCORES=2\nDISK=64G\nUSERNAME=alice\nPASSWORD=pw\nTZ=UTC\n' |
   with_vm_lock __priv_write_compose
-[[ $(command stat -Lc '%u:%a' "$COMPOSE_FILE") == 0:640 ]] || fail "root compose ownership/mode is wrong"
+[[ $(command stat -Lc '%u:%g:%a' "$COMPOSE_FILE") == 0:0:600 ]] || fail "root compose ownership/mode is wrong"
 with_vm_lock assert_mounts_safe || fail "final root mount/compose assertion rejected the verified pair"
 pass "root writer and final pre-Docker guard revalidate the pinned production mounts"
 
