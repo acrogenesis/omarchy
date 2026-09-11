@@ -55,6 +55,18 @@ assert '--cap-add' not in m.runtime_arguments(nonroot)
 assert m.allowed_capabilities(nonroot) == set()
 print('ok - non-root users do not gain effective or ambient capabilities from explicit cap-add flags')
 
+root = copy.deepcopy(c)
+root['Config']['User'] = ''
+for dropped, excluded in ((['all'], m.DOCKER_CAPABILITIES),
+                          (['aLl'], m.DOCKER_CAPABILITIES),
+                          (['net_raw', 'cap_chown'], {'NET_RAW', 'CHOWN'}),
+                          (['cAp_NeT_RaW'], {'NET_RAW'})):
+    root['HostConfig']['CapDrop'] = dropped
+    args = m.runtime_arguments(root)
+    added = {args[index + 1] for index, argument in enumerate(args) if argument == '--cap-add'}
+    assert added == m.DOCKER_CAPABILITIES - excluded, (dropped, added)
+print('ok - Docker API capability drops retain their ceiling regardless of case or CAP_ prefix')
+
 cases = [('Runtime', 'nvidia'), ('Privileged', True), ('CapAdd', ['SYS_ADMIN']),
          ('Devices', [{'PathOnHost': '/dev/kvm'}]), ('DeviceRequests', [{'Driver': 'nvidia'}]),
          ('DeviceCgroupRules', ['a *:* rwm']), ('CgroupnsMode', 'host'),

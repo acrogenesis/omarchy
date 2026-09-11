@@ -122,7 +122,8 @@ def allowed_capabilities(container):
     user = (container["Config"].get("User") or "").split(":")[0]
     if user not in ("", "0", "root"):
         return set()
-    dropped = {capability.removeprefix("CAP_") for capability in container["HostConfig"].get("CapDrop") or []}
+    # Docker API clients can retain mixed-case names in inspected CapDrop.
+    dropped = {capability.upper().removeprefix("CAP_") for capability in container["HostConfig"].get("CapDrop") or []}
     return set() if "ALL" in dropped else DOCKER_CAPABILITIES - dropped
 
 
