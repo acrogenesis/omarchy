@@ -1356,8 +1356,8 @@ MulticastDNS=no
 EOF
   as_root ln -sfn ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 
-  # The final migration handles retiring Docker and preserving existing data.
-  as_root systemctl disable docker.service >/dev/null 2>&1 || true
+  # Preserve Docker's existing boot policy while workload migration is pending.
+  # The final migration disables its service/socket only after verified transfer.
 
   enable_system_service cups.service
   enable_system_service avahi-daemon.service
