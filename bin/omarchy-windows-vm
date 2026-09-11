@@ -76,6 +76,25 @@ priv() {
   fi
 }
 
+# The package provider switches only after migration has verified and stopped
+# the retained Docker sources. Until then, Podman cannot establish whether a
+# Windows disk still has a Docker writer, even if its own project is absent.
+assert_podman_handover() {
+  local provider
+  if provider=$(pacman -Qq docker 2>/dev/null); then
+    if [[ $provider == "podman-docker" ]]; then
+      return 0
+    fi
+    echo "Windows VM operations are unavailable while Docker migration is pending. Complete the Podman migration before using this command." >&2
+    return 1
+  elif pacman -Qq >/dev/null 2>&1; then
+    return 0
+  else
+    echo "Cannot verify the installed container engine; Windows VM operations were stopped before changing any data." >&2
+    return 1
+  fi
+}
+
 dc() { podman-compose -f "$COMPOSE_FILE" "$@"; }
 
 with_vm_lock() {
@@ -1529,6 +1548,14 @@ show_usage() {
   echo "  omarchy-windows-vm launch -k         # Connect to VM (keep running)"
   echo "  omarchy-windows-vm stop              # Shut down the VM"
 }
+
+# Check before user-side prompts or cleanup, and again on authenticated root
+# re-entry. Help remains available while migration is pending.
+case "$1" in
+__priv | install | remove | launch | start | stop | down | status)
+  assert_podman_handover || exit 1
+  ;;
+esac
 
 # Main command dispatcher
 case "$1" in
