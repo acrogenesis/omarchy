@@ -44,18 +44,20 @@ case "$name" in
       [[ $TEST_ENGINE != missing ]] || exit 1
       echo "$TEST_ENGINE"
     fi ;;
-  python3|docker|podman|ufw|omarchy-pkg-add|omarchy-pkg-drop|omarchy-state|dbus-update-activation-environment|omarchy-refresh-pacman) ;;
+  omarchy-cmd-present) [[ $1 == ufw && $TEST_UFW == available ]] ;;
+  ufw) [[ $TEST_UFW == available ]] || exit 127 ;;
+  python3|docker|podman|omarchy-pkg-add|omarchy-pkg-drop|omarchy-state|dbus-update-activation-environment|omarchy-refresh-pacman) ;;
   *) exit 95;;
 esac
 '''
     for name in ('id', 'sudo', 'systemctl', 'pacman', 'python3', 'docker', 'podman', 'ufw',
                  'omarchy-pkg-add', 'omarchy-pkg-drop', 'omarchy-state',
-                 'dbus-update-activation-environment', 'omarchy-refresh-pacman'):
+                 'dbus-update-activation-environment', 'omarchy-refresh-pacman', 'omarchy-cmd-present'):
         path = stubs / name
         path.write_text(stub)
         path.chmod(0o755)
     env = dict(os.environ, PATH=f'{stubs}:/usr/bin', HOME=str(home), USER='fixture',
-               OMARCHY_PATH=str(root), TEST_LOG=str(log), TEST_ENGINE='docker', TEST_BUS='available')
+               OMARCHY_PATH=str(root), TEST_LOG=str(log), TEST_ENGINE='docker', TEST_BUS='available', TEST_UFW='available')
     for name in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'DOCKER_HOST', 'DOCKER_CONTEXT'):
         env.pop(name, None)
     migration = root / 'migrations/1788886195.sh'
@@ -76,6 +78,12 @@ esac
     assert transfer < swap, calls
     assert any(c.startswith('podman|') and '|/run/user/1000|unix:path=/run/user/1000/bus' in c for c in calls)
     print('ok - migration restores the local user environment, refuses a missing bus before changes and swaps the Docker provider after transfer')
+
+    result, calls = run(migration, TEST_UFW='missing')
+    assert result.returncode == 0, (result.stderr, calls)
+    assert not any(c.startswith(('ufw|', 'sudo|ufw ')) for c in calls), calls
+    assert any(c.startswith('pacman|-S --needed --noconfirm --ask 4 podman-docker|') for c in calls)
+    print('ok - hosts without UFW complete migration without invoking the missing firewall tool')
 
     repair = root / 'bin/omarchy-reinstall-pkgs'
     for engine in ('docker', 'docker-git'):

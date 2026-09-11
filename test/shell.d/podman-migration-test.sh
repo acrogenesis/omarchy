@@ -44,7 +44,7 @@ esac
 SH
 cat >"$test_dir/bin/omarchy-cmd-present" <<'SH'
 #!/bin/bash
-[[ $1 == docker ]]
+[[ $1 == ufw ]]
 SH
 cat >"$test_dir/bin/pacman" <<'SH'
 #!/bin/bash

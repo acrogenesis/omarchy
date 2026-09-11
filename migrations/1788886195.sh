@@ -113,11 +113,15 @@ if [[ -z ${DOCKER_CONTEXT:-} ]]; then
 fi
 
 # Replace only Omarchy's Docker DNS rules, leaving unrelated firewall policy.
-sudo ufw --force delete allow in proto udp from 172.16.0.0/12 to 172.17.0.1 port 53
-sudo ufw --force delete allow in proto udp from 192.168.0.0/16 to 172.17.0.1 port 53
-sudo ufw allow in on podman+ to any port 53 proto udp comment omarchy-podman-dns
-sudo ufw allow in on podman+ to any port 53 proto tcp comment omarchy-podman-dns
-sudo ufw route allow in on podman+ comment omarchy-podman-egress
+ufw_available=0
+if omarchy-cmd-present ufw; then
+  ufw_available=1
+  sudo ufw --force delete allow in proto udp from 172.16.0.0/12 to 172.17.0.1 port 53
+  sudo ufw --force delete allow in proto udp from 192.168.0.0/16 to 172.17.0.1 port 53
+  sudo ufw allow in on podman+ to any port 53 proto udp comment omarchy-podman-dns
+  sudo ufw allow in on podman+ to any port 53 proto tcp comment omarchy-podman-dns
+  sudo ufw route allow in on podman+ comment omarchy-podman-egress
+fi
 
 # Remove the retired managed block, preserving administrator rules around it.
 # Archive it first so a later failure or a deliberate rollback is recoverable.
@@ -140,7 +144,7 @@ for name in ('after.rules', 'after6.rules'):
         path.write_text(contents[:first] + contents[last:].lstrip('\n'))
 PY
 
-if sudo ufw status | grep -q '^Status: active'; then
+if ((ufw_available)) && sudo ufw status | grep '^Status: active' >/dev/null; then
   sudo ufw reload
 fi
 
