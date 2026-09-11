@@ -255,10 +255,31 @@ except RuntimeError as error:
 else:
     raise AssertionError('failed receipt write was accepted')
 assert ('sudo', 'docker', 'update', '--restart=no', container['Id']) in calls
-assert ('sudo', 'docker', 'update', '--restart=unless-stopped', container['Id']) in calls
-assert ('sudo', 'docker', 'start', container['Id']) in calls
+assert ('podman', 'start', 'redis') in calls
+assert not any(call[:2] == ('podman', 'rm') or call[:3] == ('podman', 'volume', 'rm') for call in calls)
+assert ('sudo', 'docker', 'update', '--restart=unless-stopped', container['Id']) not in calls
+assert ('sudo', 'docker', 'start', container['Id']) not in calls
 migration.record_completion = record_completion
-print('ok - a failure after changing the source restart policy restores it during rollback')
+print('ok - receipt failures retain potentially written destination data and leave the stale Docker source stopped')
+
+calls.clear()
+def uncertain_start(*args, capture=False):
+    result = record_run(*args, capture=capture)
+    if args[:2] == ('podman', 'start'):
+        raise RuntimeError('start command failed after application launch')
+    return result
+migration.run = uncertain_start
+try:
+    migration.migrate(container)
+except RuntimeError as error:
+    assert 'after application launch' in str(error)
+else:
+    raise AssertionError('uncertain start reported successful')
+assert not any(call[:2] == ('podman', 'rm') or call[:3] == ('podman', 'volume', 'rm') for call in calls)
+assert ('sudo', 'docker', 'start', container['Id']) not in calls
+assert ('sudo', 'docker', 'update', '--restart=unless-stopped', container['Id']) not in calls
+migration.run = record_run
+print('ok - even failed start attempts retain destinations rather than discarding possible application writes')
 
 calls.clear()
 def broken_pipe(producer, consumer):
@@ -312,4 +333,5 @@ else:
     raise AssertionError('unrelated destination container was overwritten')
 assert not calls
 print('ok - retries require a completion receipt matching both engines and retain interrupted or unrelated destinations')
+
 PY

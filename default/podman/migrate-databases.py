@@ -405,6 +405,7 @@ def migrate(container):
     container = refresh_source(container)
     running = container["State"]["Running"]
     created = False
+    start_attempted = False
     restart_changed = False
     new_volumes = []
     verified_volumes = {}
@@ -483,12 +484,19 @@ def migrate(container):
         if stopped_identity(latest_state) != stopped_identity(state):
             raise RuntimeError(f"{name}: Docker source restarted during transfer; inspect both engines")
         if running:
+            # Even a failed start command may have launched an application that
+            # accepted writes. From this point the destination is recovery data.
+            start_attempted = True
             run("podman", "start", name)
         # A crash before this receipt leaves the destination for review. Its
         # label alone must never turn a partial transfer into a successful retry.
         record_completion(container, state)
         print(f"{name}: migrated to rootless Podman; Docker copy retained for recovery")
     except BaseException:
+        if start_attempted:
+            print(f"{name}: destination start was attempted; both copies were retained for recovery. "
+                  "Inspect Podman before resuming Docker or retrying migration.", file=sys.stderr)
+            raise
         recovery = []
         if created:
             recovery.append(("podman", "rm", "--force", name))
