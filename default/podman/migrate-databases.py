@@ -285,6 +285,8 @@ def validate(container):
     if not re.fullmatch(r"[a-f0-9]{64}", container["Id"]):
         raise ValueError("Unsupported Docker container identity")
     validate_security(container)
+    if container["Config"].get("Domainname"):
+        raise ValueError(f"{name}: custom domain names require an explicit Podman configuration")
     health = container["Config"].get("Healthcheck") or {}
     if health.get("StartInterval"):
         raise ValueError(f"{name}: custom health start intervals require an explicit configuration")
@@ -434,8 +436,6 @@ def migrate(container):
         config = container["Config"]
         if config.get("Hostname"):
             arguments += ["--hostname", config["Hostname"]]
-        if config.get("Domainname"):
-            arguments += ["--domainname", config["Domainname"]]
         if config.get("StopTimeout") is not None:
             arguments += ["--stop-timeout", str(config["StopTimeout"])]
         if config.get("Tty"):

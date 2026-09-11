@@ -67,6 +67,16 @@ for dropped, excluded in ((['all'], m.DOCKER_CAPABILITIES),
     assert added == m.DOCKER_CAPABILITIES - excluded, (dropped, added)
 print('ok - Docker API capability drops retain their ceiling regardless of case or CAP_ prefix')
 
+domain = copy.deepcopy(c)
+domain['Config']['Domainname'] = 'fixture.test'
+try:
+    m.validate(domain)
+except ValueError as error:
+    assert 'domain name' in str(error)
+else:
+    raise AssertionError('unsupported domain name passed batch preflight')
+print('ok - custom domain names require explicit configuration before source mutation')
+
 cases = [('Runtime', 'nvidia'), ('Privileged', True), ('CapAdd', ['SYS_ADMIN']),
          ('Devices', [{'PathOnHost': '/dev/kvm'}]), ('DeviceRequests', [{'Driver': 'nvidia'}]),
          ('DeviceCgroupRules', ['a *:* rwm']), ('CgroupnsMode', 'host'),
