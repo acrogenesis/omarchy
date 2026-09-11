@@ -68,7 +68,8 @@ priv() {
     echo "omarchy-windows-vm: refusing to run a non-root-owned command as root" >&2
     return 1
   }
-  if [[ -t 1 ]]; then
+  # Status captures stdout; stdin/stderr still identify an interactive caller.
+  if [[ -t 0 || -t 1 || -t 2 ]]; then
     sudo "$target" __priv "$action" "$@"
   else
     pkexec "$target" __priv "$action" "$@"
