@@ -96,6 +96,14 @@ numeric_root = copy.deepcopy(container)
 numeric_root["Config"]["User"] = "00:1000"
 numeric_root["HostConfig"]["CapDrop"] = []
 assert migration.allowed_capabilities(numeric_root) == migration.DOCKER_CAPABILITIES
+non_root_default_caps = copy.deepcopy(container)
+non_root_default_caps["HostConfig"]["CapDrop"] = []
+try:
+    migration.validate(non_root_default_caps)
+except ValueError:
+    pass
+else:
+    raise AssertionError("non-root image user with an unreproducible capability ceiling passed")
 for named_user in ("root", "daemon", "root:root", "\u0660"):
     changed = copy.deepcopy(container)
     changed["Config"]["User"] = named_user
@@ -106,6 +114,16 @@ for named_user in ("root", "daemon", "root:root", "\u0660"):
     else:
         raise AssertionError(f"ambiguous named user passed preflight: {named_user}")
 print("ok - numeric UID zero keeps its capabilities and ambiguous named users fail closed")
+
+paused = copy.deepcopy(container)
+paused["State"]["Paused"] = True
+try:
+    migration.validate(paused)
+except ValueError:
+    pass
+else:
+    raise AssertionError("a paused source passed automatic lifecycle migration")
+print("ok - paused workloads and non-root capability ceilings that cannot be recreated fail closed")
 
 for stop_timeout in (None, -1, 0, 300):
     changed = copy.deepcopy(container)
@@ -353,22 +371,80 @@ with tempfile.TemporaryDirectory() as directory:
     assert migration.intent_path(intent_source["Id"]).stat().st_mode & 0o777 == 0o600
 print("ok - durable migration intent restores lifecycle and restart policy after interruption")
 
+quiesce_source = copy.deepcopy(intent_source)
+quiesce_calls = []
 
-def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image=False):
+def quiesce_inspect(engine, kind, name):
+    return copy.deepcopy(quiesce_source)
+
+def quiesce_run(*args, **kwargs):
+    quiesce_calls.append(args)
+    if args[:2] == (migration.SOURCE, "stop"):
+        quiesce_source["State"] = {
+            "Running": False, "StartedAt": "start", "FinishedAt": "quiesced", "ExitCode": 0,
+        }
+    elif args[:2] == (migration.SOURCE, "update"):
+        value = args[2].split("=", 1)[1]
+        quiesce_source["HostConfig"]["RestartPolicy"] = {
+            "Name": value, "MaximumRetryCount": 0,
+        }
+    elif args[:2] == (migration.SOURCE, "start"):
+        quiesce_source["State"]["Running"] = True
+        quiesce_source["State"]["StartedAt"] = "restored"
+
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    migration.inspect = quiesce_inspect
+    migration.run = quiesce_run
+    migration.quiesce(quiesce_source)
+    quiesced_intent = migration.migration_intent(quiesce_source)
+    assert quiesced_intent["target_running"] is True
+    assert quiesced_intent["restart_disabled"] is True
+    assert (migration.SOURCE, "stop", "-t", "300", quiesce_source["Id"]) in quiesce_calls
+    assert (migration.SOURCE, "update", "--restart=no", quiesce_source["Id"]) in quiesce_calls
+    migration.restore_source(quiesce_source["Id"])
+    assert quiesce_source["State"]["Running"] is True
+    assert quiesce_source["HostConfig"]["RestartPolicy"]["Name"] == "unless-stopped"
+    assert not migration.intent_path(quiesce_source["Id"]).exists()
+print("ok - batch quiesce durably disables restart and restores the exact source lifecycle")
+
+quiesce_source = copy.deepcopy(intent_source)
+quiesce_calls = []
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    migration.quiesce(quiesce_source)
+    artifact_intent = migration.migration_intent(quiesce_source)
+    artifact_intent["volumes"]["retained-data"] = {
+        "source": "source-data", "ownership": f'{quiesce_source["Id"]}:source-data:{"e" * 64}',
+    }
+    migration.persist_migration_intent(quiesce_source, artifact_intent)
+    migration.restore_source(quiesce_source["Id"])
+    assert quiesce_source["State"]["Running"] is True
+    assert migration.intent_path(quiesce_source["Id"]).exists()
+    assert migration.migration_intent(quiesce_source)["volumes"] == artifact_intent["volumes"]
+print("ok - batch recovery retains ownership journals for interrupted destination artifacts")
+
+
+def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image=False, replace_target=False):
     source = copy.deepcopy(container)
     source["Id"] = ("d" if after_start else "c") * 64
     source["Name"] = "/post-start" if after_start else "/pre-start"
     source["Mounts"] = []
     source["HostConfig"]["Binds"] = []
     current_source = copy.deepcopy(source)
-    current_target = {"State": {"Running": False}}
+    current_target = None
     calls = []
     pipes = []
 
     def fake_inspect(engine, kind, name):
-        return copy.deepcopy(current_source if engine == migration.SOURCE else current_target)
+        if engine == migration.SOURCE:
+            return copy.deepcopy(current_source)
+        if current_target is None:
+            raise migration.subprocess.CalledProcessError(1, ["docker", "inspect"])
+        return copy.deepcopy(current_target)
 
     def fake_run(*args, **kwargs):
+        nonlocal current_target
         calls.append(args)
         if args[:2] == (migration.SOURCE, "stop"):
             current_source["State"] = {
@@ -382,15 +458,35 @@ def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image
             current_source["State"]["Running"] = True
         elif args[:2] == (migration.SOURCE, "commit"):
             return "sha256:" + ("f" if after_start else "e") * 64
+        elif args[:2] == (migration.TARGET, "create"):
+            labels = {}
+            for index, argument in enumerate(args):
+                if argument == "--label":
+                    key, value = args[index + 1].split("=", 1)
+                    labels[key] = value
+            current_target = {"Id": "b" * 64, "Config": {"Labels": labels},
+                              "State": {"Running": False}}
+        elif args[:3] == (migration.TARGET, "rm", "--force"):
+            current_target = None
+        elif args[:2] == (migration.TARGET, "start"):
+            current_target["State"]["Running"] = True
 
     migration.inspect = fake_inspect
     migration.run = fake_run
-    migration.exists = lambda kind, name: preexisting_image and kind == "image"
+    migration.exists = lambda kind, name: ((kind == "container" and current_target is not None) or
+                                            (preexisting_image and kind == "image"))
     migration.pipe = lambda producer, consumer: pipes.append((producer, consumer))
     if after_start:
-        migration.verify_runtime = lambda value: None
+        migration.verify_runtime = lambda value, ownership=None: None
     else:
-        migration.verify_runtime = lambda value: (_ for _ in ()).throw(RuntimeError("verification failed"))
+        def fail_verification(value, ownership=None):
+            nonlocal current_target
+            if replace_target:
+                current_target = {"Id": "6" * 64, "Config": {"Labels": {}},
+                                  "State": {"Running": False}}
+            raise RuntimeError("verification failed")
+        migration.verify_runtime = fail_verification
+    migration.record_completion = lambda source, state, running: (_ for _ in ()).throw(RuntimeError("receipt failed"))
 
     with tempfile.TemporaryDirectory() as directory:
         os.environ["XDG_STATE_HOME"] = directory
@@ -405,7 +501,7 @@ def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image
 
 
 calls, source, pipes, intent_retained = exercise_failed_transfer(False)
-assert (migration.TARGET, "rm", "--force", "pre-start") in calls
+assert (migration.TARGET, "rm", "--force", "b" * 64) in calls
 assert (migration.TARGET, "image", "rm", "sha256:" + "e" * 64) in calls
 assert (migration.SOURCE, "stop", "-t", "300", "c" * 64) in calls
 assert (migration.SOURCE, "start", "c" * 64) in calls
@@ -436,6 +532,12 @@ assert not any(call[:3] == (migration.TARGET, "image", "rm") for call in calls)
 assert (migration.SOURCE, "image", "rm", "sha256:" + "e" * 64) in calls
 print("ok - a preexisting target image digest is reused without claiming or deleting it")
 
+calls, source, pipes, intent_retained = exercise_failed_transfer(False, replace_target=True)
+assert not any(call[:3] == (migration.TARGET, "rm", "--force") for call in calls)
+assert source["State"]["Running"]
+assert intent_retained
+print("ok - rollback never deletes a concurrently replaced destination container")
+
 retry_original = copy.deepcopy(container)
 retry_original["Id"] = "9" * 64
 retry_original["Name"] = "/interrupted-retry"
@@ -446,7 +548,7 @@ retry_source["State"] = {
     "Running": False, "StartedAt": "start", "FinishedAt": "power-loss-stop", "ExitCode": 0,
 }
 retry_source["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
-retry_target = {"State": {"Running": False}}
+retry_state = {"target": None}
 retry_calls = []
 with tempfile.TemporaryDirectory() as directory:
     os.environ["XDG_STATE_HOME"] = directory
@@ -455,20 +557,28 @@ with tempfile.TemporaryDirectory() as directory:
                                                      restart_disabled=True)
 
     def retry_inspect(engine, kind, name):
-        return copy.deepcopy(retry_source if engine == migration.SOURCE else retry_target)
+        return copy.deepcopy(retry_source if engine == migration.SOURCE else retry_state["target"])
 
     def retry_run(*args, **kwargs):
         retry_calls.append(args)
         if args[:2] == (migration.SOURCE, "commit"):
             return "sha256:" + "8" * 64
+        if args[:2] == (migration.TARGET, "create"):
+            labels = {}
+            for index, argument in enumerate(args):
+                if argument == "--label":
+                    key, value = args[index + 1].split("=", 1)
+                    labels[key] = value
+            retry_state["target"] = {"Id": "7" * 64, "Config": {"Labels": labels},
+                                     "State": {"Running": False}}
         if args[:2] == (migration.TARGET, "start"):
-            retry_target["State"]["Running"] = True
+            retry_state["target"]["State"]["Running"] = True
 
     migration.inspect = retry_inspect
     migration.run = retry_run
     migration.exists = lambda kind, name: False
     migration.pipe = lambda producer, consumer: None
-    migration.verify_runtime = lambda value: None
+    migration.verify_runtime = lambda value, ownership=None: None
     migration.record_completion = lambda source, state, running: None
     migration.migrate(retry_source)
     create_call = next(call for call in retry_calls if call[:2] == (migration.TARGET, "create"))
@@ -476,4 +586,45 @@ with tempfile.TemporaryDirectory() as directory:
     assert (migration.TARGET, "start", "interrupted-retry") in retry_calls
     assert not migration.intent_path(retry_source["Id"]).exists()
 print("ok - a fresh process resumes a stopped migration with the original running and restart intent")
+
+resume_original = copy.deepcopy(retry_original)
+resume_source = copy.deepcopy(retry_source)
+resume_target = copy.deepcopy(retry_state["target"])
+resume_target["State"]["Running"] = False
+resume_calls = []
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    resume_intent = migration.record_migration_intent(resume_original)
+    resume_intent = migration.record_migration_intent(resume_source, resume_source["State"], resume_intent,
+                                                      restart_disabled=True)
+    resume_target["Config"]["Labels"][migration.OWNERSHIP_LABEL] = resume_intent["target_ownership"]
+    resume_intent["destination"] = {
+        "id": resume_target["Id"], "snapshot": migration.snapshot_digest(resume_target),
+    }
+    migration.persist_migration_intent(resume_source, resume_intent)
+
+    def resume_inspect(engine, kind, name):
+        return copy.deepcopy(resume_source if engine == migration.SOURCE else resume_target)
+
+    def resume_run(*args, **kwargs):
+        resume_calls.append(args)
+        if args[:2] == (migration.TARGET, "start"):
+            resume_target["State"]["Running"] = True
+
+    migration.inspect = resume_inspect
+    migration.run = resume_run
+    migration.verify_runtime = lambda value, ownership=None: None
+    migration.record_completion = lambda source, state, running: None
+    unexpected_running = copy.deepcopy(resume_target)
+    unexpected_running["State"]["Running"] = True
+    try:
+        migration.verify_resumable_migration(resume_source, unexpected_running, resume_intent)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unexpectedly running interrupted destination passed preflight")
+    migration.resume_verified_migration(resume_source, resume_target, resume_intent)
+    assert (migration.TARGET, "start", "interrupted-retry") in resume_calls
+    assert not migration.intent_path(resume_source["Id"]).exists()
+print("ok - a verified destination resumes safely across interruption before its first start")
 PY

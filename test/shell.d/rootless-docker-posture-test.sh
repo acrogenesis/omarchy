@@ -55,7 +55,17 @@ grep -q -- '--check-windows "$windows_id"' "$migration" ||
 windows_secure_line=$(grep -n '^/usr/bin/omarchy-windows-vm __migration-secure$' "$migration" | cut -d: -f1)
 [[ -n $windows_secure_line && -n $inventory_line ]] && (( windows_secure_line < inventory_line )) ||
   fail "legacy Windows credentials and mounts are not secured before rootful inventory"
-pass "migration serializes ownership, restricts the source socket, and validates the Windows exception"
+quiesce_line=$(grep -n -- '--quiesce-all "$windows_arg"' "$migration" | cut -d: -f1)
+restart_line=$(grep -n 'systemctl restart docker.service' "$migration" | cut -d: -f1)
+transfer_line=$(grep -n '^  /usr/bin/python3 "$migrator" "${container_names\[@\]}"' "$migration" | cut -d: -f1)
+[[ -n $quiesce_line && -n $restart_line && -n $transfer_line ]] &&
+  (( inventory_line < quiesce_line && quiesce_line < restart_line && restart_line < transfer_line )) ||
+  fail "rootful connections are not revoked between durable quiesce and transfer"
+(( $(grep -c '^restrict_rootful_socket$' "$migration") == 2 )) ||
+  fail "rootful socket policy is not rechecked after daemon restart"
+grep -q -- '--restore-windows "$windows_id"' "$migration" ||
+  fail "a running Windows VM is not restored after rootful connection revocation"
+pass "migration serializes ownership, secures Windows, and revokes existing rootful connections"
 
 grep -q "alias d='docker'" "$ROOT/default/bash/aliases" || fail "the d alias remains Docker"
 ! rg -q 'sudo[[:space:]]+docker' "$ROOT/bin/omarchy-install-docker-dbs" ||

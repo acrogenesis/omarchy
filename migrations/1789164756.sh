@@ -115,19 +115,24 @@ sudo /usr/bin/systemctl daemon-reload
 sudo /usr/bin/systemctl start docker.socket
 source_host="unix:///run/docker.sock"
 
-# Load the packaged socket policy and revoke the legacy docker group's access
-# before inspecting or stopping workloads. This also closes the interval where
-# an ordinary new Docker client could restart a source after verification.
-if sudo /usr/bin/test -S /run/docker.sock; then
-  sudo /usr/bin/setfacl -b /run/docker.sock
-  sudo /usr/bin/chown root:root /run/docker.sock
-  sudo /usr/bin/chmod 0600 /run/docker.sock
-fi
-socket_owner=$(sudo /usr/bin/stat -Lc '%u:%g:%a' /run/docker.sock)
-if [[ $socket_owner != "0:0:600" ]]; then
-  echo "The rootful Docker socket could not be restricted to root. This migration remains pending." >&2
-  exit 1
-fi
+restrict_rootful_socket() {
+  local socket_owner
+  if sudo /usr/bin/test -S /run/docker.sock; then
+    sudo /usr/bin/setfacl -b /run/docker.sock
+    sudo /usr/bin/chown root:root /run/docker.sock
+    sudo /usr/bin/chmod 0600 /run/docker.sock
+  fi
+  socket_owner=$(sudo /usr/bin/stat -Lc '%u:%g:%a' /run/docker.sock)
+  if [[ $socket_owner != "0:0:600" ]]; then
+    echo "The rootful Docker socket could not be restricted to root. This migration remains pending." >&2
+    return 1
+  fi
+}
+
+# Load the packaged socket policy and prevent new unprivileged rootful clients
+# before taking the source inventory. Existing accepted connections are closed
+# by the daemon restart after every workload has been safely quiesced below.
+restrict_rootful_socket
 remove_legacy_docker_group
 
 docker_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
@@ -154,6 +159,35 @@ if (( ${#container_names[@]} )); then
     echo "Rootful Docker and its data have been retained. This migration remains pending." >&2
     exit 1
   fi
+fi
+
+if [[ -n $windows_id ]]; then
+  windows_arg=$windows_id
+else
+  windows_arg="-"
+fi
+/usr/bin/python3 "$migrator" --quiesce-all "$windows_arg" "${container_names[@]}"
+
+# All source restart policies and lifecycle intent are durable before this
+# restart. Stopping the daemon closes rootful connections accepted before the
+# socket became root-only; those clients cannot reconnect afterward.
+sudo /usr/bin/systemctl restart docker.service
+sudo /usr/bin/systemctl start docker.socket
+restrict_rootful_socket
+
+revoked_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
+if [[ $revoked_inventory != "$docker_inventory" ]]; then
+  echo "Rootful Docker containers changed while access was being revoked. Workloads remain journaled for recovery." >&2
+  exit 1
+fi
+
+if [[ -n $windows_id ]]; then
+  /usr/bin/python3 "$migrator" --check-windows "$windows_id"
+  /usr/bin/python3 "$migrator" --restore-windows "$windows_id"
+fi
+
+if (( ${#container_names[@]} )); then
+  /usr/bin/python3 "$migrator" --check "${container_names[@]}"
   /usr/bin/python3 "$migrator" "${container_names[@]}"
   /usr/bin/python3 "$migrator" --check-completed "${container_names[@]}"
 fi
