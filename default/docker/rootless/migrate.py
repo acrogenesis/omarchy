@@ -1,23 +1,30 @@
 """Move compatible rootful containers into the desktop user's rootless Docker store."""
 
 import hashlib
+import io
 import json
 import os
 import re
 import secrets
+import socket
 import stat
+import struct
 import subprocess
 import sys
+import tarfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 LABEL = "io.omarchy.rootless-docker.source-id"
 OWNERSHIP_LABEL = "io.omarchy.rootless-docker.ownership"
 VOLUME_LABEL = "io.omarchy.rootless-docker.source-volume"
 VOLUME_EVENT_LABEL = "io.omarchy.rootless-docker.event-marker"
+NOFILE_PROBE_LABEL = "io.omarchy.rootless-docker.nofile-probe"
+NOFILE_PROBE_PREFIX = "omarchy-rootless-docker-nofile-"
+NOFILE_PROBE_SECONDS = 30
 SOURCE = "source"
 TARGET = "target"
 TRUSTED_MANIFEST = "/usr/share/omarchy/default/docker/rootless/volume-manifest.py"
@@ -42,10 +49,184 @@ DEFAULT_ZERO_HOST_CONFIG = {
     "BlkioWeight", "CpuCount", "CpuPercent", "CpuRealtimePeriod", "CpuRealtimeRuntime",
     "IOMaximumBandwidth", "IOMaximumIOps", "OomScoreAdj",
 }
+TARGET_DAEMON_CONFIG = {
+    "log-driver": "json-file",
+    "log-opts": {"max-size": "10m", "max-file": "5"},
+}
+TARGET_ROOTLESSKIT_ARGUMENTS = [
+    "--net=slirp4netns",
+    "--mtu=65520",
+    "--slirp4netns-sandbox=auto",
+    "--slirp4netns-seccomp=auto",
+    "--disable-host-loopback",
+    "--port-driver=builtin",
+    "--copy-up=/etc",
+    "--copy-up=/run",
+    "--propagation=rslave",
+    "--detach-netns",
+    "/usr/bin/dockerd-rootless.sh",
+]
+TARGET_DAEMON_IDENTITY = None
 
 
 def daemon_security(engine):
     return json.loads(run(engine, "info", "--format", "{{json .SecurityOptions}}", capture=True))
+
+
+def unix_peer_credentials(path):
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        connection.connect(path)
+        payload = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                        struct.calcsize("3i"))
+    except OSError as error:
+        raise ValueError("the rootless Docker API socket cannot be identified") from error
+    finally:
+        connection.close()
+    return struct.unpack("3i", payload)
+
+
+def process_start_token(proc, pid):
+    try:
+        fields = (proc / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
+        token = fields[19]
+    except (FileNotFoundError, PermissionError, IndexError) as error:
+        raise ValueError("the rootless Docker daemon process identity cannot be verified") from error
+    if not token.isdigit():
+        raise ValueError("the rootless Docker daemon process identity cannot be verified")
+    return token
+
+
+def target_config(proc, dockerd_pid, config_home, dockerd_start):
+    path = proc / str(dockerd_pid) / "root" / config_home.lstrip("/") / "docker/daemon.json"
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or
+                before.st_mode & 0o022 or before.st_nlink != 1):
+            raise ValueError("the rootless Docker daemon configuration is not a trusted regular file")
+        with os.fdopen(os.dup(descriptor), "rb") as source:
+            payload = source.read(1024 * 1024 + 1)
+        after = os.fstat(descriptor)
+        identity = lambda value: (
+            value.st_dev, value.st_ino, value.st_mode, value.st_uid, value.st_gid,
+            value.st_nlink, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+        )
+        if len(payload) > 1024 * 1024 or identity(before) != identity(after):
+            raise ValueError("the rootless Docker daemon configuration changed while it was read")
+        if before.st_ctime > dockerd_start:
+            raise ValueError("the rootless Docker configuration changed after the daemon started; restart it")
+        return json.loads(payload)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("the rootless Docker daemon configuration cannot be verified") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def verified_target_daemon(identity, proc=Path("/proc")):
+    if (not isinstance(identity, dict) or set(identity) != {"pid", "start", "runtime"} or
+            type(identity["pid"]) is not int or identity["pid"] <= 1 or
+            not isinstance(identity["start"], str) or not identity["start"].isdigit() or
+            not isinstance(identity["runtime"], str) or not identity["runtime"].startswith("/")):
+        raise RuntimeError("the verified rootless Docker daemon identity is unavailable")
+    pid = identity["pid"]
+    try:
+        executable = os.readlink(proc / str(pid) / "exe")
+        current_start = process_start_token(proc, pid)
+    except (FileNotFoundError, PermissionError, ValueError) as error:
+        raise RuntimeError("the verified rootless Docker daemon is no longer running") from error
+    if executable != "/usr/bin/dockerd" or current_start != identity["start"]:
+        raise RuntimeError("the verified rootless Docker daemon changed during migration")
+    endpoint = proc / str(pid) / "root" / identity["runtime"].lstrip("/") / "docker.sock"
+    try:
+        peer_pid, peer_uid, _peer_gid = unix_peer_credentials(str(endpoint))
+    except ValueError as error:
+        raise RuntimeError("the verified rootless Docker API socket is unavailable") from error
+    if peer_pid != pid or peer_uid != os.getuid():
+        raise RuntimeError("the verified rootless Docker API socket changed during migration")
+    return pid, str(endpoint)
+
+
+def target_daemon_policy(proc=Path("/proc")):
+    try:
+        main_pid = int(run("/usr/bin/systemctl", "--user", "show", "docker.service",
+                           "--property=MainPID", "--value", capture=True))
+    except (OSError, ValueError) as error:
+        raise ValueError("the rootless Docker daemon configuration cannot be verified") from error
+    if main_pid <= 1:
+        raise ValueError("the rootless Docker daemon has no valid service process")
+    try:
+        rootlesskit_arguments = [value.decode() for value in (proc / str(main_pid) / "cmdline").read_bytes().split(b"\0") if value]
+        rootlesskit_environment = [value.decode() for value in (proc / str(main_pid) / "environ").read_bytes().split(b"\0") if value]
+        rootlesskit_executable = os.readlink(proc / str(main_pid) / "exe")
+    except (FileNotFoundError, PermissionError, UnicodeDecodeError) as error:
+        raise ValueError("the rootless Docker service process cannot be inspected") from error
+
+    descendants = {main_pid}
+    changed = True
+    while changed:
+        changed = False
+        for entry in proc.iterdir():
+            if not entry.name.isdigit() or int(entry.name) in descendants:
+                continue
+            try:
+                parent = next(line.split()[1] for line in (entry / "status").read_text().splitlines()
+                              if line.startswith("PPid:"))
+            except (FileNotFoundError, PermissionError, StopIteration):
+                continue
+            if int(parent) in descendants:
+                descendants.add(int(entry.name))
+                changed = True
+    candidates = []
+    slirp_candidates = []
+    for pid in descendants - {main_pid}:
+        try:
+            arguments = [value.decode() for value in (proc / str(pid) / "cmdline").read_bytes().split(b"\0") if value]
+        except (FileNotFoundError, PermissionError, UnicodeDecodeError):
+            continue
+        if arguments and Path(arguments[0]).name == "dockerd":
+            try:
+                executable = os.readlink(proc / str(pid) / "exe")
+            except (FileNotFoundError, PermissionError):
+                continue
+            candidates.append((pid, arguments, executable))
+        if arguments and Path(arguments[0]).name == "slirp4netns":
+            try:
+                executable = os.readlink(proc / str(pid) / "exe")
+            except (FileNotFoundError, PermissionError):
+                continue
+            slirp_candidates.append(executable)
+    if len(candidates) != 1 or rootlesskit_executable != "/usr/bin/rootlesskit":
+        raise ValueError("the rootless Docker daemon process cannot be identified uniquely")
+    dockerd_pid, arguments, executable = candidates[0]
+    if executable != "/usr/bin/dockerd":
+        raise ValueError("the rootless Docker daemon does not use the packaged executable")
+    if slirp_candidates != ["/usr/bin/slirp4netns"]:
+        raise ValueError("the rootless Docker network helper cannot be identified uniquely")
+    service_paths = [value.removeprefix("PATH=") for value in rootlesskit_environment
+                     if value.startswith("PATH=")]
+    config_homes = [value.removeprefix("XDG_CONFIG_HOME=") for value in rootlesskit_environment
+                    if value.startswith("XDG_CONFIG_HOME=")]
+    expected_config_home = str(Path.home() / ".config")
+    if service_paths != ["/usr/bin"]:
+        raise ValueError("the rootless Docker daemon does not use the packaged service PATH")
+    if config_homes != [expected_config_home]:
+        raise ValueError("the rootless Docker daemon does not use the packaged config directory")
+    try:
+        dockerd_start = (proc / str(dockerd_pid)).stat().st_ctime
+        dockerd_start_token = process_start_token(proc, dockerd_pid)
+    except (OSError, ValueError) as error:
+        raise ValueError("the rootless Docker daemon configuration cannot be verified") from error
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    configuration = target_config(proc, dockerd_pid, config_homes[0], dockerd_start)
+    identity = {"pid": dockerd_pid, "start": dockerd_start_token, "runtime": runtime}
+    try:
+        verified_target_daemon(identity, proc)
+    except RuntimeError as error:
+        raise ValueError("the rootless Docker API socket belongs to a different daemon") from error
+    return configuration, arguments, rootlesskit_arguments, service_paths[0], config_homes[0], identity
 
 
 def validate_source_daemon(options):
@@ -59,7 +240,8 @@ def validate_source_daemon(options):
         raise ValueError("rootful Docker daemon confinement or user mapping needs an explicit migration")
 
 
-def validate_target_daemon(options):
+def validate_target_daemon(options, configuration=None, arguments=None, rootlesskit_arguments=None,
+                           service_path=None, config_home=None):
     allowed = {
         "name=rootless", "name=cgroupns", "name=seccomp,profile=builtin",
         "name=seccomp,profile=default",
@@ -70,6 +252,349 @@ def validate_target_daemon(options):
     if (configured - allowed or "name=cgroupns" not in configured or
             len(configured & SECCOMP_OPTIONS) != 1):
         raise ValueError("rootless Docker daemon confinement needs an explicit migration")
+    if configuration is not None and configuration != TARGET_DAEMON_CONFIG:
+        raise ValueError("rootless Docker has custom daemon defaults; restore Omarchy's daemon.json or migrate containers explicitly")
+    if arguments is not None and arguments not in (["dockerd"], ["/usr/bin/dockerd"]):
+        raise ValueError("rootless Docker uses custom daemon options; migrate containers explicitly")
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    expected_rootlesskit = [f"--state-dir={runtime}/dockerd-rootless", *TARGET_ROOTLESSKIT_ARGUMENTS]
+    if (rootlesskit_arguments is not None and
+            (not rootlesskit_arguments or Path(rootlesskit_arguments[0]).name != "rootlesskit" or
+             rootlesskit_arguments[1:] != expected_rootlesskit)):
+        raise ValueError("rootless Docker uses custom RootlessKit isolation; migrate containers explicitly")
+    if service_path is not None and service_path != "/usr/bin":
+        raise ValueError("rootless Docker uses an unsafe service PATH; restart it from the packaged unit")
+    if config_home is not None and config_home != str(Path.home() / ".config"):
+        raise ValueError("rootless Docker uses a custom config directory; restart it from the packaged unit")
+
+
+def trusted_probe_file(path):
+    path = Path(path)
+    if not path.is_absolute():
+        raise ValueError("the source file-limit probe has an invalid executable path")
+    try:
+        canonical = path.resolve(strict=True)
+        metadata = canonical.stat()
+    except OSError as error:
+        raise ValueError("the source file-limit probe executable is unavailable") from error
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise ValueError("the source file-limit probe executable is not trusted")
+    parent = canonical.parent
+    while True:
+        metadata = parent.stat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            raise ValueError("the source file-limit probe executable has an unsafe parent")
+        if parent == Path("/"):
+            break
+        parent = parent.parent
+    return canonical
+
+
+def nofile_probe_rootfs(token):
+    if not re.fullmatch(r"[a-f0-9]{64}", token):
+        raise ValueError("the source file-limit probe has an invalid identity")
+    ldd = trusted_probe_file("/usr/bin/ldd")
+    sleep = trusted_probe_file("/usr/bin/sleep")
+    result = subprocess.run(
+        [ldd, sleep], check=True, text=True, capture_output=True,
+        env={"PATH": "/usr/bin", "LC_ALL": "C"},
+    )
+    files = {"/usr/bin/sleep": sleep}
+    for line in result.stdout.splitlines():
+        definition = line.split("(", 1)[0].strip()
+        left, separator, right = definition.partition("=>")
+        for candidate in ((left.strip(), right.strip()) if separator else (left.strip(),)):
+            if candidate.startswith("/"):
+                files[candidate] = trusted_probe_file(candidate)
+    if len(files) < 3:
+        raise ValueError("the source file-limit probe dependencies cannot be identified")
+
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as output:
+        for destination, source in sorted(files.items()):
+            payload = source.read_bytes()
+            entry = tarfile.TarInfo(destination.lstrip("/"))
+            entry.size = len(payload)
+            entry.mode = 0o755
+            output.addfile(entry, io.BytesIO(payload))
+        marker = token.encode()
+        entry = tarfile.TarInfo(f"omarchy-rootless-docker-probe/{token}")
+        entry.size = len(marker)
+        entry.mode = 0o400
+        output.addfile(entry, io.BytesIO(marker))
+    return archive.getvalue()
+
+
+def parse_nofile_limits(output):
+    line = next((line for line in output.splitlines() if line.startswith("Max open files ")), None)
+    if line is None:
+        raise ValueError("the source container file limit cannot be read")
+    fields = line.split()
+    if len(fields) != 6 or fields[:3] != ["Max", "open", "files"] or fields[5] != "files":
+        raise ValueError("the source container file limit has an unexpected format")
+    try:
+        soft = -1 if fields[3] == "unlimited" else int(fields[3])
+        hard = -1 if fields[4] == "unlimited" else int(fields[4])
+    except ValueError as error:
+        raise ValueError("the source container file limit is invalid") from error
+    limits = {"soft": soft, "hard": hard}
+    validate_nofile(limits)
+    return limits
+
+
+def nofile_probe_path():
+    state = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+    return state / "omarchy/rootless-docker-migration/.nofile-probe.in-progress"
+
+
+def nofile_probe_record():
+    path = nofile_probe_path()
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError("the source file-limit probe journal changed unexpectedly")
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("the source file-limit probe journal cannot be read safely") from error
+    token = record.get("token") if isinstance(record, dict) else None
+    engine = record.get("engine") if isinstance(record, dict) else None
+    expected_name = f"{NOFILE_PROBE_PREFIX}{engine}-{token}"
+    expected_tag = f"omarchy-rootless-docker-nofile-{engine}:{token}"
+    image = record.get("image") if isinstance(record, dict) else None
+    limits = record.get("limits") if isinstance(record, dict) else None
+    try:
+        if limits is not None:
+            validate_nofile(limits)
+    except ValueError as error:
+        raise RuntimeError("the source file-limit probe journal changed unexpectedly") from error
+    if (not isinstance(record, dict) or metadata.st_uid != os.getuid() or
+            metadata.st_mode & 0o077 or
+            set(record) != {"engine", "token", "name", "tag", "image", "limits"} or
+            engine not in (SOURCE, TARGET) or
+            not re.fullmatch(r"[a-f0-9]{64}", token or "") or
+            record.get("name") != expected_name or record.get("tag") != expected_tag or
+            (image is not None and not re.fullmatch(r"sha256:[a-f0-9]{64}", image))):
+        raise RuntimeError("the source file-limit probe journal changed unexpectedly")
+    return record
+
+
+def docker_inspect_optional(engine, kind, identity):
+    result = subprocess.run(
+        local_command([engine, kind, "inspect", identity]), text=True, capture_output=True,
+    )
+    if result.returncode != 0:
+        run(engine, "info", capture=True)
+        return None
+    try:
+        inspected = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"the source file-limit probe {kind} cannot be inspected") from error
+    if not isinstance(inspected, list) or len(inspected) != 1 or not isinstance(inspected[0], dict):
+        raise RuntimeError(f"the source file-limit probe {kind} has an invalid identity")
+    return inspected[0]
+
+
+def nofile_probe_container_owned(container, record):
+    config = container.get("Config") or {}
+    host = container.get("HostConfig") or {}
+    restart = host.get("RestartPolicy") or {}
+    expected_ulimits = None
+    if record["limits"] is not None:
+        expected_ulimits = [{
+            "Name": "nofile", "Soft": record["limits"]["soft"],
+            "Hard": record["limits"]["hard"],
+        }]
+    return (
+        record["image"] is not None and
+        re.fullmatch(r"[a-f0-9]{64}", container.get("Id") or "") is not None and
+        container.get("Name") == f'/{record["name"]}' and
+        container.get("Image") == record["image"] and
+        container.get("Path") == "/usr/bin/sleep" and
+        container.get("Args") == [str(NOFILE_PROBE_SECONDS)] and
+        config.get("Image") == record["image"] and
+        config.get("Entrypoint") == ["/usr/bin/sleep"] and
+        config.get("Cmd") == [str(NOFILE_PROBE_SECONDS)] and
+        config.get("Labels") == {NOFILE_PROBE_LABEL: record["token"]} and
+        host.get("AutoRemove") is True and host.get("NetworkMode") == "none" and
+        host.get("ReadonlyRootfs") is True and host.get("Privileged") is False and
+        host.get("CapDrop") == ["ALL"] and
+        host.get("SecurityOpt") == ["no-new-privileges"] and
+        (host.get("Ulimits") == expected_ulimits or
+         (expected_ulimits is None and host.get("Ulimits") in (None, []))) and
+        restart.get("Name") == "no" and restart.get("MaximumRetryCount") == 0 and
+        not (host.get("Binds") or host.get("Mounts")) and not container.get("Mounts")
+    )
+
+
+def nofile_probe_image_owned(image, record):
+    identity = image.get("Id")
+    repository = record["tag"].rsplit(":", 1)[0]
+    return (
+        re.fullmatch(r"sha256:[a-f0-9]{64}", identity or "") is not None and
+        (record["image"] is None or identity == record["image"]) and
+        image.get("RepoTags") == [record["tag"]] and
+        image.get("RepoDigests") in (None, [], [f"{repository}@{identity}"])
+    )
+
+
+def clear_nofile_probe_record():
+    path = nofile_probe_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def cleanup_nofile_probe():
+    record = nofile_probe_record()
+    if record is None:
+        return
+    failures = []
+    engine = record["engine"]
+    try:
+        container = docker_inspect_optional(engine, "container", record["name"])
+        if container is not None:
+            if not nofile_probe_container_owned(container, record):
+                raise RuntimeError("the source file-limit probe container changed unexpectedly")
+            run(engine, "container", "rm", "-f", container["Id"], capture=True)
+            if docker_inspect_optional(engine, "container", container["Id"]) is not None:
+                raise RuntimeError("the source file-limit probe container was replaced during cleanup")
+    except Exception as error:
+        failures.append(error)
+    try:
+        image = docker_inspect_optional(engine, "image", record["tag"])
+        if image is not None:
+            if not nofile_probe_image_owned(image, record):
+                raise RuntimeError("the source file-limit probe image changed unexpectedly")
+            run(engine, "image", "rm", record["tag"], capture=True)
+            if (docker_inspect_optional(engine, "image", image["Id"]) is not None or
+                    docker_inspect_optional(engine, "image", record["tag"]) is not None):
+                raise RuntimeError("the source file-limit probe image was replaced during cleanup")
+    except Exception as error:
+        failures.append(error)
+    if failures:
+        raise RuntimeError(
+            "the source file-limit probe could not be cleaned safely; inspect rootful Docker"
+        ) from failures[0]
+    clear_nofile_probe_record()
+
+
+def probe_nofile(engine, expected=None):
+    if engine not in (SOURCE, TARGET):
+        raise ValueError("the file-limit probe has an invalid Docker engine")
+    if expected is not None:
+        validate_nofile(expected)
+    cleanup_nofile_probe()
+    token = secrets.token_hex(32)
+    record = {
+        "engine": engine,
+        "token": token,
+        "name": f"{NOFILE_PROBE_PREFIX}{engine}-{token}",
+        "tag": f"omarchy-rootless-docker-nofile-{engine}:{token}",
+        "image": None,
+        "limits": deepcopy(expected),
+    }
+    write_private_json(nofile_probe_path(), record)
+    try:
+        imported = subprocess.run(
+            local_command([engine, "image", "import", "-", record["tag"]]),
+            input=nofile_probe_rootfs(token),
+            check=True, capture_output=True,
+        ).stdout.decode().strip()
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", imported):
+            raise RuntimeError("the source file-limit probe image has an invalid identity")
+        record["image"] = imported
+        write_private_json(nofile_probe_path(), record)
+        arguments = [
+            engine, "run", "-d", "--rm", "--name", record["name"],
+            "--label", f"{NOFILE_PROBE_LABEL}={token}", "--network=none", "--read-only",
+            "--cap-drop=ALL", "--security-opt=no-new-privileges", "--entrypoint=/usr/bin/sleep",
+        ]
+        if expected is not None:
+            arguments += ["--ulimit", f'nofile={expected["soft"]}:{expected["hard"]}']
+        arguments += [imported, str(NOFILE_PROBE_SECONDS)]
+        container_id = run(*arguments, capture=True)
+        if not re.fullmatch(r"[a-f0-9]{64}", container_id):
+            raise RuntimeError("the source file-limit probe container has an invalid identity")
+        container = inspect(engine, "container", container_id)
+        if not nofile_probe_container_owned(container, record):
+            raise RuntimeError("the source file-limit probe container changed unexpectedly")
+        state = container["State"]
+        pid = state.get("Pid")
+        if not state.get("Running") or type(pid) is not int or pid <= 1:
+            raise RuntimeError("the source file-limit probe did not start safely")
+        if engine == SOURCE:
+            limits_path = source_namespace_path(f"/proc/{pid}/limits")
+        else:
+            limits_path = f"/proc/{pid}/limits"
+        output = run("/usr/bin/sudo", "/usr/bin/cat", limits_path, capture=True)
+        actual = parse_nofile_limits(output)
+        if expected is not None and actual != expected:
+            raise RuntimeError("rootless Docker cannot reproduce the source container file limit")
+        return actual
+    finally:
+        cleanup_nofile_probe()
+
+
+def source_default_nofile():
+    return probe_nofile(SOURCE)
+
+
+def validate_target_nofile(limits):
+    probe_nofile(TARGET, limits)
+
+
+def container_nofile(container, default, intent=None):
+    if intent is not None:
+        expected = intent["source_nofile"]
+    else:
+        expected = default
+    if not container["State"]["Running"]:
+        return deepcopy(expected)
+    pid = container["State"].get("Pid")
+    if type(pid) is not int or pid <= 1:
+        raise ValueError(f'{container["Name"].lstrip("/")}: source process cannot be identified')
+    limits = parse_nofile_limits(run(
+        "/usr/bin/sudo", "/usr/bin/cat",
+        source_namespace_path(f"/proc/{pid}/limits"), capture=True,
+    ))
+    latest = inspect(SOURCE, "container", container["Id"])
+    if (not latest["State"]["Running"] or latest["State"].get("Pid") != pid or
+            latest["State"].get("StartedAt") != container["State"].get("StartedAt") or
+            snapshot_digest(latest) != snapshot_digest(container)):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: source changed while its file limit was read')
+    if intent is not None and limits != expected:
+        raise ValueError(f'{container["Name"].lstrip("/")}: source file limit changed during migration')
+    return limits
+
+
+def validate_nofile(limits):
+    if (not isinstance(limits, dict) or set(limits) != {"soft", "hard"} or
+            any(type(limits[key]) is not int for key in ("soft", "hard"))):
+        raise ValueError("the source container file limit is invalid")
+    soft, hard = limits["soft"], limits["hard"]
+    if soft == 0 or hard == 0 or soft < -1 or hard < -1 or (hard != -1 and (soft == -1 or soft > hard)):
+        raise ValueError("the source container file limit is invalid")
+
+
+def validate_target_policy():
+    global TARGET_DAEMON_IDENTITY
+    policy = target_daemon_policy()
+    identity = policy[-1]
+    TARGET_DAEMON_IDENTITY = identity
+    try:
+        validate_target_daemon(daemon_security(TARGET), *policy[:-1])
+    except BaseException:
+        TARGET_DAEMON_IDENTITY = None
+        raise
 
 
 def validate_volumes(container):
@@ -154,9 +679,10 @@ def validate_security(container):
         raise ValueError(f"{name}: custom logging needs an explicit migration")
 
 
-def runtime_arguments(container):
+def runtime_arguments(container, source_nofile):
     host = container["HostConfig"]
-    arguments = ["--shm-size", str(host["ShmSize"])]
+    arguments = ["--shm-size", str(host["ShmSize"]), "--init=false", "--ulimit",
+                 f'nofile={source_nofile["soft"]}:{source_nofile["hard"]}']
     if host.get("PidsLimit") not in (None, 0, -1):
         arguments.append(f'--pids-limit={host["PidsLimit"]}')
     for key, flag in RESOURCE_FLAGS.items():
@@ -207,7 +733,7 @@ def verify_environment(container, values):
         raise RuntimeError("rootless Docker did not preserve the source environment; application was not started")
 
 
-def verify_runtime(container, ownership=None):
+def verify_runtime(container, ownership=None, source_nofile=None):
     name = container["Name"].lstrip("/")
     target = inspect(TARGET, "container", name)
     verify_environment(container, target["Config"].get("Env"))
@@ -224,6 +750,13 @@ def verify_runtime(container, ownership=None):
         raise RuntimeError(f"{name}: rootless Docker changed a private namespace boundary")
     if target_host.get("Runtime") != "runc":
         raise RuntimeError(f"{name}: rootless Docker changed the OCI runtime")
+    if target_host.get("Init") is not False:
+        raise RuntimeError(f"{name}: rootless Docker changed the init process policy")
+    if source_nofile is not None:
+        expected_ulimits = [{"Name": "nofile", "Soft": source_nofile["soft"], "Hard": source_nofile["hard"]}]
+        actual_ulimits = target_host.get("Ulimits") or []
+        if actual_ulimits != expected_ulimits:
+            raise RuntimeError(f"{name}: rootless Docker did not preserve the source file limit")
     expected_mounts = sorted((mount["Destination"], destination_volume(container, mount), bool(mount.get("RW")))
                              for mount in container.get("Mounts", []))
     actual_mounts = target.get("Mounts") or []
@@ -279,21 +812,39 @@ def verify_runtime(container, ownership=None):
         raise RuntimeError(f"{name}: rootless Docker changed the restart policy")
     if target_host.get("LogConfig") != source_host.get("LogConfig"):
         raise RuntimeError(f"{name}: rootless Docker changed the logging policy")
+    return target
 
 
 def local_command(args):
     if args[0] == SOURCE:
-        return ["/usr/bin/sudo", "/usr/bin/docker", "--host", "unix:///run/docker.sock", *args[1:]]
+        host = os.environ.get("OMARCHY_ROOTFUL_DOCKER_HOST", "")
+        if not re.fullmatch(r"unix:///proc/[1-9][0-9]*/root/run/docker\.sock", host):
+            raise RuntimeError("the verified rootful Docker endpoint is unavailable")
+        return ["/usr/bin/sudo", "/usr/bin/docker", "--host", host, *args[1:]]
     if args[0] == TARGET:
-        runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-        return ["/usr/bin/docker", "--host", f"unix://{runtime}/docker.sock", *args[1:]]
+        _pid, endpoint = verified_target_daemon(TARGET_DAEMON_IDENTITY)
+        return ["/usr/bin/docker", "--host", f"unix://{endpoint}", *args[1:]]
     if args[0] == "target-namespace":
-        runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
-        child_pid = (runtime / "dockerd-rootless/child_pid").read_text().strip()
-        if not child_pid.isdigit() or int(child_pid) <= 1:
-            raise RuntimeError("cannot identify the rootless Docker namespace")
-        return ["/usr/bin/nsenter", "-U", "--preserve-credentials", "-m", "-t", child_pid, *args[1:]]
+        pid, _endpoint = verified_target_daemon(TARGET_DAEMON_IDENTITY)
+        return ["/usr/bin/nsenter", "-U", "--preserve-credentials", "-m", "-t", str(pid), *args[1:]]
     return args
+
+
+def source_dockerd_pid():
+    host = os.environ.get("OMARCHY_ROOTFUL_DOCKER_HOST", "")
+    match = re.fullmatch(r"unix:///proc/([1-9][0-9]*)/root/run/docker\.sock", host)
+    if match is None:
+        raise RuntimeError("the verified rootful Docker endpoint is unavailable")
+    return int(match.group(1))
+
+
+def source_namespace_path(path):
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise ValueError("rootful Docker returned an invalid host path")
+    normalized = PurePosixPath(path)
+    if ".." in normalized.parts or str(normalized) != path:
+        raise ValueError("rootful Docker returned an invalid host path")
+    return f"/proc/{source_dockerd_pid()}/root{path}"
 
 
 def run(*args, capture=False):
@@ -387,9 +938,11 @@ def write_private_json(path, payload):
         temporary.unlink(missing_ok=True)
 
 
-def record_migration_intent(container, stopped_state=None, saved=None, restart_disabled=False):
+def record_migration_intent(container, stopped_state=None, saved=None, restart_disabled=False,
+                            source_nofile=None):
     state = container["State"]
     if saved is None:
+        validate_nofile(source_nofile)
         payload = {
             "source": container["Id"],
             "source_snapshot": snapshot_digest(container),
@@ -403,6 +956,8 @@ def record_migration_intent(container, stopped_state=None, saved=None, restart_d
             "start_attempted": False,
             "target_ownership": secrets.token_hex(32),
             "source_volumes": None,
+            "source_nofile": deepcopy(source_nofile),
+            "image": None,
             "volume_event": None,
             "volumes": {},
         }
@@ -428,7 +983,10 @@ def migration_intent(container):
         saved = json.loads(path.read_text())
         restart_policy = saved["source_restart_policy"]
         source_volumes = saved.get("source_volumes")
+        source_nofile = saved["source_nofile"]
+        image_record = saved.get("image")
         volume_event = saved.get("volume_event")
+        validate_nofile(source_nofile)
         if (saved["source"] != container["Id"] or
                 not isinstance(saved["target_running"], bool) or
                 not isinstance(saved["restart_disabled"], bool) or
@@ -436,6 +994,16 @@ def migration_intent(container):
                 not isinstance(saved["restore_started"], bool) or
                 not isinstance(saved["start_attempted"], bool) or
                 not re.fullmatch(r"[a-f0-9]{64}", saved["target_ownership"]) or
+                (image_record is not None and
+                 (not isinstance(image_record, dict) or
+                  set(image_record) != {"tag", "source", "target", "target_preexisting"} or
+                  image_record.get("tag") != f'omarchy-rootless-docker-transfer:{saved["target_ownership"]}' or
+                  (image_record.get("target_preexisting") is not None and
+                   type(image_record.get("target_preexisting")) is not bool) or
+                  ((image_record.get("target") is None) !=
+                   (image_record.get("target_preexisting") is None)) or
+                  any(value is not None and not re.fullmatch(r"sha256:[a-f0-9]{64}", value)
+                      for value in (image_record.get("source"), image_record.get("target"))))) or
                 (source_volumes is not None and
                  (not isinstance(source_volumes, dict) or
                  any(not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name) or
@@ -451,6 +1019,7 @@ def migration_intent(container):
                 not isinstance(saved["started_at"], str)):
             raise ValueError
         saved.setdefault("source_volumes", None)
+        saved.setdefault("image", None)
         saved.setdefault("volume_event", None)
         exact_snapshot = saved["source_snapshot"] == snapshot_digest(container)
         disabled_snapshot = (
@@ -508,6 +1077,127 @@ def clear_migration_intent(identity):
 def persist_migration_intent(container, intent):
     write_private_json(intent_path(container["Id"]), intent)
     return intent
+
+
+def transfer_image_record(intent):
+    record = intent.get("image")
+    expected_tag = f'omarchy-rootless-docker-transfer:{intent["target_ownership"]}'
+    if (not isinstance(record, dict) or
+            set(record) != {"tag", "source", "target", "target_preexisting"} or
+            record.get("tag") != expected_tag or
+            (record.get("target_preexisting") is not None and
+             type(record.get("target_preexisting")) is not bool) or
+            ((record.get("target") is None) !=
+             (record.get("target_preexisting") is None)) or
+            any(value is not None and not re.fullmatch(r"sha256:[a-f0-9]{64}", value)
+                for value in (record.get("source"), record.get("target")))):
+        raise ValueError("interrupted transfer image ownership is invalid")
+    return record
+
+
+def transfer_image_owned(image, record, engine):
+    identity = image.get("Id")
+    repository = record["tag"].rsplit(":", 1)[0]
+    expected_identity = record[engine]
+    return (
+        re.fullmatch(r"sha256:[a-f0-9]{64}", identity or "") is not None and
+        (expected_identity is None or identity == expected_identity) and
+        image.get("RepoTags") == [record["tag"]] and
+        image.get("RepoDigests") in (None, [], [f"{repository}@{identity}"])
+    )
+
+
+def update_transfer_image(container, intent, engine, identity):
+    if engine not in (SOURCE, TARGET):
+        raise ValueError("invalid transfer image engine")
+    if identity is not None and not re.fullmatch(r"sha256:[a-f0-9]{64}", identity):
+        raise ValueError("invalid transfer image identity")
+    saved = deepcopy(intent)
+    record = transfer_image_record(saved)
+    record[engine] = identity
+    return persist_migration_intent(container, saved)
+
+
+def update_target_transfer_image(container, intent, identity, preexisting):
+    if not isinstance(preexisting, bool) or not re.fullmatch(r"sha256:[a-f0-9]{64}", identity):
+        raise ValueError("invalid destination transfer image identity")
+    saved = deepcopy(intent)
+    record = transfer_image_record(saved)
+    record["target"] = identity
+    record["target_preexisting"] = preexisting
+    return persist_migration_intent(container, saved)
+
+
+def remove_transfer_image(engine, record, untag_only=False):
+    image = docker_inspect_optional(engine, "image", record["tag"])
+    if image is None:
+        expected_identity = record[engine]
+        if expected_identity is not None:
+            retained = docker_inspect_optional(engine, "image", expected_identity)
+            if retained is not None and not untag_only:
+                raise RuntimeError("a migration transfer image lost its ownership tag")
+        return
+    if not transfer_image_owned(image, record, engine):
+        raise RuntimeError("a migration transfer image changed; retained it for inspection")
+    if untag_only:
+        run(engine, "image", "rm", record["tag"], capture=True)
+        if docker_inspect_optional(engine, "image", record["tag"]) is not None:
+            raise RuntimeError("a migration transfer image tag was replaced during cleanup")
+    else:
+        # Docker rejects removing a tagged image by digest without --force.
+        # Ownership proves this is its only tag, so removing the tag deletes
+        # the unused transfer image without broadening the removal operation.
+        run(engine, "image", "rm", record["tag"], capture=True)
+        if (docker_inspect_optional(engine, "image", image["Id"]) is not None or
+                docker_inspect_optional(engine, "image", record["tag"]) is not None):
+            raise RuntimeError("a migration transfer image was replaced during cleanup")
+
+
+def cleanup_transfer_images(container, intent):
+    if intent.get("image") is None:
+        return intent
+    record = transfer_image_record(intent)
+    failures = []
+    engines = [SOURCE] if record["target_preexisting"] is True else [TARGET, SOURCE]
+    for engine in engines:
+        try:
+            remove_transfer_image(engine, record)
+        except Exception as error:
+            failures.append(error)
+    if failures:
+        raise RuntimeError("migration transfer images could not be cleaned safely") from failures[0]
+    saved = deepcopy(intent)
+    saved["image"] = None
+    return persist_migration_intent(container, saved)
+
+
+def release_transfer_image(container, intent):
+    if intent.get("image") is None:
+        return intent
+    record = transfer_image_record(intent)
+    failures = []
+    try:
+        remove_transfer_image(SOURCE, record)
+    except Exception as error:
+        failures.append(error)
+    if record["target_preexisting"] is not True:
+        try:
+            image = docker_inspect_optional(TARGET, "image", record["tag"])
+            destination = intent.get("destination") or {}
+            target = inspect(TARGET, "container", destination.get("id", ""))
+            if (image is None or not transfer_image_owned(image, record, TARGET) or
+                    target.get("Id") != destination.get("id") or
+                    target.get("Image") != record["target"] or
+                    (target.get("Config") or {}).get("Image") != record["tag"] or
+                    not target_owned(container, target, intent)):
+                raise RuntimeError("the migrated container no longer owns its transferred image")
+        except Exception as error:
+            failures.append(error)
+    if failures:
+        raise RuntimeError("migration transfer image tags could not be released safely") from failures[0]
+    saved = deepcopy(intent)
+    saved["image"] = None
+    return persist_migration_intent(container, saved)
 
 
 def record_destination_may_have_run(container, intent):
@@ -583,13 +1273,17 @@ def target_never_started(container):
             state.get("FinishedAt") == never)
 
 
-def record_completion(container, source_state, target_running):
+def record_completion(container, source_state, target_running, verified_target):
     latest_source = inspect(SOURCE, "container", container["Id"])
     if (stopped_identity(latest_source["State"]) != stopped_identity(source_state) or
             snapshot_digest(latest_source) != snapshot_digest(container)):
         raise RuntimeError(f'{container["Name"].lstrip("/")}: Docker source changed before completion; inspect both engines')
     container = latest_source
     target = inspect(TARGET, "container", container["Name"].lstrip("/"))
+    verified_snapshot = snapshot_digest(verified_target)
+    if (target.get("Id") != verified_target.get("Id") or
+            snapshot_digest(target) != verified_snapshot):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: destination changed before completion; inspect both engines')
     if target_running:
         if target["State"].get("Running") is not True:
             raise RuntimeError(f'{container["Name"].lstrip("/")}: destination stopped before completion')
@@ -599,7 +1293,7 @@ def record_completion(container, source_state, target_running):
         "target": target["Id"], "source": stopped_identity(source_state),
         "target_running": target_running,
         "source_snapshot": snapshot_digest(container),
-        "target_snapshot": snapshot_digest(target),
+        "target_snapshot": verified_snapshot,
     })
 
 
@@ -610,7 +1304,7 @@ def validate(container):
     if not re.fullmatch(r"[a-f0-9]{64}", container["Id"]):
         raise ValueError("Unsupported Docker container identity")
     labels = container["Config"].get("Labels") or {}
-    if labels.keys() & {LABEL, OWNERSHIP_LABEL}:
+    if labels.keys() & {LABEL, OWNERSHIP_LABEL, NOFILE_PROBE_LABEL}:
         raise ValueError(f"{name}: reserved Omarchy migration labels need an explicit migration")
     state = container["State"]
     if (state.get("Paused") or state.get("Restarting") or state.get("Dead") or
@@ -739,8 +1433,8 @@ def transfer_volume(volume, target):
     destination = inspect(TARGET, "volume", target)["Mountpoint"]
     # Native tar inside RootlessKit's user/mount namespace preserves numeric
     # container ownership, root mode, PAX timestamps, ACLs and xattrs.
-    pipe(["/usr/bin/sudo", "/usr/bin/tar", "--format=pax", "--numeric-owner", "--sparse", "--acls", "--xattrs",
-          "--xattrs-include=*", "-C", volume["Mountpoint"], "-cpf", "-", "."],
+    pipe(["/usr/bin/sudo", "/usr/bin/python3", TRUSTED_MANIFEST, "--archive",
+          source_namespace_path(volume["Mountpoint"])],
          ["target-namespace", "/usr/bin/tar", "--numeric-owner", "--same-owner", "--same-permissions",
           "--sparse", "--acls", "--xattrs", "--xattrs-include=*", "-C", destination, "-xpf", "-"])
     source_digest = source_volume_digest(volume)
@@ -797,21 +1491,58 @@ def remove_volume_event_marker(container, intent):
         raise RuntimeError(f'{container["Name"].lstrip("/")}: volume event marker name was replaced during cleanup')
 
 
-def begin_volume_event_window(container, intent):
-    remove_volume_event_marker(container, intent)
-    since = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+def retire_volume_event_window(container, intent, volumes_absent=False):
+    retired = deepcopy(intent)
+    retired["volume_event"] = None
+    if volumes_absent:
+        retired["volumes"] = {}
+    if retired != intent:
+        retired = persist_migration_intent(container, retired)
+    remove_volume_event_marker(container, retired)
+    return retired
+
+
+def verify_volume_event_marker(container, intent):
     name = volume_event_marker_name(intent)
+    if not exists("volume", name):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: destination volume event history is missing')
+    marker = inspect(TARGET, "volume", name)
+    if not volume_event_marker_owned(container, marker, intent) or volume_users(name):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: volume event marker changed; retained destination data for inspection')
+
+
+def ensure_volume_event_window(container, intent, targets):
+    window = intent.get("volume_event")
+    if window is None:
+        if intent["volumes"]:
+            raise RuntimeError(f'{container["Name"].lstrip("/")}: interrupted destination volume event history is missing')
+        window = {
+            "name": volume_event_marker_name(intent),
+            "since": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        intent["volume_event"] = window
+        intent = persist_migration_intent(container, intent)
+    name = window["name"]
+    if exists("volume", name):
+        verify_volume_event_marker(container, intent)
+        return intent
+    if intent["volumes"]:
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: destination volume event marker disappeared; retained destination data for inspection')
+    for target in targets:
+        if exists("volume", target):
+            raise RuntimeError(f'{container["Name"].lstrip("/")}: destination volume already exists without complete event history')
     run(TARGET, "volume", "create",
         "--label", f"{LABEL}={container['Id']}",
         "--label", f"{OWNERSHIP_LABEL}={intent['target_ownership']}",
         "--label", f"{VOLUME_EVENT_LABEL}=1", name)
-    marker = inspect(TARGET, "volume", name)
-    if not volume_event_marker_owned(container, marker, intent) or volume_users(name):
-        raise RuntimeError(f'{container["Name"].lstrip("/")}: volume event marker ownership could not be proven')
-    return {"name": name, "since": since}
+    verify_volume_event_marker(container, intent)
+    return intent
 
 
 def verify_volume_event_window(container, intent, window, targets, allowed_container=None):
+    if window != intent.get("volume_event"):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: destination volume event journal changed')
+    verify_volume_event_marker(container, intent)
     until = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     output = run(TARGET, "events", "--since", window["since"], "--until", until,
                  "--filter", "type=volume", "--format", "{{json .}}", capture=True)
@@ -838,12 +1569,12 @@ def verify_volume_event_window(container, intent, window, targets, allowed_conta
         expected_mounts.add(actor["ID"])
     if allowed_container is not None and expected_mounts != set(targets):
         raise RuntimeError(f'{container["Name"].lstrip("/")}: destination volume mount history is incomplete')
-    remove_volume_event_marker(container, intent)
+    verify_volume_event_marker(container, intent)
 
 
 def source_volume_digest(volume):
     return run("/usr/bin/sudo", "/usr/bin/python3", TRUSTED_MANIFEST,
-               volume["Mountpoint"], capture=True)
+               source_namespace_path(volume["Mountpoint"]), capture=True)
 
 
 def current_source_volume_digests(container):
@@ -869,8 +1600,11 @@ def seal_quiesced_source_volumes(container, intent):
 
 def validate_source_volume(container, volume):
     name = container["Name"].lstrip("/")
+    mountpoint = volume.get("Mountpoint")
     if (volume.get("Driver") != "local" or volume.get("Options") or
-            VOLUME_LABEL in (volume.get("Labels") or {})):
+            VOLUME_LABEL in (volume.get("Labels") or {}) or
+            not isinstance(mountpoint, str) or not mountpoint.startswith("/") or
+            ".." in PurePosixPath(mountpoint).parts or str(PurePosixPath(mountpoint)) != mountpoint):
         raise ValueError(f"{name}: custom volume configuration requires an explicit transfer")
 
 
@@ -1007,6 +1741,18 @@ def begin_quiesce(container, intent):
 def restore_source(identity, validator=validate):
     current = inspect(SOURCE, "container", identity)
     validator(current)
+    if completion_path(identity).exists():
+        try:
+            target = inspect(TARGET, "container", current["Name"].lstrip("/"))
+        except BaseException as error:
+            raise RuntimeError(
+                f'{current["Name"].lstrip("/")}: completion is durable; source recovery is disabled while the destination cannot be verified'
+            ) from error
+        if completed(current, target):
+            return
+        raise RuntimeError(
+            f'{current["Name"].lstrip("/")}: completion is durable but changed; inspect both engines'
+        )
     intent = migration_intent(current)
     if intent is None:
         return
@@ -1039,20 +1785,31 @@ def restore_source(identity, validator=validate):
     # restore this source without discarding the ownership needed to resume or
     # inspect those artifacts safely.
     if not intent["volumes"] and intent.get("destination") is None and not intent["start_attempted"]:
+        intent = retire_volume_event_window(planned, intent)
+        intent = cleanup_transfer_images(current, intent)
         clear_migration_intent(identity)
 
 
-def quiesce(container, validator=validate):
+def quiesce(container, source_nofile, validator=validate):
     container = refresh_source(container, validator)
     name = container["Name"].lstrip("/")
     if exists("container", name) and completed(container, inspect(TARGET, "container", name)):
+        intent = migration_intent(container)
+        if intent is not None:
+            if intent.get("volume_event") is not None:
+                remove_volume_event_marker(container, intent)
+            intent = release_transfer_image(container, intent)
         clear_migration_intent(container["Id"])
         print(f"{name}: already migrated")
         return
     intent = migration_intent(container)
     planned = planned_source(container, intent)
+    if intent is not None and intent.get("volume_event") is None and not intent["volumes"]:
+        remove_volume_event_marker(planned, intent)
     if intent is None:
-        intent = record_migration_intent(container)
+        intent = record_migration_intent(container, source_nofile=source_nofile)
+    elif intent["source_nofile"] != source_nofile:
+        raise ValueError(f"{name}: source container file-limit defaults changed during migration")
     if intent["start_attempted"]:
         raise ValueError(f'{container["Name"].lstrip("/")}: destination start was attempted; inspect both engines')
     if intent.get("destination") is not None and intent["restore_started"]:
@@ -1096,7 +1853,7 @@ def verify_resumable_migration(container, target, intent):
         raise ValueError(f"{name}: interrupted rootless destination changed; inspect both engines")
     if not target_never_started(target):
         raise ValueError(f"{name}: interrupted rootless destination may have run; inspect both engines")
-    verify_runtime(planned, intent["target_ownership"])
+    verify_runtime(planned, intent["target_ownership"], intent["source_nofile"])
 
     expected_volumes = {destination_volume(planned, mount): mount
                         for mount in planned.get("Mounts", [])}
@@ -1147,26 +1904,50 @@ def resume_verified_migration(container, target, intent):
     if event_window is not None:
         verify_volume_event_window(planned, intent, event_window, expected_volumes,
                                    target["Id"] if intent["target_running"] else None)
-    verify_runtime(planned, intent["target_ownership"])
-    record_completion(source_after, state, intent["target_running"])
-    clear_migration_intent(container["Id"])
+    verified_target = verify_runtime(planned, intent["target_ownership"], intent["source_nofile"])
+    completion_published = False
+    try:
+        record_completion(source_after, state, intent["target_running"], verified_target)
+        completion_published = True
+        if event_window is not None:
+            remove_volume_event_marker(planned, intent)
+        intent = release_transfer_image(source_after, intent)
+        clear_migration_intent(container["Id"])
+    except BaseException:
+        if completion_published:
+            print(f"{name}: migration completed; transfer-image journal cleanup remains pending", file=sys.stderr)
+        raise
     print(f"{name}: completed the interrupted rootless Docker migration")
 
 
-def migrate(container):
+def migrate(container, source_nofile):
     container = refresh_source(container)
     name = container["Name"].lstrip("/")
     identity = container["Id"]
     intent = migration_intent(container)
+    if intent is not None and intent["source_nofile"] != source_nofile:
+        raise ValueError(f"{name}: source container file-limit defaults changed during migration")
+    planned_retry = planned_source(container, intent) if intent is not None else container
+    expected_retry_volumes = {
+        destination_volume(planned_retry, mount) for mount in planned_retry.get("Mounts", [])
+    }
     if exists("container", name):
         target = inspect(TARGET, "container", name)
         container = refresh_source(container)
         if completed(container, target):
             if intent is not None:
+                if intent.get("volume_event") is not None:
+                    remove_volume_event_marker(container, intent)
                 remove_volume_guard(container, intent)
+                intent = release_transfer_image(container, intent)
             clear_migration_intent(identity)
             print(f"{name}: already migrated")
             return
+        if intent is not None and intent.get("volume_event") is not None:
+            verify_volume_event_window(planned_retry, intent, intent["volume_event"],
+                                       expected_retry_volumes)
+        elif intent is not None and intent["volumes"]:
+            raise RuntimeError(f"{name}: interrupted destination volume event history is missing")
         if intent is not None and intent["start_attempted"]:
             raise ValueError(f"{name}: destination start was attempted; inspect both engines")
         if intent is None:
@@ -1188,11 +1969,20 @@ def migrate(container):
             intent = record_destination_may_have_run(container, intent)
             raise ValueError(f"{name}: rootless destination name was replaced during recovery")
     if intent is not None:
+        if intent.get("volume_event") is None and not intent["volumes"]:
+            remove_volume_event_marker(planned_retry, intent)
+        if (intent.get("volume_event") is not None and
+                (exists("volume", intent["volume_event"]["name"]) or intent["volumes"])):
+            verify_volume_event_window(planned_retry, intent, intent["volume_event"],
+                                       expected_retry_volumes)
+        elif intent["volumes"]:
+            raise RuntimeError(f"{name}: interrupted destination volume event history is missing")
         try:
             remove_volume_guard(container, intent)
         except BaseException:
             intent = record_destination_may_have_run(container, intent)
             raise
+        intent = cleanup_transfer_images(container, intent)
     if intent is not None and intent["start_attempted"]:
         raise ValueError(f"{name}: destination start was attempted; inspect both engines")
     if completion_path(identity).exists():
@@ -1204,17 +1994,16 @@ def migrate(container):
     running = intent["target_running"] if intent is not None else bool(container["State"]["Running"])
     created_id = None
     guard_id = None
-    event_window = None
+    event_window = intent.get("volume_event") if intent is not None else None
     image = None
-    image_committed = False
-    image_loaded = False
     start_attempted = False
+    completion_published = False
     verified_volumes = {}
     restart = planned["HostConfig"].get("RestartPolicy") or {}
     policy = restart_policy_argument(planned)
     try:
         if intent is None:
-            intent = record_migration_intent(container)
+            intent = record_migration_intent(container, source_nofile=source_nofile)
         expected_volume_names = {destination_volume(planned, mount) for mount in planned.get("Mounts", [])}
         if set(intent["volumes"]) - expected_volume_names:
             raise ValueError(f"{name}: interrupted destination volume inventory changed")
@@ -1235,22 +2024,49 @@ def migrate(container):
         container = stopped_source
         intent = record_migration_intent(container, state, intent)
         intent = seal_quiesced_source_volumes(container, intent)
+        intent = deepcopy(intent)
+        intent["image"] = {
+            "tag": f'omarchy-rootless-docker-transfer:{intent["target_ownership"]}',
+            "source": None,
+            "target": None,
+            "target_preexisting": None,
+        }
+        intent = persist_migration_intent(container, intent)
+        image_record = transfer_image_record(intent)
         # Commit includes writable-layer changes and the exact image config.
         # Volume data is copied separately while the source container is stopped.
-        image = run(SOURCE, "commit", identity, capture=True)
+        image = run(SOURCE, "commit", identity, image_record["tag"], capture=True)
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", image or ""):
             raise RuntimeError(f"{name}: Docker did not return a transferable committed image")
-        image_committed = True
-        if not exists("image", image):
-            pipe([SOURCE, "image", "save", image], [TARGET, "image", "load", "--quiet"])
-            image_loaded = True
-        run(SOURCE, "image", "rm", image)
-        image_committed = False
+        source_image = inspect(SOURCE, "image", image_record["tag"])
+        if source_image.get("Id") != image or not transfer_image_owned(source_image, image_record, SOURCE):
+            raise RuntimeError(f"{name}: source transfer image ownership could not be proven")
+        intent = update_transfer_image(container, intent, SOURCE, image)
+        image_record = transfer_image_record(intent)
+        target_preexisting = exists("image", image)
+        if not target_preexisting:
+            if exists("image", image_record["tag"]):
+                raise RuntimeError(f"{name}: destination transfer image tag already exists")
+            # Saving by tag keeps the unpredictable journal-owned identity in
+            # the archive. Saving by digest produces an untagged load that a
+            # fresh process cannot distinguish safely from an unrelated image.
+            pipe([SOURCE, "image", "save", image_record["tag"]],
+                 [TARGET, "image", "load", "--quiet"])
+            target_image = inspect(TARGET, "image", image_record["tag"])
+            if (target_image.get("Id") != image_record["source"] or
+                    not transfer_image_owned(target_image, image_record, TARGET)):
+                raise RuntimeError(f"{name}: destination transfer image ownership could not be proven")
+            image = target_image["Id"]
+        intent = update_target_transfer_image(container, intent, image, target_preexisting)
+        image_record = transfer_image_record(intent)
+        target_reference = image if target_preexisting else image_record["tag"]
+        remove_transfer_image(SOURCE, image_record)
+        intent = update_transfer_image(container, intent, SOURCE, None)
         arguments = [TARGET, "create", "--pull=never", "--name", name,
                      "--label", f"{LABEL}={identity}",
                      "--label", f'{OWNERSHIP_LABEL}={intent["target_ownership"]}', "--privileged=false",
                      "--ipc=private", "--cgroupns=private", "--network=bridge", "--runtime", "runc"]
-        arguments += runtime_arguments(planned)
+        arguments += runtime_arguments(planned, intent["source_nofile"])
         config = planned["Config"]
         if config.get("Hostname"):
             arguments += ["--hostname", config["Hostname"]]
@@ -1268,6 +2084,9 @@ def migrate(container):
             for binding in bindings or []:
                 arguments += ["--publish", f'127.0.0.1:{binding["HostPort"]}:{port}']
         pending_volumes = {}
+        if expected_volume_names:
+            intent = ensure_volume_event_window(planned, intent, expected_volume_names)
+            event_window = intent["volume_event"]
         for mount in planned.get("Mounts", []):
             volume = inspect(SOURCE, "volume", mount["Name"])
             validate_source_volume(container, volume)
@@ -1297,7 +2116,7 @@ def migrate(container):
             if not mount.get("RW"):
                 mount_arg += ",readonly"
             arguments += ["--mount", mount_arg]
-        arguments.append(image)
+        arguments.append(target_reference)
         if pending_volumes:
             guard_name = volume_guard_name(intent)
             guard_arguments = [
@@ -1315,7 +2134,7 @@ def migrate(container):
                 if not mount.get("RW"):
                     mount_arg += ",readonly"
                 guard_arguments += ["--mount", mount_arg]
-            guard_arguments.append(image)
+            guard_arguments.append(target_reference)
             run(*guard_arguments)
             guard = inspect(TARGET, "container", guard_name)
             if (not re.fullmatch(r"[a-f0-9]{64}", guard.get("Id") or "") or
@@ -1327,10 +2146,7 @@ def migrate(container):
                 verify_volume_definition(volume, target, ownership)
                 if set(volume_users(target)) != {guard_id}:
                     raise RuntimeError(f"{name}: destination volume guard changed; retained it for inspection")
-            event_window = begin_volume_event_window(planned, intent)
-            intent = deepcopy(intent)
-            intent["volume_event"] = event_window
-            persist_migration_intent(container, intent)
+            verify_volume_event_window(planned, intent, event_window, set(pending_volumes))
         for target, pending in pending_volumes.items():
             volume, ownership, record = pending
             verify_volume_definition(volume, target, ownership)
@@ -1362,13 +2178,14 @@ def migrate(container):
             guard = inspect(TARGET, "container", guard_id)
             if not volume_guard_owned(planned, guard, intent):
                 raise RuntimeError(f"{name}: rootless volume guard changed or ran during transfer")
+        validate_target_policy()
         run(*arguments)
         target = inspect(TARGET, "container", name)
         if (not re.fullmatch(r"[a-f0-9]{64}", target.get("Id") or "") or
                 not target_never_started(target) or not target_owned(planned, target, intent)):
             raise RuntimeError(f"{name}: rootless destination ownership could not be proven")
         created_id = target["Id"]
-        verify_runtime(planned, intent["target_ownership"])
+        verify_runtime(planned, intent["target_ownership"], intent["source_nofile"])
         for target_name, pending in pending_volumes.items():
             volume, ownership, _record = pending
             verify_volume_definition(volume, target_name, ownership)
@@ -1410,13 +2227,22 @@ def migrate(container):
         if event_window is not None:
             verify_volume_event_window(planned, intent, event_window, set(pending_volumes),
                                        created_id if running else None)
-            event_window = None
-        verify_runtime(planned, intent["target_ownership"])
-        record_completion(source_after, state, bool(running))
+        verified_target = verify_runtime(planned, intent["target_ownership"], intent["source_nofile"])
+        record_completion(source_after, state, bool(running), verified_target)
+        completion_published = True
+        if event_window is not None:
+            remove_volume_event_marker(planned, intent)
+        intent = release_transfer_image(source_after, intent)
         clear_migration_intent(identity)
         print(f"{name}: migrated to rootless Docker; rootful copy retained for recovery")
     except BaseException:
         if intent is None:
+            raise
+        # The receipt rename and directory fsync happen inside record_completion.
+        # A signal can arrive after that durable boundary but before the next
+        # Python assignment, so the file itself is the final authority.
+        if completion_published or completion_path(identity).exists():
+            print(f"{name}: migration completed; transfer-image journal cleanup remains pending", file=sys.stderr)
             raise
         if start_attempted:
             print(f"{name}: destination start was attempted; both copies were retained for recovery. "
@@ -1461,13 +2287,6 @@ def migrate(container):
         except Exception:
             recovery_failed = True
             print(f"{name}: volume guard cleanup was not ownership-safe; retained it for inspection", file=sys.stderr)
-        try:
-            if event_window is not None:
-                remove_volume_event_marker(planned, intent)
-                event_window = None
-        except Exception:
-            recovery_failed = True
-            print(f"{name}: volume event marker cleanup was not ownership-safe; retained it for inspection", file=sys.stderr)
         if destination_may_have_run:
             try:
                 intent["start_attempted"] = True
@@ -1477,10 +2296,11 @@ def migrate(container):
             print(f"{name}: a rootless migration container may have run; both stores were retained for review", file=sys.stderr)
             raise
         recovery = []
-        if image_loaded:
-            recovery.append((TARGET, "image", "rm", image))
-        if image_committed:
-            recovery.append((SOURCE, "image", "rm", image))
+        try:
+            intent = cleanup_transfer_images(container, intent)
+        except Exception:
+            recovery_failed = True
+            print(f"{name}: transfer image cleanup was not ownership-safe; retained it for inspection", file=sys.stderr)
         if intent["restart_disabled"] and restart.get("Name") != "no":
             recovery.append((SOURCE, "update", f"--restart={policy}", identity))
         if running:
@@ -1510,6 +2330,7 @@ def migrate(container):
                 restored = inspect(SOURCE, "container", identity)
                 if (bool(restored["State"]["Running"]) == bool(running) and
                         snapshot_digest(restored) == snapshot_digest(planned)):
+                    intent = retire_volume_event_window(planned, intent, volumes_absent=True)
                     clear_migration_intent(identity)
             except Exception:
                 pass
@@ -1520,6 +2341,15 @@ def main():
     if os.geteuid() == 0:
         raise ValueError("Run the migration as the desktop user; the destination is always rootless")
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    if sys.argv[1:] == ["--check-target-policy"]:
+        validate_target_policy()
+        print("rootless Docker target policy verified")
+        return
+    if sys.argv[1:] == ["--cleanup-probes"]:
+        validate_source_daemon(daemon_security(SOURCE))
+        validate_target_policy()
+        cleanup_nofile_probe()
+        return
     quiesce_all_mode = sys.argv[1:2] == ["--quiesce-all"]
     if quiesce_all_mode:
         if len(sys.argv) < 3:
@@ -1527,6 +2357,8 @@ def main():
         windows_identity = sys.argv[2]
         names = sys.argv[3:]
         validate_source_daemon(daemon_security(SOURCE))
+        validate_target_policy()
+        source_nofile = source_default_nofile()
         containers = [inspect(SOURCE, "container", name) for name in names]
         volumes = set()
         blockers = []
@@ -1557,6 +2389,30 @@ def main():
                 blockers.append(str(error))
         if blockers:
             raise ValueError("\n".join(blockers))
+        source_nofiles = {}
+        for container in containers:
+            try:
+                source_nofiles[container["Id"]] = container_nofile(
+                    container, source_nofile, intents[container["Id"]],
+                )
+            except (ValueError, RuntimeError) as error:
+                blockers.append(str(error))
+        target_limits = {(limits["soft"], limits["hard"])
+                         for limits in source_nofiles.values()}
+        for soft, hard in sorted(target_limits):
+            try:
+                validate_target_nofile({"soft": soft, "hard": hard})
+            except (ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+                blockers.append(str(error))
+        windows_nofile = source_nofile
+        if windows is not None:
+            try:
+                windows_intent = migration_intent(windows)
+                windows_nofile = container_nofile(windows, source_nofile, windows_intent)
+            except (ValueError, RuntimeError) as error:
+                blockers.append(str(error))
+        if blockers:
+            raise ValueError("\n".join(blockers))
         if volumes:
             validate_trusted_manifest()
         for container in containers:
@@ -1573,10 +2429,10 @@ def main():
         try:
             for container in containers:
                 quiesced.append((container["Id"], validate))
-                quiesce(container)
+                quiesce(container, source_nofiles[container["Id"]])
             if windows is not None:
                 quiesced.append((windows["Id"], validate_windows_exception))
-                quiesce(windows, validate_windows_exception)
+                quiesce(windows, windows_nofile, validate_windows_exception)
         except BaseException:
             for identity, validator in reversed(quiesced):
                 try:
@@ -1604,9 +2460,12 @@ def main():
     check_completed = sys.argv[1:2] == ["--check-completed"]
     check_only = check_completed or sys.argv[1:2] == ["--check"]
     names = sys.argv[2:] if check_only else sys.argv[1:]
+    source_nofile = None
     if names:
         validate_source_daemon(daemon_security(SOURCE))
-        validate_target_daemon(daemon_security(TARGET))
+        validate_target_policy()
+        if not check_completed:
+            source_nofile = source_default_nofile()
     containers = [inspect(SOURCE, "container", name) for name in names]
     volumes = set()
     blockers = []
@@ -1628,6 +2487,23 @@ def main():
             if mount["Name"] in volumes:
                 blockers.append(f'{container["Name"].lstrip("/")}: custom or shared volumes require an explicit transfer')
             volumes.add(mount["Name"])
+    if blockers:
+        raise ValueError("\n".join(blockers))
+    source_nofiles = {}
+    if not check_completed:
+        for container in containers:
+            try:
+                source_nofiles[container["Id"]] = container_nofile(
+                    container, source_nofile, intents[container["Id"]],
+                )
+            except (ValueError, RuntimeError) as error:
+                blockers.append(str(error))
+        for soft, hard in sorted({(limits["soft"], limits["hard"])
+                                  for limits in source_nofiles.values()}):
+            try:
+                validate_target_nofile({"soft": soft, "hard": hard})
+            except (ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+                blockers.append(str(error))
     if blockers:
         raise ValueError("\n".join(blockers))
     if volumes:
@@ -1687,7 +2563,7 @@ def main():
     if not check_only:
         try:
             for container in containers:
-                migrate(container)
+                migrate(container, source_nofiles[container["Id"]])
         except BaseException:
             for container in reversed(containers):
                 try:

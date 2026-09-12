@@ -29,6 +29,11 @@ if ! /usr/bin/flock -n "$migration_lock_fd"; then
   exit 1
 fi
 
+target_was_active=0
+if systemctl --user is-active --quiet docker.service; then
+  target_was_active=1
+fi
+
 omarchy-pkg-add docker-rootless-extras rootlesskit slirp4netns fuse-overlayfs
 
 # Allocate a nonoverlapping subordinate-ID range before the rootless daemon can
@@ -41,21 +46,43 @@ sudo /usr/bin/bash -euo pipefail -c '
 ' bash "$migration_user"
 
 rootless_state="$HOME/.local/state/omarchy/rootless-docker"
+machine_state=/var/lib/omarchy/rootless-docker
+migrator="$OMARCHY_PATH/default/docker/rootless/migrate.py"
+machine_migration_complete=0
+if sudo /usr/bin/test -f "$machine_state/enabled"; then
+  machine_migration_complete=1
+fi
 mkdir -p "$HOME/.config/docker" "$rootless_state"
 if [[ ! -e $HOME/.config/docker/daemon.json ]]; then
   install -m 0644 "$OMARCHY_PATH/config/docker/daemon.json" "$HOME/.config/docker/daemon.json"
 fi
 
+# An active rootless daemon can already host unrelated development workloads.
+# Prove its live policy before touching the unit when this account will migrate
+# the shared rootful store; a rejected migration must not restart those apps.
+if (( target_was_active == 1 && machine_migration_complete == 0 )); then
+  if ! /usr/bin/python3 "$migrator" --check-target-policy; then
+    echo "The active rootless Docker daemon is customized or changed. Its workloads were left running." >&2
+    echo "Restore Omarchy's rootless daemon policy or migrate the rootful containers explicitly, then rerun." >&2
+    exit 1
+  fi
+fi
+
 systemctl --user daemon-reload
 # A global user-unit enablement would start this daemon for secondary accounts
 # before their subordinate IDs and per-user daemon config exist. Enable only
-# this initialized account, clear any early start-limit failure, and restart so
-# an already-running daemon consumes the just-installed configuration.
+# this initialized account and clear any early start-limit failure. Preserve an
+# existing daemon and its workloads; only start a daemon that was inactive.
 systemctl --user reset-failed docker.service
 systemctl --user enable docker.service
-systemctl --user restart docker.service
+if (( target_was_active == 0 )); then
+  systemctl --user start docker.service
+fi
 target_host="unix://$XDG_RUNTIME_DIR/docker.sock"
 if ! /usr/bin/docker --host "$target_host" info >/dev/null; then
+  if (( target_was_active == 0 )); then
+    systemctl --user stop docker.service >/dev/null 2>&1 || true
+  fi
   echo "Rootless Docker did not start. Rootful Docker has not been changed." >&2
   exit 1
 fi
@@ -63,8 +90,7 @@ fi
 # Completion of the shared rootful-store migration is machine-wide. Later
 # accounts only need their own rootless daemon and marker; they must never
 # inspect or claim the retained recovery copies owned by the first account.
-machine_state=/var/lib/omarchy/rootless-docker
-if sudo /usr/bin/test -f "$machine_state/enabled"; then
+if (( machine_migration_complete == 1 )); then
   remove_legacy_docker_group
   touch "$rootless_state/enabled"
   chmod 0600 "$rootless_state/enabled"
@@ -75,25 +101,32 @@ if sudo /usr/bin/test -f "$machine_state/enabled"; then
   exit 0
 fi
 
-# Migrate any legacy user-side definition, pin its data into the protected root
-# anchors, and rewrite the credential-bearing Compose file to root:root 0600.
-# An existing managed VM is recreated from that hardened definition while its
-# running or stopped lifecycle is preserved.
-/usr/bin/omarchy-windows-vm __migration-secure
+# Recheck after any start and before the first rootful source operation. If this
+# invocation started an incompatible daemon, restore its original inactive
+# lifecycle rather than leaving an unexpected user service behind.
+if ! /usr/bin/python3 "$migrator" --check-target-policy; then
+  if (( target_was_active == 0 )); then
+    systemctl --user stop docker.service >/dev/null 2>&1 || true
+  fi
+  echo "Rootless Docker does not match Omarchy's safe migration policy. Rootful Docker has not been changed." >&2
+  exit 1
+fi
 
 sudo /usr/bin/systemctl daemon-reload
-sudo /usr/bin/systemctl start docker.socket
-source_host="unix:///run/docker.sock"
+sudo /usr/bin/systemctl start docker.socket docker.service
 listener_verifier=/usr/share/omarchy/default/docker/rootless/rootful-listeners.py
 
 restrict_rootful_socket() {
-  local socket_owner
-  if sudo /usr/bin/test -S /run/docker.sock; then
-    sudo /usr/bin/setfacl -b /run/docker.sock
-    sudo /usr/bin/chown root:root /run/docker.sock
-    sudo /usr/bin/chmod 0600 /run/docker.sock
+  local main_pid socket_owner socket_path
+  main_pid=$(sudo /usr/bin/systemctl show docker.service --property MainPID --value)
+  [[ $main_pid =~ ^[1-9][0-9]*$ ]] || return 1
+  socket_path="/proc/$main_pid/root/run/docker.sock"
+  if sudo /usr/bin/test -S "$socket_path"; then
+    sudo /usr/bin/setfacl -b "$socket_path"
+    sudo /usr/bin/chown root:root "$socket_path"
+    sudo /usr/bin/chmod 0600 "$socket_path"
   fi
-  socket_owner=$(sudo /usr/bin/stat -Lc '%u:%g:%a' /run/docker.sock)
+  socket_owner=$(sudo /usr/bin/stat -Lc '%u:%g:%a' "$socket_path")
   if [[ $socket_owner != "0:0:600" ]]; then
     echo "The rootful Docker socket could not be restricted to root. This migration remains pending." >&2
     return 1
@@ -101,7 +134,7 @@ restrict_rootful_socket() {
 }
 
 verify_rootful_listeners() {
-  local main_pid verifier_mode
+  local main_pid verifier_mode verified_host
   if sudo /usr/bin/test -L "$listener_verifier" || ! sudo /usr/bin/test -f "$listener_verifier"; then
     echo "The packaged rootful Docker listener verifier is not trusted. This migration remains pending." >&2
     return 1
@@ -112,7 +145,13 @@ verify_rootful_listeners() {
     return 1
   fi
   main_pid=$(sudo /usr/bin/systemctl show docker.service --property MainPID --value)
-  sudo /usr/bin/python3 "$listener_verifier" "$main_pid"
+  verified_host=$(sudo /usr/bin/python3 "$listener_verifier" "$main_pid") || return 1
+  if [[ ! $verified_host =~ ^unix:///proc/[1-9][0-9]*/root/run/docker\.sock$ ]]; then
+    echo "The packaged rootful Docker listener verifier returned an invalid endpoint." >&2
+    return 1
+  fi
+  source_host=$verified_host
+  export OMARCHY_ROOTFUL_DOCKER_HOST="$source_host"
 }
 
 verify_rootful_socket_unit() {
@@ -133,12 +172,21 @@ verify_rootful_socket_unit() {
 # by the daemon restart after every workload has been safely quiesced below.
 restrict_rootful_socket
 verify_rootful_socket_unit
-sudo /usr/bin/docker --host "$source_host" info >/dev/null
 verify_rootful_listeners
+sudo /usr/bin/docker --host "$source_host" info >/dev/null
 remove_legacy_docker_group
 
+# Migrate any legacy user-side definition, pin its data into the protected root
+# anchors, and rewrite the credential-bearing Compose file to root:root 0600.
+# An existing managed VM is recreated through dockerd's own mount namespace
+# while its running or stopped lifecycle is preserved.
+/usr/bin/omarchy-windows-vm __migration-secure
+
+# A killed runtime-limit probe is journaled before it starts and uses a bounded,
+# auto-removing container. Clear any such verified probe before taking the
+# machine-wide source inventory so it can never be mistaken for a workload.
+/usr/bin/python3 "$migrator" --cleanup-probes
 docker_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
-migrator="$OMARCHY_PATH/default/docker/rootless/migrate.py"
 container_names=()
 windows_id=""
 while read -r container_id container_name; do
@@ -224,6 +272,7 @@ fi
 # All source restart policies and lifecycle intent are durable before this
 # restart. Stopping the daemon closes rootful connections accepted before the
 # socket became root-only; those clients cannot reconnect afterward.
+verify_rootful_listeners
 sudo /usr/bin/systemctl restart docker.service
 sudo /usr/bin/systemctl start docker.socket
 restrict_rootful_socket

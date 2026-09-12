@@ -52,6 +52,32 @@ reset_case() {
   mkdir -p "$HOME"
 }
 
+eval "$(declare -f fsync_directory | sed '1s/fsync_directory/original_fsync_directory/')"
+fsync_log="$TMPDIR/fsync-directories"
+fsync_directory() {
+  printf '%s\n' "$1" >>"$fsync_log"
+  original_fsync_directory "$1"
+}
+
+durable_parent="$TMPDIR/durable-parent"
+durable_child="$durable_parent/new-child"
+mkdir -p "$durable_parent"
+prepare_boundary_component "$durable_child" "$durable_parent" "$(id -u)" 0755
+grep -Fxq "$durable_child" "$fsync_log" || fail "new boundary directory was not synchronized"
+grep -Fxq "$durable_parent" "$fsync_log" || fail "new boundary entry was not synchronized in its parent"
+: >"$fsync_log"
+prepare_boundary_component "$durable_child" "$durable_parent" "$(id -u)" 0755
+grep -Fxq "$durable_child" "$fsync_log" || fail "existing boundary directory was not synchronized on retry"
+grep -Fxq "$durable_parent" "$fsync_log" || fail "existing boundary entry was not synchronized on retry"
+chmod 0700 "$durable_child"
+prepare_boundary_component "$durable_child" "$durable_parent" "$(id -u)" 0755 1
+[[ $(stat -Lc '%a' "$durable_child") == 700 ]] || fail "durability retry widened an existing boundary mode"
+rg -q 'prepare_boundary_component "\$runtime_parent" /var/lib 0 0755 1' "$ROOT/bin/omarchy-windows-vm" ||
+  fail "privileged runtime parent bypasses durable boundary creation"
+! rg -q 'if \(\(EUID == 0\)\) && \[\[ ! -e \$runtime_parent' "$ROOT/bin/omarchy-windows-vm" ||
+  fail "retry skips synchronization of the existing privileged runtime parent"
+pass "new and retried Windows runtime directories and parent entries are durable"
+
 # Fixed protected anchors consume the pinned source inodes.
 prepare_user_mount_sources
 write 4G 2 64G alice s3cret Europe/Copenhagen
@@ -110,6 +136,73 @@ pass "pkexec target is only the canonical packaged regular file, never a PATH sy
 
 # Legacy migration keeps directories and legitimate symlinks in place.
 reset_case
+mkdir -p "$HOME/.config/windows"
+cat >"$HOME/.config/windows/docker-compose.yml" <<'LEG'
+services:
+  windows:
+    environment:
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      DISK_SIZE: "64G"
+      USERNAME: "legacyuser"
+      PASSWORD: "$HOME"
+      TZ: "UTC"
+LEG
+LEGACY_COMPOSE_FILE="$HOME/.config/windows/docker-compose.yml"
+COMPOSE_FILE="$COMPOSE"
+migrate_legacy_compose 2>/dev/null && fail "environment-dependent legacy password was migrated"
+[[ -f $LEGACY_COMPOSE_FILE && ! -e $COMPOSE ]] || fail "ambiguous legacy password changed migration state"
+pass "environment-dependent legacy password interpolation fails before deletion"
+
+for unsafe_password in '\u0024HOME' 'tab\tvalue' 'line\nvalue'; do
+  reset_case
+  mkdir -p "$HOME/.config/windows"
+  LEGACY_COMPOSE_FILE="$HOME/.config/windows/docker-compose.yml"
+  COMPOSE_FILE="$COMPOSE"
+  cat >"$LEGACY_COMPOSE_FILE" <<LEG
+services:
+  windows:
+    environment:
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      DISK_SIZE: "64G"
+      USERNAME: "legacyuser"
+      PASSWORD: "$unsafe_password"
+      TZ: "UTC"
+LEG
+  migrate_legacy_compose 2>/dev/null && fail "unsupported legacy YAML escape was migrated"
+  [[ -f $LEGACY_COMPOSE_FILE && ! -e $COMPOSE ]] || fail "unsupported YAML escape changed migration state"
+done
+pass "unsupported legacy YAML escapes fail closed before credential deletion"
+
+reset_case
+mkdir -p "$HOME/.config/windows"
+LEGACY_COMPOSE_FILE="$HOME/.config/windows/docker-compose.yml"
+COMPOSE_FILE="$COMPOSE"
+cat >"$LEGACY_COMPOSE_FILE" <<'LEG'
+services:
+  windows:
+    environment:
+      RAM_SIZE: "4G"
+      CPU_CORES: "2"
+      DISK_SIZE: "64G"
+      USERNAME: "legacyuser"
+      PASSWORD: "original"
+      TZ: "UTC"
+      PASSWORD: "replacement"
+LEG
+migrate_legacy_compose 2>/dev/null && fail "duplicate legacy credential was migrated"
+[[ -f $LEGACY_COMPOSE_FILE && ! -e $COMPOSE ]] || fail "duplicate legacy credential changed migration state"
+pass "missing or duplicate legacy fields fail closed"
+
+for action in status_windows stop_windows; do
+  output=$($action 2>&1) && fail "$action accepted an ambiguous legacy credential"
+  [[ $output == *"Run omarchy-windows-vm install"* ]] || fail "$action hid legacy migration guidance"
+  [[ $output != *"not configured"* ]] || fail "$action misreported an unsafe legacy definition"
+done
+pass "status and stop retain actionable legacy migration errors"
+
+reset_case
 external_shared="$TMPDIR/external-shared"
 mkdir -m 0755 -p "$HOME/.windows" "$external_shared" "$HOME/.config/windows"
 ln -s "$external_shared" "$HOME/Windows"
@@ -124,24 +217,73 @@ services:
       CPU_CORES: "6"
       DISK_SIZE: "128G"
       USERNAME: "legacyuser"
-      PASSWORD: "legacypass"
+      PASSWORD: "legacy$$pass"
       TZ: "America/New_York"
     volumes:
       - /./:/storage
       - /etc:/shared
 LEG
+legacy_secure_log="$TMPDIR/legacy-secure"
+windows_status=running
+docker() {
+  if [[ $1 == inspect && ${2:-} == --format=* ]]; then
+    printf '%s' "$windows_status"
+    return 0
+  fi
+  [[ $1 == inspect ]]
+}
+dc() { printf '%s\n' "$*" >>"$legacy_secure_log"; }
 priv() { local action=$1; shift; "__priv_$action" "$@"; }
 migrate_legacy_compose
 resolve_caller
 [[ -f $COMPOSE ]] || fail "migration did not write compose"
 grep -q 'USERNAME: "legacyuser"' "$COMPOSE" || fail "migration lost settings"
+[[ $(read_credential PASSWORD) == 'legacy$pass' ]] || fail "migration changed the effective legacy password"
+[[ $(unescape "$(read_compose_value PASSWORD "$COMPOSE")") == 'legacy$pass' ]] ||
+  fail "replacement Compose changed the effective legacy password"
 [[ -f $HOME/.windows/existing-disk && -f $external_shared/existing-shared-file ]] || fail "migration lost data"
 [[ ! -L $HOME/.windows && $(readlink "$HOME/Windows") == "$external_shared" ]] || fail "migration consumed source path"
 [[ $(stat -Lc '%a' "$HOME/.windows") == 700 && $(stat -Lc '%a' "$external_shared") == 700 ]] || fail "migration did not harden legacy directories"
 grep -q -- '- /:/' "$COMPOSE" && fail "migration copied malicious storage"
 grep -q -- '- /etc:/shared' "$COMPOSE" && fail "migration copied malicious share"
 [[ ! -f $LEGACY_COMPOSE_FILE ]] || fail "migration left legacy compose"
+[[ $(tail -n1 "$legacy_secure_log") == "up -d" ]] || fail "running legacy VM was not securely recreated before deletion"
+unset -f docker dc
 pass "migration preserves data and symlinks while hardening permissions"
+
+# A retry after unlink but before its directory fsync sees no legacy file. The
+# ordinary command path must still synchronize the parent so power loss cannot
+# resurrect the credential-bearing directory entry.
+: >"$fsync_log"
+migrate_legacy_compose
+grep -Fxq "$(dirname -- "$LEGACY_COMPOSE_FILE")" "$fsync_log" ||
+  fail "an apparently completed legacy unlink was not synchronized on retry"
+pass "ordinary retries synchronize a previously interrupted legacy unlink"
+
+# A crash after the root-owned Compose rename but before its directory fsync can
+# leave both definitions. Retry must authenticate, synchronize the trusted file,
+# and only then durably remove the old credential-bearing user file.
+root_compose_digest=$(sha256sum "$COMPOSE" | cut -d' ' -f1)
+cat >"$LEGACY_COMPOSE_FILE" <<'LEG'
+services:
+  windows:
+    environment:
+      USERNAME: "exposed"
+      PASSWORD: "credential"
+LEG
+chmod 0644 "$LEGACY_COMPOSE_FILE"
+: >"$fsync_log"
+migrate_legacy_compose
+[[ $(sha256sum "$COMPOSE" | cut -d' ' -f1) == "$root_compose_digest" ]] ||
+  fail "both-file recovery replaced the trusted Compose definition"
+[[ ! -e $LEGACY_COMPOSE_FILE ]] || fail "both-file recovery retained legacy credentials"
+grep -Fxq "$(dirname -- "$LEGACY_COMPOSE_FILE")" "$fsync_log" ||
+  fail "legacy credential removal was not synchronized"
+runtime_sync_line=$(grep -nFx "$RUNTIME_DIR" "$fsync_log" | head -n1 | cut -d: -f1)
+legacy_sync_line=$(grep -nFx "$(dirname -- "$LEGACY_COMPOSE_FILE")" "$fsync_log" | tail -n1 | cut -d: -f1)
+[[ -n $runtime_sync_line && -n $legacy_sync_line ]] && ((runtime_sync_line < legacy_sync_line)) ||
+  fail "legacy credentials were removed before the trusted Compose rename was synchronized"
+pass "ordinary Windows commands prove the replacement durable before legacy unlink"
 
 # Bring-up re-proves compose trust, cardinality, and mounted identities.
 assert_mounts_safe || fail "verified sources rejected"

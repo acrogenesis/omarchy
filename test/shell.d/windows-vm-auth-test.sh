@@ -53,15 +53,27 @@ MODE_LOG="$test_dir/mode" OMARCHY_WINDOWS_DIR="$test_dir" ROOT="$ROOT" bash -c '
   set -e
   set -- help
   source "$ROOT/bin/omarchy-windows-vm" >/dev/null
-  priv() { printf "%s" "$1" >"$MODE_LOG"; }
+  priv() { printf "priv:%s\n" "$1" >>"$MODE_LOG"; }
   secure_windows_migration
-  [[ $(<"$MODE_LOG") == "secure" ]]
+  [[ $(<"$MODE_LOG") == "priv:secure" ]]
+  mkdir -p "$HOME/.config/windows"
+  touch "$HOME/.config/windows/docker-compose.yml"
+  : >"$MODE_LOG"
+  migrate_legacy_compose() {
+    printf "migrate\n" >>"$MODE_LOG"
+    priv secure
+    remove_legacy_compose
+  }
+  remove_legacy_compose() { printf "remove\n" >>"$MODE_LOG"; rm "$HOME/.config/windows/docker-compose.yml"; }
+  secure_windows_migration
+  [[ ! -e $HOME/.config/windows/docker-compose.yml ]]
+  expected=$(printf "migrate\npriv:secure\nremove")
+  [[ $(<"$MODE_LOG") == "$expected" ]]
   valid_priv_action secure
   rm "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
   : >"$MODE_LOG"
   secure_windows_migration
-  [[ $(<"$MODE_LOG") == "secure" ]]
-  mkdir -p "$HOME/.config/windows"
+  [[ $(<"$MODE_LOG") == "priv:secure" ]]
   touch "$HOME/.config/windows/docker-compose.yml"
   migrate_legacy_compose() { return 23; }
   if secure_windows_migration; then

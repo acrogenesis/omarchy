@@ -89,10 +89,14 @@ priv() {
 # rootless DOCKER_HOST. Socket activation keeps that rootful daemon off until an
 # authenticated VM operation needs it.
 docker() {
+  local host="unix:///run/docker.sock" main_pid
   if ((EUID == 0)); then
-    /usr/bin/systemctl start docker.socket || return 1
+    /usr/bin/systemctl start docker.socket docker.service || return 1
+    main_pid=$(/usr/bin/systemctl show docker.service --property=MainPID --value) || return 1
+    [[ $main_pid =~ ^[1-9][0-9]*$ ]] || return 1
+    host="unix:///proc/$main_pid/root/run/docker.sock"
   fi
-  command /usr/bin/docker --host unix:///run/docker.sock "$@"
+  command /usr/bin/docker --host "$host" "$@"
 }
 
 dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
@@ -237,7 +241,7 @@ assert_boundary_dir() {
 }
 
 prepare_boundary_component() {
-  local path="$1" parent="$2" owner="$3" mode="$4"
+  local path="$1" parent="$2" owner="$3" mode="$4" keep_existing_mode="${5:-0}"
   assert_boundary_dir "$parent" "$owner" || return 1
   if [[ -e $path || -L $path ]]; then
     assert_boundary_dir "$path" "$owner" || return 1
@@ -248,9 +252,14 @@ prepare_boundary_component() {
       install -d -m "$mode" -- "$path" || return 1
     fi
   fi
-  chmod "$mode" -- "$path" || return 1
-  if ((EUID == 0)); then chown root:root -- "$path" || return 1; fi
-  assert_boundary_dir "$path" "$owner"
+  if [[ $keep_existing_mode != 1 || ! -e $path ]]; then
+    chmod "$mode" -- "$path" || return 1
+    if ((EUID == 0)); then chown root:root -- "$path" || return 1; fi
+  fi
+  assert_boundary_dir "$path" "$owner" || return 1
+  # A retry may encounter a directory created by an invocation killed before
+  # its first fsync. Synchronize both levels even when they already existed.
+  fsync_directory "$path" && fsync_directory "$parent"
 }
 
 prepare_runtime_tree() {
@@ -276,10 +285,11 @@ prepare_runtime_tree() {
   fi
 
   runtime_parent=$(dirname -- "$RUNTIME_DIR")
-  if ((EUID == 0)) && [[ ! -e $runtime_parent && ! -L $runtime_parent ]]; then
+  if ((EUID == 0)); then
     [[ $runtime_parent == /var/lib/omarchy ]] || return 1
-    assert_boundary_dir /var/lib 0 || return 1
-    install -d -o root -g root -m 0755 -- "$runtime_parent" || return 1
+    # This shared parent may have a stricter administrator-selected mode. A
+    # retry needs to synchronize its directory entry without widening it.
+    prepare_boundary_component "$runtime_parent" /var/lib 0 0755 1 || return 1
   fi
   prepare_boundary_component "$RUNTIME_DIR" "$runtime_parent" "$owner" 0755 &&
     prepare_boundary_component "$MOUNT_ROOT" "$RUNTIME_DIR" "$owner" 0711 &&
@@ -984,6 +994,10 @@ __priv_secure() {
     return 0
   fi
   assert_mounts_safe || return 1
+  # A previous process may have completed the Compose rename and died before
+  # synchronizing it. Prove the replacement durable before the caller removes
+  # the legacy user-owned definition that still contains credentials.
+  fsync_regular_file "$COMPOSE_FILE" && fsync_directory "$RUNTIME_DIR" || return 1
   if [[ -e $SECURITY_MIGRATION_STATE || -L $SECURITY_MIGRATION_STATE ]]; then
     desired=$(read_security_migration_state) || {
       echo "omarchy-windows-vm: refusing an untrusted Windows security-migration state" >&2
@@ -1170,6 +1184,46 @@ unescape() {
   printf '%s' "$v"
 }
 
+# Decode the only double-quoted YAML escapes emitted by Omarchy's historical
+# writer, then reproduce Compose's $$ interpolation exactly. Other escapes or
+# a lone dollar could have produced a different effective value and therefore
+# require the user to set the value again explicitly.
+decode_legacy_scalar() {
+  local raw="$1" yaml="" decoded="" char next index length
+  length=${#raw}
+  for ((index = 0; index < length; index++)); do
+    char=${raw:index:1}
+    if [[ $char == '\' ]]; then
+      ((++index < length)) || return 1
+      next=${raw:index:1}
+      [[ $next == '\' || $next == '"' ]] || return 1
+      yaml+=$next
+    else
+      yaml+=$char
+    fi
+  done
+  length=${#yaml}
+  for ((index = 0; index < length; index++)); do
+    char=${yaml:index:1}
+    if [[ $char == '$' ]]; then
+      ((++index < length)) || return 1
+      [[ ${yaml:index:1} == '$' ]] || return 1
+      decoded+='$'
+    else
+      decoded+=$char
+    fi
+  done
+  printf '%s' "$decoded"
+}
+
+decode_legacy_field() {
+  decode_legacy_scalar "$1" || {
+    echo "The legacy Windows settings use unsupported YAML escaping or environment-dependent Compose interpolation." >&2
+    echo "Run omarchy-windows-vm install to set them explicitly before migration." >&2
+    return 1
+  }
+}
+
 # Store the RDP credentials privately for the user (0600) so the plaintext
 # password is not world-readable. The password is one validated printable line
 # (no newline), so plain KEY=VALUE is safe.
@@ -1207,25 +1261,61 @@ read_credential() {
 
 read_compose_value() {
   local key="$1" file="$2"
-  sed -n "s/.*${key}: \"\(.*\)\"/\1/p" "$file" | head -n1
+  sed -n "s/^[[:space:]]*${key}:[[:space:]]*\"\(.*\)\"[[:space:]]*$/\1/p" "$file" | head -n1
+}
+
+read_legacy_compose_value() {
+  local key="$1" optional="${2:-0}" values=()
+  mapfile -t values < <(
+    sed -n "s/^[[:space:]]*${key}:[[:space:]]*\"\(.*\)\"[[:space:]]*$/\1/p" "$LEGACY_COMPOSE_FILE"
+  )
+  if ((optional == 1 && ${#values[@]} == 0)); then
+    return 0
+  fi
+  ((${#values[@]} == 1)) || return 1
+  printf '%s' "${values[0]}"
+}
+
+read_legacy_field() {
+  local raw
+  raw=$(read_legacy_compose_value "$1" "${2:-0}") || {
+    echo "The legacy Windows definition has missing or duplicate settings." >&2
+    echo "Run omarchy-windows-vm install to set them explicitly before migration." >&2
+    return 1
+  }
+  decode_legacy_field "$raw"
 }
 
 # Older installs kept the compose under ~/.config/windows. Carry those settings
 # into the root-owned location (preserving the VM's data via the same volume
 # paths) so an upgrade does not strand or re-download an existing VM.
 migrate_legacy_compose() {
-  [[ -f $COMPOSE_FILE ]] && return 0
+  sync_legacy_compose_parent || return 1
+  if [[ -f $COMPOSE_FILE ]]; then
+    if [[ -f $LEGACY_COMPOSE_FILE ]]; then
+      # This proves a replacement left by an interrupted rename before the
+      # caller removes the remaining user-readable credential copy.
+      priv secure || return 1
+      remove_legacy_compose || return 1
+    fi
+    return 0
+  fi
   [[ -f $LEGACY_COMPOSE_FILE ]] || return 1
 
   echo "Migrating Windows VM configuration to $COMPOSE_FILE ..."
   local ram cores disk username password tz
-  ram=$(read_compose_value RAM_SIZE "$LEGACY_COMPOSE_FILE")
-  cores=$(read_compose_value CPU_CORES "$LEGACY_COMPOSE_FILE")
-  disk=$(read_compose_value DISK_SIZE "$LEGACY_COMPOSE_FILE")
-  username=$(read_compose_value USERNAME "$LEGACY_COMPOSE_FILE")
-  password=$(read_compose_value PASSWORD "$LEGACY_COMPOSE_FILE")
-  tz=$(read_compose_value TZ "$LEGACY_COMPOSE_FILE")
+  ram=$(read_legacy_field RAM_SIZE) || return 1
+  cores=$(read_legacy_field CPU_CORES) || return 1
+  disk=$(read_legacy_field DISK_SIZE) || return 1
+  username=$(read_legacy_field USERNAME) || return 1
+  password=$(read_legacy_field PASSWORD) || return 1
+  tz=$(read_legacy_field TZ 1) || return 1
   [[ -z $tz ]] && tz="UTC"
+  valid_tz "$tz" || {
+    echo "The legacy Windows timezone cannot be migrated safely." >&2
+    echo "Run omarchy-windows-vm install to set it explicitly before migration." >&2
+    return 1
+  }
   prepare_user_mount_sources || {
     echo "Could not validate the existing Windows VM data directories." >&2
     return 1
@@ -1238,15 +1328,33 @@ migrate_legacy_compose() {
     echo "Re-run: omarchy-windows-vm install" >&2
     return 1
   fi
+  # A running legacy container still holds its old unauthenticated ports and
+  # mounts until Compose recreates it from the hardened definition.
+  priv secure || return 1
+  remove_legacy_compose
+}
+
+remove_legacy_compose() {
   rm -f "$LEGACY_COMPOSE_FILE" || return 1
   fsync_directory "$(dirname -- "$LEGACY_COMPOSE_FILE")"
 }
 
-secure_windows_migration() {
-  if [[ ! -f $COMPOSE_FILE && -f $LEGACY_COMPOSE_FILE ]]; then
-    migrate_legacy_compose || return 1
+sync_legacy_compose_parent() {
+  local parent
+  parent=$(dirname -- "$LEGACY_COMPOSE_FILE")
+  if [[ -e $parent || -L $parent ]]; then
+    [[ -d $parent && ! -L $parent ]] || return 1
+    fsync_directory "$parent"
   fi
-  priv secure
+}
+
+secure_windows_migration() {
+  sync_legacy_compose_parent || return 1
+  if [[ -f $LEGACY_COMPOSE_FILE ]]; then
+    migrate_legacy_compose || return 1
+    return 0
+  fi
+  priv secure || return 1
 }
 
 # --- prerequisites -----------------------------------------------------------
@@ -1490,11 +1598,14 @@ remove_windows() {
 
   echo "Removing Windows VM..."
 
-  if [[ ! -f $COMPOSE_FILE && -f $LEGACY_COMPOSE_FILE ]]; then
-    migrate_legacy_compose || {
+  if ! migrate_legacy_compose; then
+    if [[ -f $COMPOSE_FILE ]]; then
+      echo "❌ Could not securely reconcile the VM definition before removal." >&2
+      exit 1
+    elif [[ -f $LEGACY_COMPOSE_FILE ]]; then
       echo "❌ Could not safely migrate the VM before removal." >&2
       exit 1
-    }
+    fi
   fi
   if [[ -f $COMPOSE_FILE ]]; then
     priv remove || {
@@ -1522,6 +1633,8 @@ launch_windows() {
       echo "Windows VM not configured. Please run: omarchy-windows-vm install"
       exit 1
     fi
+    echo "Could not securely reconcile the Windows VM definition." >&2
+    exit 1
   fi
 
   # RDP credentials come from the private per-user file. Older installs may
@@ -1606,7 +1719,14 @@ To stop: omarchy-windows-vm stop"
 }
 
 stop_windows() {
-  migrate_legacy_compose 2>/dev/null || true
+  if ! migrate_legacy_compose; then
+    if [[ -f $LEGACY_COMPOSE_FILE ]]; then
+      exit 1
+    elif [[ -f $COMPOSE_FILE ]]; then
+      echo "Could not securely reconcile the Windows VM definition." >&2
+      exit 1
+    fi
+  fi
   if [[ ! -f $COMPOSE_FILE ]]; then
     echo "Windows VM not configured."
     exit 1
@@ -1622,7 +1742,14 @@ stop_windows() {
 }
 
 status_windows() {
-  migrate_legacy_compose 2>/dev/null || true
+  if ! migrate_legacy_compose; then
+    if [[ -f $LEGACY_COMPOSE_FILE ]]; then
+      exit 1
+    elif [[ -f $COMPOSE_FILE ]]; then
+      echo "Could not securely reconcile the Windows VM definition." >&2
+      exit 1
+    fi
+  fi
   if [[ ! -f $COMPOSE_FILE ]]; then
     echo "Windows VM not configured."
     echo "To set up: omarchy-windows-vm install"
