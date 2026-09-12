@@ -16,19 +16,25 @@ path = os.path.join(os.environ["ROOT"], "default/docker/rootless/migrate.py")
 spec = importlib.util.spec_from_file_location("rootless_docker_migration", path)
 migration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(migration)
+assert migration.TRUSTED_MANIFEST == "/usr/share/omarchy/default/docker/rootless/volume-manifest.py"
+assert migration.local_command([migration.SOURCE, "info"])[:2] == ["/usr/bin/sudo", "/usr/bin/docker"]
+print("ok - privileged migration helpers resolve only through packaged absolute paths")
 
 source_security = ["name=seccomp,profile=builtin", "name=cgroupns"]
 target_security = ["name=seccomp,profile=builtin", "name=rootless", "name=cgroupns"]
 migration.validate_source_daemon(source_security)
 migration.validate_target_daemon(target_security)
-for options in (None, [], ["name=rootless"], ["name=userns"], ["name=no-new-privileges"]):
+for options in (None, [], ["name=rootless"], ["name=userns"], ["name=no-new-privileges"],
+                ["name=cgroupns"], ["name=seccomp,profile=builtin"]):
     try:
         migration.validate_source_daemon(options)
     except ValueError:
         pass
     else:
         raise AssertionError(f"unsafe rootful daemon policy passed: {options}")
-for options in (None, [], source_security, target_security + ["name=apparmor"]):
+for options in (None, [], source_security, target_security + ["name=apparmor"],
+                ["name=rootless", "name=cgroupns"],
+                ["name=rootless", "name=seccomp,profile=builtin"]):
     try:
         migration.validate_target_daemon(options)
     except ValueError:
@@ -85,6 +91,82 @@ modern_mount["HostConfig"]["Mounts"] = [{
 assert migration.validate(modern_mount) == "project-worker"
 assert migration.destination_volume(modern_mount, modern_mount["Mounts"][0]) == "project-data"
 print("ok - compatible custom workloads retain resources, private volumes, ports and restrictive capabilities")
+
+numeric_root = copy.deepcopy(container)
+numeric_root["Config"]["User"] = "00:1000"
+numeric_root["HostConfig"]["CapDrop"] = []
+assert migration.allowed_capabilities(numeric_root) == migration.DOCKER_CAPABILITIES
+for named_user in ("root", "daemon", "root:root"):
+    changed = copy.deepcopy(container)
+    changed["Config"]["User"] = named_user
+    try:
+        migration.validate(changed)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"ambiguous named user passed preflight: {named_user}")
+print("ok - numeric UID zero keeps its capabilities and ambiguous named users fail closed")
+
+for field, value in (("Labels", {migration.LABEL: "old"}),
+                     ("Env", ["DUPLICATE=one", "DUPLICATE=two"])):
+    changed = copy.deepcopy(container)
+    changed["Config"][field] = value
+    try:
+        migration.validate(changed)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"ambiguous {field} passed preflight")
+print("ok - reserved labels and duplicate environment keys fail before transfer")
+
+windows = copy.deepcopy(container)
+windows["Name"] = "/omarchy-windows"
+windows["Id"] = "f" * 64
+windows["Config"]["Image"] = "dockurr/windows"
+windows["Config"]["Labels"] = {
+    "com.docker.compose.project": "windows",
+    "com.docker.compose.service": "windows",
+}
+windows["HostConfig"]["Privileged"] = False
+windows["HostConfig"]["CapAdd"] = ["NET_ADMIN"]
+windows["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
+windows["HostConfig"]["Devices"] = [
+    {"PathOnHost": "/dev/kvm", "PathInContainer": "/dev/kvm"},
+    {"PathOnHost": "/dev/net/tun", "PathInContainer": "/dev/net/tun"},
+]
+windows["HostConfig"]["PortBindings"] = {
+    "8006/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8006"}],
+    "3389/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3389"}],
+    "3389/udp": [{"HostIp": "127.0.0.1", "HostPort": "3389"}],
+}
+windows["Mounts"] = [
+    {"Type": "bind", "Source": "/var/lib/omarchy/windows/mounts/users/1000/storage",
+     "Destination": "/storage", "RW": True},
+    {"Type": "bind", "Source": "/var/lib/omarchy/windows/mounts/users/1000/shared",
+     "Destination": "/shared", "RW": True},
+]
+assert migration.validate_windows_exception(windows) == "omarchy-windows"
+for mutation in ("image", "labels", "devices", "mounts", "mount-source", "restart"):
+    changed = copy.deepcopy(windows)
+    if mutation == "image":
+        changed["Config"]["Image"] = "example/custom"
+    elif mutation == "labels":
+        changed["Config"]["Labels"] = {}
+    elif mutation == "devices":
+        changed["HostConfig"]["Devices"] = []
+    elif mutation == "mounts":
+        changed["Mounts"] = []
+    elif mutation == "mount-source":
+        changed["Mounts"][0]["Source"] = "/home/example/.windows"
+    else:
+        changed["HostConfig"]["RestartPolicy"] = {"Name": "always", "MaximumRetryCount": 0}
+    try:
+        migration.validate_windows_exception(changed)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"unmanaged Windows exception passed: {mutation}")
+print("ok - only Omarchy's managed Windows runtime qualifies for the rootful exception")
 
 blocked = (
     ("Privileged", True), ("CapAdd", ["SYS_ADMIN"]),
@@ -146,7 +228,7 @@ target["Id"] = "b" * 64
 target["Config"]["Labels"][migration.LABEL] = stopped["Id"]
 with tempfile.TemporaryDirectory() as directory:
     os.environ["XDG_STATE_HOME"] = directory
-    migration.inspect = lambda engine, kind, name: copy.deepcopy(target)
+    migration.inspect = lambda engine, kind, name: copy.deepcopy(stopped if engine == migration.SOURCE else target)
     migration.record_completion(stopped, stopped["State"], False)
     assert migration.completed(stopped, target)
     stopped["RestartCount"] = 4
@@ -162,8 +244,19 @@ with tempfile.TemporaryDirectory() as directory:
     assert not migration.completed(stopped, target)
 print("ok - completion receipts bind both immutable workload snapshots and lifecycle state")
 
+restarted = copy.deepcopy(stopped)
+restarted["State"]["Running"] = True
+migration.inspect = lambda engine, kind, name: copy.deepcopy(restarted if engine == migration.SOURCE else target)
+try:
+    migration.record_completion(stopped, stopped["State"], False)
+except ValueError:
+    pass
+else:
+    raise AssertionError("a restarted source received a completion receipt")
+print("ok - completion re-inspects the source and refuses a stale stopped state")
 
-def exercise_failed_transfer(after_start):
+
+def exercise_failed_transfer(after_start, mutate_source=False):
     source = copy.deepcopy(container)
     source["Id"] = ("d" if after_start else "c") * 64
     source["Name"] = "/post-start" if after_start else "/pre-start"
@@ -182,10 +275,14 @@ def exercise_failed_transfer(after_start):
             current_source["State"] = {
                 "Running": False, "StartedAt": "start", "FinishedAt": "finish", "ExitCode": 0,
             }
+            if mutate_source:
+                current_source["HostConfig"]["Memory"] += 4096
         elif args[:2] == (migration.SOURCE, "update"):
             current_source["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
         elif args[:2] == (migration.SOURCE, "start"):
             current_source["State"]["Running"] = True
+        elif args[:2] == (migration.SOURCE, "commit"):
+            return "sha256:" + ("f" if after_start else "e") * 64
 
     migration.inspect = fake_inspect
     migration.run = fake_run
@@ -209,10 +306,16 @@ def exercise_failed_transfer(after_start):
 
 calls, source = exercise_failed_transfer(False)
 assert (migration.TARGET, "rm", "--force", "pre-start") in calls
-assert (migration.TARGET, "image", "rm", "omarchy-migrated:" + "c" * 64) in calls
+assert (migration.TARGET, "image", "rm", "sha256:" + "e" * 64) in calls
 assert (migration.SOURCE, "start", "c" * 64) in calls
 assert source["State"]["Running"]
 print("ok - verification failure before first start removes the destination and restores the source")
+
+calls, source = exercise_failed_transfer(False, mutate_source=True)
+assert not any(call[:2] == (migration.SOURCE, "commit") for call in calls)
+assert (migration.SOURCE, "start", "c" * 64) in calls
+assert source["State"]["Running"]
+print("ok - source configuration changes during stop abort before image transfer")
 
 calls, source = exercise_failed_transfer(True)
 assert (migration.TARGET, "start", "post-start") in calls

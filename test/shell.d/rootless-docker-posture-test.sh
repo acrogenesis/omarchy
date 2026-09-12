@@ -34,13 +34,25 @@ pass "the Docker endpoint activates only after rootless setup completes"
 
 migration="$ROOT/migrations/1789164756.sh"
 grep -q 'migration_user=$(id -un)' "$migration" || fail "migration trusts the USER environment instead of the current account"
+lock_line=$(grep -n '/usr/bin/flock -n' "$migration" | cut -d: -f1)
+package_line=$(grep -n '^omarchy-pkg-add docker-rootless-extras' "$migration" | cut -d: -f1)
+[[ -n $lock_line && -n $package_line ]] && (( lock_line < package_line )) ||
+  fail "same-account migrations are not serialized before any setup or transfer"
 completion_line=$(grep -n 'test -f "$machine_state/enabled"' "$migration" | cut -d: -f1)
 inventory_line=$(grep -n 'docker_inventory=' "$migration" | cut -d: -f1)
 [[ -n $completion_line && -n $inventory_line ]] && (( completion_line < inventory_line )) ||
   fail "later accounts can reach the machine-wide retained rootful store"
 grep -q 'machine-wide rootful recovery store was left untouched' "$migration" ||
   fail "later accounts do not have an explicit rootful-store no-op path"
-pass "later accounts initialize only their private rootless daemon"
+completion_return=$(grep -n 'machine-wide rootful recovery store was left untouched' "$migration" | cut -d: -f1)
+later_group_drop=$(sed -n "${completion_line},${completion_return}p" "$migration" | grep -n '^  remove_legacy_docker_group' | cut -d: -f1)
+[[ -n $later_group_drop ]] || fail "later accounts retain legacy docker-group membership"
+socket_line=$(grep -n "socket_owner=" "$migration" | cut -d: -f1)
+[[ -n $socket_line && -n $inventory_line ]] && (( socket_line < inventory_line )) ||
+  fail "the legacy group socket remains writable during source migration"
+grep -q -- '--check-windows "$windows_id"' "$migration" ||
+  fail "the name-based Windows exception is not authenticated against its managed runtime"
+pass "migration serializes ownership, restricts the source socket, and validates the Windows exception"
 
 grep -q "alias d='docker'" "$ROOT/default/bash/aliases" || fail "the d alias remains Docker"
 ! rg -q 'sudo[[:space:]]+docker' "$ROOT/bin/omarchy-install-docker-dbs" ||

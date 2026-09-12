@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from decimal import Decimal
@@ -13,6 +14,8 @@ from pathlib import Path
 LABEL = "io.omarchy.rootless-docker.source-id"
 SOURCE = "source"
 TARGET = "target"
+TRUSTED_MANIFEST = "/usr/share/omarchy/default/docker/rootless/volume-manifest.py"
+SECCOMP_OPTIONS = {"name=seccomp,profile=builtin", "name=seccomp,profile=default"}
 MASKED_PATHS = {
     "/proc/acpi", "/proc/asound", "/proc/interrupts", "/proc/kcore", "/proc/keys",
     "/proc/latency_stats", "/proc/sched_debug", "/proc/scsi", "/proc/timer_list",
@@ -39,19 +42,23 @@ def validate_source_daemon(options):
     # Daemon defaults (including no-new-privileges and seccomp profiles) need
     # not appear in individual HostConfig records. Userns remapping also changes
     # the meaning of numeric volume ownership. Do not guess these policies.
-    defaults = {"name=seccomp,profile=builtin", "name=seccomp,profile=default", "name=cgroupns"}
-    if not isinstance(options, list) or not options or set(options) - defaults:
+    defaults = {*SECCOMP_OPTIONS, "name=cgroupns"}
+    configured = set(options) if isinstance(options, list) else set()
+    if (not configured or configured - defaults or "name=cgroupns" not in configured or
+            len(configured & SECCOMP_OPTIONS) != 1):
         raise ValueError("rootful Docker daemon confinement or user mapping needs an explicit migration")
 
 
 def validate_target_daemon(options):
-    if not isinstance(options, list) or "name=rootless" not in options:
-        raise ValueError("the destination Docker daemon is not running rootlessly")
     allowed = {
         "name=rootless", "name=cgroupns", "name=seccomp,profile=builtin",
         "name=seccomp,profile=default",
     }
-    if set(options) - allowed:
+    configured = set(options) if isinstance(options, list) else set()
+    if "name=rootless" not in configured:
+        raise ValueError("the destination Docker daemon is not running rootlessly")
+    if (configured - allowed or "name=cgroupns" not in configured or
+            len(configured & SECCOMP_OPTIONS) != 1):
         raise ValueError("rootless Docker daemon confinement needs an explicit migration")
 
 
@@ -152,8 +159,10 @@ def runtime_arguments(container):
 def allowed_capabilities(container):
     # Explicit --cap-add gives even non-root processes capabilities. Docker's
     # default non-root process has none, so keep that source boundary.
-    user = (container["Config"].get("User") or "").split(":")[0]
-    if user not in ("", "0", "root"):
+    user = (container["Config"].get("User") or "").split(":", 1)[0]
+    if user and not user.isdecimal():
+        raise ValueError(f'{container["Name"].lstrip("/")}: named image users need an explicit migration')
+    if user and int(user) != 0:
         return set()
     # Docker API clients can retain mixed-case names in inspected CapDrop.
     dropped = {capability.upper().removeprefix("CAP_") for capability in container["HostConfig"].get("CapDrop") or []}
@@ -250,7 +259,7 @@ def verify_runtime(container):
 
 def local_command(args):
     if args[0] == SOURCE:
-        return ["sudo", "/usr/bin/docker", "--host", "unix:///run/docker.sock", *args[1:]]
+        return ["/usr/bin/sudo", "/usr/bin/docker", "--host", "unix:///run/docker.sock", *args[1:]]
     if args[0] == TARGET:
         runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
         return ["/usr/bin/docker", "--host", f"unix://{runtime}/docker.sock", *args[1:]]
@@ -329,6 +338,11 @@ def stopped_identity(state):
 
 
 def record_completion(container, source_state, target_running):
+    latest_source = inspect(SOURCE, "container", container["Id"])
+    if (stopped_identity(latest_source["State"]) != stopped_identity(source_state) or
+            snapshot_digest(latest_source) != snapshot_digest(container)):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: Docker source changed before completion; inspect both engines')
+    container = latest_source
     target = inspect(TARGET, "container", container["Name"].lstrip("/"))
     receipt = completion_path(container["Id"])
     receipt.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -354,6 +368,15 @@ def validate(container):
         raise ValueError("Unsupported container name")
     if not re.fullmatch(r"[a-f0-9]{64}", container["Id"]):
         raise ValueError("Unsupported Docker container identity")
+    labels = container["Config"].get("Labels") or {}
+    if LABEL in labels:
+        raise ValueError(f"{name}: reserved Omarchy migration labels need an explicit migration")
+    allowed_capabilities(container)
+    environment = container["Config"].get("Env") or []
+    if (not isinstance(environment, list) or
+            any(not isinstance(entry, str) or "=" not in entry for entry in environment) or
+            len({entry.split("=", 1)[0] for entry in environment}) != len(environment)):
+        raise ValueError(f"{name}: ambiguous container environment needs an explicit migration")
     validate_security(container)
     if container["Config"].get("Domainname"):
         raise ValueError(f"{name}: custom domain names require an explicit rootless Docker configuration")
@@ -392,6 +415,43 @@ def validate(container):
     return name
 
 
+def validate_windows_exception(container):
+    name = container["Name"].lstrip("/")
+    config = container["Config"]
+    host = container["HostConfig"]
+    labels = config.get("Labels") or {}
+    devices = {(device.get("PathOnHost"), device.get("PathInContainer"))
+               for device in host.get("Devices") or []}
+    ports = host.get("PortBindings") or {}
+    expected_ports = {
+        "8006/tcp": [{"HostIp": "127.0.0.1", "HostPort": "8006"}],
+        "3389/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3389"}],
+        "3389/udp": [{"HostIp": "127.0.0.1", "HostPort": "3389"}],
+    }
+    mounts = container.get("Mounts") or []
+    mounts_by_destination = {mount.get("Destination"): mount for mount in mounts}
+    storage = mounts_by_destination.get("/storage") or {}
+    shared = mounts_by_destination.get("/shared") or {}
+    storage_match = re.fullmatch(r"/var/lib/omarchy/windows/mounts/users/([1-9][0-9]*)/storage",
+                                 storage.get("Source") or "")
+    if (name != "omarchy-windows" or
+            not re.fullmatch(r"[a-f0-9]{64}", container["Id"]) or
+            config.get("Image") not in ("dockurr/windows", "dockurr/windows:latest") or
+            labels.get("com.docker.compose.project") != "windows" or
+            labels.get("com.docker.compose.service") != "windows" or
+            host.get("Privileged") is not False or
+            {capability.upper().removeprefix("CAP_") for capability in host.get("CapAdd") or []} != {"NET_ADMIN"} or
+            devices != {("/dev/kvm", "/dev/kvm"), ("/dev/net/tun", "/dev/net/tun")} or
+            ports != expected_ports or
+            (host.get("RestartPolicy") or {}).get("Name") != "no" or
+            len(mounts) != 2 or any(mount.get("Type") != "bind" for mount in mounts) or
+            any(mount.get("RW") is not True for mount in mounts) or
+            not storage_match or
+            shared.get("Source") != f"/var/lib/omarchy/windows/mounts/users/{storage_match.group(1)}/shared"):
+        raise ValueError("omarchy-windows: the rootful exception does not match Omarchy's managed Windows VM")
+    return name
+
+
 def pipe(producer, consumer):
     with subprocess.Popen(local_command(producer), stdout=subprocess.PIPE) as source:
         try:
@@ -410,20 +470,39 @@ def transfer_volume(volume, target):
     destination = inspect(TARGET, "volume", target)["Mountpoint"]
     # Native tar inside RootlessKit's user/mount namespace preserves numeric
     # container ownership, root mode, PAX timestamps, ACLs and xattrs.
-    pipe(["sudo", "tar", "--format=pax", "--numeric-owner", "--sparse", "--acls", "--xattrs",
+    pipe(["/usr/bin/sudo", "/usr/bin/tar", "--format=pax", "--numeric-owner", "--sparse", "--acls", "--xattrs",
           "--xattrs-include=*", "-C", volume["Mountpoint"], "-cpf", "-", "."],
          ["target-namespace", "/usr/bin/tar", "--numeric-owner", "--same-owner", "--same-permissions",
           "--sparse", "--acls", "--xattrs", "--xattrs-include=*", "-C", destination, "-xpf", "-"])
-    manifest = str(Path(__file__).with_name("volume-manifest.py"))
-    source_digest = run("sudo", "python3", manifest, volume["Mountpoint"], capture=True)
+    source_digest = source_volume_digest(volume)
     verify_volume(target, source_digest)
     return source_digest
 
 
+def source_volume_digest(volume):
+    return run("/usr/bin/sudo", "/usr/bin/python3", TRUSTED_MANIFEST,
+               volume["Mountpoint"], capture=True)
+
+
+def validate_trusted_manifest():
+    path = Path(TRUSTED_MANIFEST)
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as error:
+        raise ValueError("the packaged rootless Docker volume verifier is missing") from error
+    if (path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or
+            metadata.st_mode & 0o022):
+        raise ValueError("the packaged rootless Docker volume verifier is not trusted")
+    for parent in path.parents:
+        metadata = parent.stat()
+        if metadata.st_uid != 0 or metadata.st_mode & 0o022:
+            raise ValueError("the packaged rootless Docker volume verifier path is not trusted")
+
+
 def verify_volume(target, expected):
     destination = inspect(TARGET, "volume", target)["Mountpoint"]
-    manifest = str(Path(__file__).with_name("volume-manifest.py"))
-    target_digest = run("target-namespace", "/usr/bin/python3", manifest, destination, capture=True)
+    target_digest = run("target-namespace", "/usr/bin/python3", TRUSTED_MANIFEST,
+                        destination, capture=True)
     if expected != target_digest:
         raise RuntimeError("Volume content or metadata verification failed; Docker data was retained")
 
@@ -439,10 +518,13 @@ def source_snapshot(container):
     return snapshot
 
 
-def snapshot_digest(container):
+def snapshot_digest(container, ignore_restart=False):
     fields = ("Id", "Name", "Image", "Config", "HostConfig", "Mounts",
               "AppArmorProfile", "ProcessLabel", "MountLabel")
     snapshot = {field: container.get(field) for field in fields}
+    if ignore_restart:
+        snapshot["HostConfig"] = dict(snapshot["HostConfig"] or {})
+        snapshot["HostConfig"].pop("RestartPolicy", None)
     networks = container.get("NetworkSettings", {}).get("Networks") or {}
     snapshot["Networks"] = {
         name: {key: network.get(key) for key in ("IPAMConfig", "Links", "Aliases", "DriverOpts")}
@@ -477,6 +559,7 @@ def migrate(container):
     container = refresh_source(container)
     running = container["State"]["Running"]
     created = False
+    image = None
     image_loaded = False
     start_attempted = False
     restart_changed = False
@@ -484,16 +567,19 @@ def migrate(container):
     verified_volumes = {}
     try:
         run(SOURCE, "stop", "-t", "120", identity)
-        state = inspect(SOURCE, "container", identity)["State"]
+        stopped_source = inspect(SOURCE, "container", identity)
+        state = stopped_source["State"]
         if state["Running"] or (running and state["ExitCode"] in (137, 139)):
             raise RuntimeError(f"{name}: container did not stop cleanly; transfer aborted")
         stopped_identity(state)
-        # Container names allow uppercase, repeated dots and lengths that image
-        # repositories reject. The full engine ID is a valid, unique image tag.
-        image = f"omarchy-migrated:{identity}"
+        if snapshot_digest(stopped_source) != snapshot_digest(container):
+            raise RuntimeError(f"{name}: Docker source configuration changed while stopping; rerun after workloads are stable")
+        container = stopped_source
         # Commit includes writable-layer changes and the exact image config.
         # Volume data is copied separately while the source container is stopped.
-        run(SOURCE, "commit", identity, image)
+        image = run(SOURCE, "commit", identity, capture=True)
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", image or ""):
+            raise RuntimeError(f"{name}: Docker did not return a transferable committed image")
         pipe([SOURCE, "image", "save", image], [TARGET, "image", "load", "--quiet"])
         image_loaded = True
         run(SOURCE, "image", "rm", image)
@@ -533,7 +619,7 @@ def migrate(container):
                 volume_arguments += ["--label", f"{key}={value}"]
             run(*volume_arguments, target)
             new_volumes.append(target)
-            verified_volumes[target] = transfer_volume(volume, target)
+            verified_volumes[target] = (volume, transfer_volume(volume, target))
             mount_arg = f'type=volume,src={target},dst={mount["Destination"]},volume-nocopy'
             if not mount.get("RW"):
                 mount_arg += ",readonly"
@@ -545,14 +631,23 @@ def migrate(container):
         # from replacing the restored volume contents.
         verify_runtime(container)
         for target, expected in verified_volumes.items():
-            verify_volume(target, expected)
+            volume, digest = expected
+            verify_volume(target, digest)
+            if source_volume_digest(volume) != digest:
+                raise RuntimeError(f"{name}: source volume changed during transfer; inspect both engines")
+        latest_source = inspect(SOURCE, "container", identity)
+        if (stopped_identity(latest_source["State"]) != stopped_identity(state) or
+                snapshot_digest(latest_source) != snapshot_digest(container)):
+            raise RuntimeError(f"{name}: Docker source changed during transfer; inspect both engines")
         # A later workload may fail, leaving Docker installed. Prevent a daemon
         # restart from reviving this stale source alongside its migrated copy.
         restart_changed = True
         run(SOURCE, "update", "--restart=no", identity)
         source_after = inspect(SOURCE, "container", identity)
-        if stopped_identity(source_after["State"]) != stopped_identity(state):
-            raise RuntimeError(f"{name}: Docker source restarted during transfer; inspect both engines")
+        if (stopped_identity(source_after["State"]) != stopped_identity(state) or
+                snapshot_digest(source_after, ignore_restart=True) != snapshot_digest(container, ignore_restart=True) or
+                (source_after["HostConfig"].get("RestartPolicy") or {}).get("Name") != "no"):
+            raise RuntimeError(f"{name}: Docker source changed during finalization; inspect both engines")
         if running:
             # Even a failed start command may have launched an application that
             # accepted writes. From this point the destination is recovery data.
@@ -563,6 +658,7 @@ def migrate(container):
         target_state = inspect(TARGET, "container", name)["State"]
         if bool(target_state["Running"]) != bool(running):
             raise RuntimeError(f"{name}: destination lifecycle differs from the source")
+        verify_runtime(container)
         record_completion(source_after, state, bool(running))
         print(f"{name}: migrated to rootless Docker; rootful copy retained for recovery")
     except BaseException:
@@ -594,6 +690,14 @@ def main():
     if os.geteuid() == 0:
         raise ValueError("Run the migration as the desktop user; the destination is always rootless")
     os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    check_windows = sys.argv[1:2] == ["--check-windows"]
+    if check_windows:
+        if len(sys.argv) != 3:
+            raise ValueError("Expected one Windows container identity")
+        validate_source_daemon(daemon_security(SOURCE))
+        validate_windows_exception(inspect(SOURCE, "container", sys.argv[2]))
+        print("omarchy-windows: verified managed rootful exception")
+        return
     check_completed = sys.argv[1:2] == ["--check-completed"]
     check_only = check_completed or sys.argv[1:2] == ["--check"]
     names = sys.argv[2:] if check_only else sys.argv[1:]
@@ -616,6 +720,8 @@ def main():
             volumes.add(mount["Name"])
     if blockers:
         raise ValueError("\n".join(blockers))
+    if volumes:
+        validate_trusted_manifest()
     if check_completed:
         for container in containers:
             name = container["Name"].lstrip("/")

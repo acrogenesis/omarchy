@@ -14,6 +14,21 @@ if ! systemctl --user show-environment >/dev/null; then
   exit 1
 fi
 
+remove_legacy_docker_group() {
+  if id -nG "$migration_user" | grep -qw docker; then
+    sudo /usr/bin/gpasswd -d "$migration_user" docker >/dev/null
+    omarchy-state set reboot-required
+  fi
+}
+
+# A second invocation by the same account could otherwise race destination
+# creation and let one rollback disturb the other's transfer.
+exec {migration_lock_fd}>"$XDG_RUNTIME_DIR/omarchy-rootless-docker-migration.lock"
+if ! /usr/bin/flock -n "$migration_lock_fd"; then
+  echo "Another rootless Docker migration is already running for $migration_user." >&2
+  exit 1
+fi
+
 omarchy-pkg-add docker-rootless-extras rootlesskit slirp4netns fuse-overlayfs
 
 # Allocate a nonoverlapping subordinate-ID range before the rootless daemon can
@@ -45,6 +60,7 @@ fi
 machine_state=/var/lib/omarchy/rootless-docker
 if sudo /usr/bin/test -f "$machine_state/enabled"; then
   sudo /usr/bin/systemctl --global enable docker.service
+  remove_legacy_docker_group
   touch "$rootless_state/enabled"
   chmod 0600 "$rootless_state/enabled"
   export DOCKER_HOST="$target_host"
@@ -90,12 +106,44 @@ with os.fdopen(lock_fd, "w") as lock:
         temporary.replace(owner)
 PY
 
+sudo /usr/bin/systemctl daemon-reload
 sudo /usr/bin/systemctl start docker.socket
 source_host="unix:///run/docker.sock"
-docker_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
-mapfile -t container_names < <(printf '%s\n' "$docker_inventory" | awk '$2 != "omarchy-windows" { print $2 }')
 
+# Load the packaged socket policy and revoke the legacy docker group's access
+# before inspecting or stopping workloads. This also closes the interval where
+# an ordinary new Docker client could restart a source after verification.
+if sudo /usr/bin/test -S /run/docker.sock; then
+  sudo /usr/bin/setfacl -b /run/docker.sock
+  sudo /usr/bin/chown root:root /run/docker.sock
+  sudo /usr/bin/chmod 0600 /run/docker.sock
+fi
+socket_owner=$(sudo /usr/bin/stat -Lc '%u:%g:%a' /run/docker.sock)
+if [[ $socket_owner != "0:0:600" ]]; then
+  echo "The rootful Docker socket could not be restricted to root. This migration remains pending." >&2
+  exit 1
+fi
+remove_legacy_docker_group
+
+docker_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
 migrator="$OMARCHY_PATH/default/docker/rootless/migrate.py"
+container_names=()
+windows_id=""
+while read -r container_id container_name; do
+  [[ -n $container_id ]] || continue
+  if [[ $container_name == "omarchy-windows" ]]; then
+    windows_id="$container_id"
+  else
+    container_names+=("$container_name")
+  fi
+done <<<"$docker_inventory"
+
+# A container is exempt from rootless transfer only when its immutable runtime
+# identity matches the Windows VM Omarchy manages through authenticated actions.
+if [[ -n $windows_id ]]; then
+  /usr/bin/python3 "$migrator" --check-windows "$windows_id"
+fi
+
 if (( ${#container_names[@]} )); then
   if ! /usr/bin/python3 "$migrator" --check "${container_names[@]}"; then
     echo "Rootful Docker and its data have been retained. This migration remains pending." >&2
@@ -109,26 +157,6 @@ latest_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc -
 if [[ $latest_inventory != "$docker_inventory" ]]; then
   echo "Rootful Docker containers changed during migration. Both stores were retained; review them and rerun." >&2
   exit 1
-fi
-
-# Remove direct access to the rootful Windows daemon immediately, including for
-# a login that still carries an old docker supplementary group. The packaged
-# socket drop-in preserves this root-only mode after later socket activation.
-sudo /usr/bin/systemctl daemon-reload
-if sudo /usr/bin/test -S /run/docker.sock; then
-  sudo /usr/bin/setfacl -b /run/docker.sock
-  sudo /usr/bin/chown root:root /run/docker.sock
-  sudo /usr/bin/chmod 0600 /run/docker.sock
-fi
-socket_owner=$(sudo /usr/bin/stat -Lc '%u:%g:%a' /run/docker.sock)
-if [[ $socket_owner != "0:0:600" ]]; then
-  echo "The rootful Docker socket could not be restricted to root. This migration remains pending." >&2
-  exit 1
-fi
-
-if id -nG "$migration_user" | grep -qw docker; then
-  sudo /usr/bin/gpasswd -d "$migration_user" docker >/dev/null
-  omarchy-state set reboot-required
 fi
 
 sudo /usr/bin/systemctl --global enable docker.service
