@@ -41,5 +41,31 @@ def fingerprint(root):
     return digest.hexdigest()
 
 
+def clear(root):
+    root = Path(root)
+    root_info = root.lstat()
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise RuntimeError("volume root is not a directory")
+
+    def remove(path):
+        info = path.lstat()
+        if info.st_dev != root_info.st_dev:
+            raise RuntimeError("volume contains a nested filesystem")
+        if stat.S_ISDIR(info.st_mode):
+            for child in path.iterdir():
+                remove(child)
+            path.rmdir()
+        else:
+            path.unlink()
+
+    for child in root.iterdir():
+        remove(child)
+
+
 if __name__ == '__main__':
-    print(fingerprint(sys.argv[1]))
+    if sys.argv[1:2] == ["--clear"] and len(sys.argv) == 3:
+        clear(sys.argv[2])
+    elif len(sys.argv) == 2:
+        print(fingerprint(sys.argv[1]))
+    else:
+        raise SystemExit("usage: volume-manifest.py [--clear] ROOT")

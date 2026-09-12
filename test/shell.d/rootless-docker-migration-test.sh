@@ -16,9 +16,30 @@ path = os.path.join(os.environ["ROOT"], "default/docker/rootless/migrate.py")
 spec = importlib.util.spec_from_file_location("rootless_docker_migration", path)
 migration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(migration)
+manifest_path = os.path.join(os.environ["ROOT"], "default/docker/rootless/volume-manifest.py")
+manifest_spec = importlib.util.spec_from_file_location("rootless_docker_volume_manifest", manifest_path)
+manifest = importlib.util.module_from_spec(manifest_spec)
+manifest_spec.loader.exec_module(manifest)
 assert migration.TRUSTED_MANIFEST == "/usr/share/omarchy/default/docker/rootless/volume-manifest.py"
 assert migration.local_command([migration.SOURCE, "info"])[:2] == ["/usr/bin/sudo", "/usr/bin/docker"]
 print("ok - privileged migration helpers resolve only through packaged absolute paths")
+
+with tempfile.TemporaryDirectory() as directory:
+    volume = os.path.join(directory, "volume")
+    outside = os.path.join(directory, "outside")
+    os.makedirs(os.path.join(volume, "nested"))
+    os.makedirs(outside)
+    with open(os.path.join(volume, "stale"), "w") as output:
+        output.write("old")
+    with open(os.path.join(volume, "nested", "old"), "w") as output:
+        output.write("old")
+    with open(os.path.join(outside, "keep"), "w") as output:
+        output.write("safe")
+    os.symlink(outside, os.path.join(volume, "outside-link"))
+    manifest.clear(volume)
+    assert not os.listdir(volume)
+    assert open(os.path.join(outside, "keep")).read() == "safe"
+print("ok - retained-volume reset removes stale entries without following symlinks")
 
 source_security = ["name=seccomp,profile=builtin", "name=cgroupns"]
 target_security = ["name=seccomp,profile=builtin", "name=rootless", "name=cgroupns"]
@@ -123,7 +144,25 @@ except ValueError:
     pass
 else:
     raise AssertionError("a paused source passed automatic lifecycle migration")
-print("ok - paused workloads and non-root capability ceilings that cannot be recreated fail closed")
+exited = copy.deepcopy(container)
+exited["State"] = {
+    "Status": "exited", "Running": False, "StartedAt": "start", "FinishedAt": "finish", "ExitCode": 7,
+}
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    try:
+        migration.validate(exited)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an exited source with unreproducible state passed automatic migration")
+created = copy.deepcopy(exited)
+created["State"] = {
+    "Status": "created", "Running": False, "StartedAt": "0001-01-01T00:00:00Z",
+    "FinishedAt": "0001-01-01T00:00:00Z", "ExitCode": 0,
+}
+assert migration.validate(created) == "project-worker"
+print("ok - paused, exited, and unreproducible non-root capability states fail closed")
 
 for stop_timeout in (None, -1, 0, 300):
     changed = copy.deepcopy(container)
@@ -243,6 +282,17 @@ owned_volume = copy.deepcopy(source_volume)
 owned_volume["Labels"][migration.VOLUME_LABEL] = ownership
 migration.inspect = lambda engine, kind, name: copy.deepcopy(owned_volume)
 migration.verify_volume_definition(source_volume, "project-data", ownership)
+real_run = migration.run
+migration.run = lambda *args, **kwargs: "f" * 64
+assert migration.volume_users("project-data") == ["f" * 64]
+migration.run = lambda *args, **kwargs: "short-id"
+try:
+    migration.volume_users("project-data")
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("an ambiguous destination-volume attachment passed validation")
+migration.run = real_run
 reserved_source = copy.deepcopy(source_volume)
 reserved_source["Labels"][migration.VOLUME_LABEL] = "foreign"
 try:
@@ -251,7 +301,7 @@ except ValueError:
     pass
 else:
     raise AssertionError("a source volume with the migration ownership label was accepted")
-print("ok - destination volumes require an unpredictable ownership label before copy or cleanup")
+print("ok - destination volumes require unpredictable ownership and no attachments before cleanup")
 
 blocked = (
     ("Privileged", True), ("CapAdd", ["SYS_ADMIN"]),
@@ -315,6 +365,7 @@ with tempfile.TemporaryDirectory() as directory:
     os.environ["XDG_STATE_HOME"] = directory
     migration.inspect = lambda engine, kind, name: copy.deepcopy(stopped if engine == migration.SOURCE else target)
     migration.record_completion(stopped, stopped["State"], False)
+    assert migration.validate(stopped) == "project-worker"
     assert migration.completed(stopped, target)
     stopped["RestartCount"] = 4
     stopped["NetworkSettings"]["SandboxID"] = "changed-by-daemon-restart"
@@ -402,11 +453,25 @@ with tempfile.TemporaryDirectory() as directory:
     assert quiesced_intent["restart_disabled"] is True
     assert (migration.SOURCE, "stop", "-t", "300", quiesce_source["Id"]) in quiesce_calls
     assert (migration.SOURCE, "update", "--restart=no", quiesce_source["Id"]) in quiesce_calls
+    assert quiesce_calls.index((migration.SOURCE, "update", "--restart=no", quiesce_source["Id"])) < \
+        quiesce_calls.index((migration.SOURCE, "stop", "-t", "300", quiesce_source["Id"]))
     migration.restore_source(quiesce_source["Id"])
     assert quiesce_source["State"]["Running"] is True
     assert quiesce_source["HostConfig"]["RestartPolicy"]["Name"] == "unless-stopped"
     assert not migration.intent_path(quiesce_source["Id"]).exists()
 print("ok - batch quiesce durably disables restart and restores the exact source lifecycle")
+
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    power_intent = migration.record_migration_intent(intent_source)
+    power_intent = migration.record_migration_intent(intent_source, saved=power_intent,
+                                                     restart_disabled=True)
+    power_intent["quiesce_started"] = True
+    migration.persist_migration_intent(intent_source, power_intent)
+    restarted_before_update = copy.deepcopy(intent_source)
+    restarted_before_update["State"]["StartedAt"] = "restarted-after-power-loss"
+    assert migration.migration_intent(restarted_before_update) == power_intent
+print("ok - restart-disable intent recovers a daemon restart before Docker applies the update")
 
 quiesce_source = copy.deepcopy(intent_source)
 quiesce_calls = []
@@ -453,7 +518,11 @@ def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image
             if mutate_source:
                 current_source["HostConfig"]["Memory"] += 4096
         elif args[:2] == (migration.SOURCE, "update"):
-            current_source["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
+            value = args[2].split("=", 1)[1]
+            policy, _, retry_count = value.partition(":")
+            current_source["HostConfig"]["RestartPolicy"] = {
+                "Name": policy, "MaximumRetryCount": int(retry_count or 0),
+            }
         elif args[:2] == (migration.SOURCE, "start"):
             current_source["State"]["Running"] = True
         elif args[:2] == (migration.SOURCE, "commit"):
@@ -623,6 +692,37 @@ with tempfile.TemporaryDirectory() as directory:
         pass
     else:
         raise AssertionError("an unexpectedly running interrupted destination passed preflight")
+    post_start_intent = copy.deepcopy(resume_intent)
+    post_start_intent["start_attempted"] = True
+    try:
+        migration.verify_resumable_migration(resume_source, resume_target, post_start_intent)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a stopped destination that already ran passed automatic retry")
+    restored_source_intent = copy.deepcopy(resume_intent)
+    restored_source_intent["restore_started"] = True
+    try:
+        migration.verify_resumable_migration(resume_source, resume_target, restored_source_intent)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a destination older than a restored source passed automatic retry")
+    migration.persist_migration_intent(resume_source, post_start_intent)
+    try:
+        migration.restore_source(resume_source["Id"])
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("post-start recovery restarted the rootful source")
+    assert not resume_source["State"]["Running"]
+    try:
+        migration.migrate(resume_source)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a missing post-start destination allowed automatic recreation")
+    migration.persist_migration_intent(resume_source, resume_intent)
     migration.resume_verified_migration(resume_source, resume_target, resume_intent)
     assert (migration.TARGET, "start", "interrupted-retry") in resume_calls
     assert not migration.intent_path(resume_source["Id"]).exists()

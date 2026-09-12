@@ -55,6 +55,10 @@ grep -q -- '--check-windows "$windows_id"' "$migration" ||
 windows_secure_line=$(grep -n '^/usr/bin/omarchy-windows-vm __migration-secure$' "$migration" | cut -d: -f1)
 [[ -n $windows_secure_line && -n $inventory_line ]] && (( windows_secure_line < inventory_line )) ||
   fail "legacy Windows credentials and mounts are not secured before rootful inventory"
+windows_check_line=$(grep -n -- '--check-windows "$windows_id"' "$migration" | head -n1 | cut -d: -f1)
+owner_claim_line=$(grep -n 'owner = root / "migration-owner"' "$migration" | cut -d: -f1)
+[[ -n $windows_check_line && -n $owner_claim_line ]] && (( windows_check_line < owner_claim_line )) ||
+  fail "the machine migration owner is claimed before proving ownership of an existing Windows VM"
 quiesce_line=$(grep -n -- '--quiesce-all "$windows_arg"' "$migration" | cut -d: -f1)
 restart_line=$(grep -n 'systemctl restart docker.service' "$migration" | cut -d: -f1)
 transfer_line=$(grep -n '^  /usr/bin/python3 "$migrator" "${container_names\[@\]}"' "$migration" | cut -d: -f1)

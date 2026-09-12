@@ -70,42 +70,6 @@ if sudo /usr/bin/test -f "$machine_state/enabled"; then
   exit 0
 fi
 
-# The rootful store is machine-wide. The first user to begin its transfer owns
-# the recovery copies until the migration completes, so another account cannot
-# split one source inventory across two private stores.
-sudo /usr/bin/python3 - "$migration_uid" "$migration_user" <<'PY'
-import fcntl
-import os
-from pathlib import Path
-import stat
-import sys
-
-
-uid, name = int(sys.argv[1]), sys.argv[2]
-root = Path("/var/lib/omarchy/rootless-docker")
-root.mkdir(mode=0o755, parents=True, exist_ok=True)
-lock_fd = os.open("/run/lock/omarchy-rootless-docker-owner.lock",
-                  os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-with os.fdopen(lock_fd, "w") as lock:
-    metadata = os.fstat(lock.fileno())
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
-        raise SystemExit("unsafe rootless Docker owner lock")
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    owner = root / "migration-owner"
-    expected = f"{uid}:{name}\n"
-    if owner.exists():
-        if owner.is_symlink() or owner.read_text() != expected:
-            raise SystemExit("another user owns the rootful Docker migration; finish it from that account")
-    else:
-        temporary = root / f".migration-owner.{os.getpid()}"
-        fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w") as output:
-            output.write(expected)
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(owner)
-PY
-
 # Migrate any legacy user-side definition, pin its data into the protected root
 # anchors, and rewrite the credential-bearing Compose file to root:root 0600.
 # This performs no Docker lifecycle action.
@@ -160,6 +124,42 @@ if (( ${#container_names[@]} )); then
     exit 1
   fi
 fi
+
+# The rootful store is machine-wide. Claim it only after this account proves it
+# can secure any existing UID-bound Windows VM and migrate the complete source
+# inventory. The root lock serializes users that finish preflight together.
+sudo /usr/bin/python3 - "$migration_uid" "$migration_user" <<'PY'
+import fcntl
+import os
+from pathlib import Path
+import stat
+import sys
+
+
+uid, name = int(sys.argv[1]), sys.argv[2]
+root = Path("/var/lib/omarchy/rootless-docker")
+root.mkdir(mode=0o755, parents=True, exist_ok=True)
+lock_fd = os.open("/run/lock/omarchy-rootless-docker-owner.lock",
+                  os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+with os.fdopen(lock_fd, "w") as lock:
+    metadata = os.fstat(lock.fileno())
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        raise SystemExit("unsafe rootless Docker owner lock")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    owner = root / "migration-owner"
+    expected = f"{uid}:{name}\n"
+    if owner.exists():
+        if owner.is_symlink() or owner.read_text() != expected:
+            raise SystemExit("another user owns the rootful Docker migration; finish it from that account")
+    else:
+        temporary = root / f".migration-owner.{os.getpid()}"
+        fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as output:
+            output.write(expected)
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(owner)
+PY
 
 if [[ -n $windows_id ]]; then
   windows_arg=$windows_id

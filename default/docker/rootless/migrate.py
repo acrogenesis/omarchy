@@ -367,6 +367,7 @@ def record_migration_intent(container, stopped_state=None, saved=None, restart_d
             "started_at": state["StartedAt"],
             "target_running": bool(state["Running"]),
             "restart_disabled": False,
+            "quiesce_started": False,
             "restore_started": False,
             "start_attempted": False,
             "target_ownership": secrets.token_hex(32),
@@ -378,6 +379,7 @@ def record_migration_intent(container, stopped_state=None, saved=None, restart_d
         payload = deepcopy(saved)
     if stopped_state is not None:
         payload["stopped"] = stopped_identity(stopped_state)
+        payload["quiesce_started"] = False
         payload["restore_started"] = False
     if restart_disabled:
         payload["restart_disabled"] = True
@@ -395,6 +397,7 @@ def migration_intent(container):
         if (saved["source"] != container["Id"] or
                 not isinstance(saved["target_running"], bool) or
                 not isinstance(saved["restart_disabled"], bool) or
+                not isinstance(saved["quiesce_started"], bool) or
                 not isinstance(saved["restore_started"], bool) or
                 not isinstance(saved["start_attempted"], bool) or
                 not re.fullmatch(r"[a-f0-9]{64}", saved["target_ownership"]) or
@@ -411,11 +414,15 @@ def migration_intent(container):
         if not exact_snapshot and not disabled_snapshot:
             raise ValueError
         if container["State"]["Running"]:
+            quiescing = (saved["quiesce_started"] is True and
+                         saved.get("destination") is None and
+                         saved["start_attempted"] is False)
             resumed_restore = (saved["restore_started"] is True and
                                saved["target_running"] is True and exact_snapshot)
-            if (saved["target_running"] is not True or
-                    ("stopped" in saved and not resumed_restore) or
-                    (saved["started_at"] != container["State"]["StartedAt"] and not resumed_restore)):
+            if (saved["target_running"] is not True and not quiescing) or (
+                    "stopped" in saved and not resumed_restore and not quiescing) or (
+                    saved["started_at"] != container["State"]["StartedAt"] and
+                    not resumed_restore and not quiescing):
                 raise ValueError
         else:
             if saved["started_at"] != container["State"]["StartedAt"]:
@@ -515,6 +522,11 @@ def validate(container):
     if (state.get("Paused") or state.get("Restarting") or state.get("Dead") or
             state.get("RemovalInProgress")):
         raise ValueError(f"{name}: paused or transitional lifecycle state requires an explicit migration")
+    if not state["Running"] and state.get("Status") != "created":
+        intent = migration_intent(container)
+        if ((intent is None or intent["target_running"] is not True) and
+                not completion_path(container["Id"]).is_file()):
+            raise ValueError(f"{name}: an exited container needs an explicit migration to preserve its exit state")
     allowed_capabilities(container)
     stop_timeout = container["Config"].get("StopTimeout")
     if (stop_timeout is not None and
@@ -643,6 +655,20 @@ def transfer_volume(volume, target):
     return source_digest
 
 
+def clear_volume(target):
+    destination = inspect(TARGET, "volume", target)["Mountpoint"]
+    run("target-namespace", "/usr/bin/python3", TRUSTED_MANIFEST, "--clear", destination)
+
+
+def volume_users(target):
+    output = run(TARGET, "container", "ls", "--all", "--no-trunc", "--filter",
+                 f"volume={target}", "--format", "{{.ID}}", capture=True)
+    users = output.splitlines() if output else []
+    if any(not re.fullmatch(r"[a-f0-9]{64}", identity) for identity in users):
+        raise RuntimeError("Cannot verify destination volume users")
+    return users
+
+
 def source_volume_digest(volume):
     return run("/usr/bin/sudo", "/usr/bin/python3", TRUSTED_MANIFEST,
                volume["Mountpoint"], capture=True)
@@ -751,12 +777,44 @@ def restart_policy_argument(container):
     return policy
 
 
+def disable_source_restart(container, intent, planned, validator=validate):
+    restart = container["HostConfig"].get("RestartPolicy") or {}
+    if restart.get("Name") == "no":
+        return container, intent
+    intent = record_migration_intent(container, saved=intent, restart_disabled=True)
+    running = bool(container["State"]["Running"])
+    started_at = container["State"]["StartedAt"]
+    stopped = None if running else stopped_identity(container["State"])
+    run(SOURCE, "update", "--restart=no", container["Id"])
+    disabled = inspect(SOURCE, "container", container["Id"])
+    validator(disabled)
+    lifecycle_changed = (bool(disabled["State"]["Running"]) != running or
+                         (running and disabled["State"]["StartedAt"] != started_at) or
+                         (not running and stopped_identity(disabled["State"]) != stopped))
+    if (lifecycle_changed or
+            snapshot_digest(disabled, ignore_restart=True) != snapshot_digest(planned, ignore_restart=True) or
+            (disabled["HostConfig"].get("RestartPolicy") or {}).get("Name") != "no"):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: source changed while restart was being disabled')
+    return disabled, intent
+
+
+def begin_quiesce(container, intent):
+    intent = deepcopy(intent)
+    intent["quiesce_started"] = True
+    if container["State"]["Running"]:
+        intent["started_at"] = container["State"]["StartedAt"]
+        intent.pop("stopped", None)
+    return persist_migration_intent(container, intent)
+
+
 def restore_source(identity, validator=validate):
     current = inspect(SOURCE, "container", identity)
     validator(current)
     intent = migration_intent(current)
     if intent is None:
         return
+    if intent["start_attempted"]:
+        raise RuntimeError(f'{current["Name"].lstrip("/")}: destination start was attempted; source recovery needs review')
     planned = planned_source(current, intent)
     desired_restart = planned["HostConfig"].get("RestartPolicy") or {}
     if (current["HostConfig"].get("RestartPolicy") or {}) != desired_restart:
@@ -765,6 +823,7 @@ def restore_source(identity, validator=validate):
     if intent["target_running"]:
         if not current["State"]["Running"]:
             intent["restore_started"] = True
+            intent["quiesce_started"] = False
             persist_migration_intent(current, intent)
             run(SOURCE, "start", identity)
     elif current["State"]["Running"]:
@@ -788,6 +847,12 @@ def quiesce(container, validator=validate):
     planned = planned_source(container, intent)
     if intent is None:
         intent = record_migration_intent(container)
+    if intent["start_attempted"]:
+        raise ValueError(f'{container["Name"].lstrip("/")}: destination start was attempted; inspect both engines')
+    if intent.get("destination") is not None and intent["restore_started"]:
+        raise ValueError(f'{container["Name"].lstrip("/")}: source ran after destination creation; inspect both engines')
+    intent = begin_quiesce(container, intent)
+    container, intent = disable_source_restart(container, intent, planned, validator)
     if container["State"]["Running"]:
         run(SOURCE, "stop", "-t", str(configured_stop_timeout(planned)), container["Id"])
         stopped = inspect(SOURCE, "container", container["Id"])
@@ -800,9 +865,6 @@ def quiesce(container, validator=validate):
     state = container["State"]
     stopped_identity(state)
     intent = record_migration_intent(container, state, intent)
-    if (container["HostConfig"].get("RestartPolicy") or {}).get("Name") != "no":
-        intent = record_migration_intent(container, state, intent, restart_disabled=True)
-        run(SOURCE, "update", "--restart=no", container["Id"])
     disabled = inspect(SOURCE, "container", container["Id"])
     validator(disabled)
     if (stopped_identity(disabled["State"]) != stopped_identity(state) or
@@ -814,6 +876,10 @@ def quiesce(container, validator=validate):
 
 def verify_resumable_migration(container, target, intent):
     name = container["Name"].lstrip("/")
+    if intent["start_attempted"]:
+        raise ValueError(f"{name}: destination start was attempted; inspect both engines")
+    if intent["restore_started"]:
+        raise ValueError(f"{name}: source ran after destination creation; inspect both engines")
     planned = planned_source(container, intent)
     destination = intent.get("destination")
     if (not isinstance(destination, dict) or destination.get("id") != target.get("Id") or
@@ -821,8 +887,7 @@ def verify_resumable_migration(container, target, intent):
             not target_owned(container, target, intent)):
         raise ValueError(f"{name}: interrupted rootless destination changed; inspect both engines")
     if target["State"]["Running"]:
-        if not (intent["target_running"] and intent["start_attempted"]):
-            raise ValueError(f"{name}: interrupted rootless destination has an unexpected lifecycle")
+        raise ValueError(f"{name}: interrupted rootless destination has an unexpected lifecycle")
     verify_runtime(planned, intent["target_ownership"])
 
     expected_volumes = {destination_volume(planned, mount): mount
@@ -878,6 +943,8 @@ def migrate(container):
     name = container["Name"].lstrip("/")
     identity = container["Id"]
     intent = migration_intent(container)
+    if intent is not None and intent["start_attempted"]:
+        raise ValueError(f"{name}: destination start was attempted; inspect both engines")
     if exists("container", name):
         target = inspect(TARGET, "container", name)
         container = refresh_source(container)
@@ -908,7 +975,6 @@ def migrate(container):
     image_committed = False
     image_loaded = False
     start_attempted = False
-    restart_changed = False
     verified_volumes = {}
     restart = planned["HostConfig"].get("RestartPolicy") or {}
     policy = restart_policy_argument(planned)
@@ -918,6 +984,12 @@ def migrate(container):
         expected_volume_names = {destination_volume(planned, mount) for mount in planned.get("Mounts", [])}
         if set(intent["volumes"]) - expected_volume_names:
             raise ValueError(f"{name}: interrupted destination volume inventory changed")
+        if intent.get("destination") is not None:
+            intent = deepcopy(intent)
+            intent.pop("destination")
+            persist_migration_intent(container, intent)
+        intent = begin_quiesce(container, intent)
+        container, intent = disable_source_restart(container, intent, planned)
         run(SOURCE, "stop", "-t", str(configured_stop_timeout(planned)), identity)
         stopped_source = inspect(SOURCE, "container", identity)
         state = stopped_source["State"]
@@ -978,9 +1050,15 @@ def migrate(container):
             for key, value in (volume.get("Labels") or {}).items():
                 volume_arguments += ["--label", f"{key}={value}"]
             volume_arguments += ["--label", f"{VOLUME_LABEL}={ownership}"]
-            if not exists("volume", target):
+            retained = exists("volume", target)
+            if not retained:
                 run(*volume_arguments, target)
             verify_volume_definition(volume, target, ownership)
+            if retained:
+                if volume_users(target):
+                    raise RuntimeError(f"{name}: retained destination volume is attached; retained it for inspection")
+                clear_volume(target)
+                verify_volume_definition(volume, target, ownership)
             digest = transfer_volume(volume, target)
             record["digest"] = digest
             persist_migration_intent(container, intent)
@@ -1014,11 +1092,6 @@ def migrate(container):
             raise RuntimeError(f"{name}: rootless destination ownership changed during transfer")
         intent["destination"] = {"id": created_id, "snapshot": snapshot_digest(target)}
         persist_migration_intent(container, intent)
-        # A later workload may fail, leaving Docker installed. Prevent a daemon
-        # restart from reviving this stale source alongside its migrated copy.
-        intent = record_migration_intent(container, state, intent, restart_disabled=True)
-        restart_changed = True
-        run(SOURCE, "update", "--restart=no", identity)
         source_after = inspect(SOURCE, "container", identity)
         if (stopped_identity(source_after["State"]) != stopped_identity(state) or
                 snapshot_digest(source_after, ignore_restart=True) != snapshot_digest(planned, ignore_restart=True) or
@@ -1063,7 +1136,7 @@ def migrate(container):
             recovery.append((TARGET, "image", "rm", image))
         if image_committed:
             recovery.append((SOURCE, "image", "rm", image))
-        if restart_changed or (container["HostConfig"].get("RestartPolicy") or {}) != restart:
+        if intent["restart_disabled"] and restart.get("Name") != "no":
             recovery.append((SOURCE, "update", f"--restart={policy}", identity))
         if running:
             try:
@@ -1211,6 +1284,8 @@ def main():
         for container in containers:
             name = container["Name"].lstrip("/")
             intent = migration_intent(container)
+            if intent is not None and intent["start_attempted"]:
+                raise ValueError(f"{name}: destination start was attempted; inspect both engines")
             if exists("container", name):
                 target = inspect(TARGET, "container", name)
                 if not completed(container, target):
