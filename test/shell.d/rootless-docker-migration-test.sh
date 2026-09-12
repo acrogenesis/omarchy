@@ -50,7 +50,7 @@ container = {
     "Config": {
         "Image": "local/project-worker:v1", "Hostname": "worker", "Domainname": "",
         "User": "1000", "Env": ["PRIVATE=not-logged"], "Labels": {"project": "fixture"},
-        "Tty": False, "OpenStdin": False,
+        "Tty": False, "OpenStdin": False, "StopTimeout": 300,
     },
     "HostConfig": {
         "NetworkMode": "bridge", "IpcMode": "private", "ShmSize": 128 * 1024 * 1024,
@@ -96,7 +96,7 @@ numeric_root = copy.deepcopy(container)
 numeric_root["Config"]["User"] = "00:1000"
 numeric_root["HostConfig"]["CapDrop"] = []
 assert migration.allowed_capabilities(numeric_root) == migration.DOCKER_CAPABILITIES
-for named_user in ("root", "daemon", "root:root"):
+for named_user in ("root", "daemon", "root:root", "\u0660"):
     changed = copy.deepcopy(container)
     changed["Config"]["User"] = named_user
     try:
@@ -106,6 +106,21 @@ for named_user in ("root", "daemon", "root:root"):
     else:
         raise AssertionError(f"ambiguous named user passed preflight: {named_user}")
 print("ok - numeric UID zero keeps its capabilities and ambiguous named users fail closed")
+
+for stop_timeout in (None, -1, 0, 300):
+    changed = copy.deepcopy(container)
+    changed["Config"]["StopTimeout"] = stop_timeout
+    assert migration.validate(changed) == "project-worker"
+for stop_timeout in (True, -2, "300"):
+    changed = copy.deepcopy(container)
+    changed["Config"]["StopTimeout"] = stop_timeout
+    try:
+        migration.validate(changed)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"unsupported stop timeout passed preflight: {stop_timeout!r}")
+print("ok - stop timeouts are type checked and larger application grace periods are retained")
 
 for field, value in (("Labels", {migration.LABEL: "old"}),
                      ("Env", ["DUPLICATE=one", "DUPLICATE=two"])):
@@ -129,7 +144,12 @@ windows["Config"]["Labels"] = {
 }
 windows["HostConfig"]["Privileged"] = False
 windows["HostConfig"]["CapAdd"] = ["NET_ADMIN"]
+windows["HostConfig"]["CapDrop"] = []
+windows["HostConfig"]["DeviceRequests"] = []
+windows["HostConfig"]["DeviceCgroupRules"] = []
+windows["HostConfig"]["SecurityOpt"] = []
 windows["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
+windows["HostConfig"]["NetworkMode"] = "windows_default"
 windows["HostConfig"]["Devices"] = [
     {"PathOnHost": "/dev/kvm", "PathInContainer": "/dev/kvm"},
     {"PathOnHost": "/dev/net/tun", "PathInContainer": "/dev/net/tun"},
@@ -139,14 +159,22 @@ windows["HostConfig"]["PortBindings"] = {
     "3389/tcp": [{"HostIp": "127.0.0.1", "HostPort": "3389"}],
     "3389/udp": [{"HostIp": "127.0.0.1", "HostPort": "3389"}],
 }
+uid = os.getuid()
 windows["Mounts"] = [
-    {"Type": "bind", "Source": "/var/lib/omarchy/windows/mounts/users/1000/storage",
+    {"Type": "bind", "Source": f"/var/lib/omarchy/windows/mounts/users/{uid}/storage",
      "Destination": "/storage", "RW": True},
-    {"Type": "bind", "Source": "/var/lib/omarchy/windows/mounts/users/1000/shared",
+    {"Type": "bind", "Source": f"/var/lib/omarchy/windows/mounts/users/{uid}/shared",
      "Destination": "/shared", "RW": True},
 ]
+windows["NetworkSettings"]["Networks"] = {"windows_default": {}}
 assert migration.validate_windows_exception(windows) == "omarchy-windows"
-for mutation in ("image", "labels", "devices", "mounts", "mount-source", "restart"):
+legacy_windows = copy.deepcopy(windows)
+account = migration.pwd.getpwuid(uid)
+legacy_windows["Mounts"][0]["Source"] = f"{account.pw_dir}/.windows"
+legacy_windows["Mounts"][1]["Source"] = f"{account.pw_dir}/Windows"
+assert migration.validate_windows_exception(legacy_windows) == "omarchy-windows"
+for mutation in ("image", "labels", "devices", "extra-device", "device-rules", "security-opt",
+                 "mounts", "mount-source", "restart", "network-mode", "extra-network", "autoremove"):
     changed = copy.deepcopy(windows)
     if mutation == "image":
         changed["Config"]["Image"] = "example/custom"
@@ -154,12 +182,24 @@ for mutation in ("image", "labels", "devices", "mounts", "mount-source", "restar
         changed["Config"]["Labels"] = {}
     elif mutation == "devices":
         changed["HostConfig"]["Devices"] = []
+    elif mutation == "extra-device":
+        changed["HostConfig"]["Devices"].append({"PathOnHost": "/dev/null", "PathInContainer": "/dev/null"})
+    elif mutation == "device-rules":
+        changed["HostConfig"]["DeviceCgroupRules"] = ["a *:* rwm"]
+    elif mutation == "security-opt":
+        changed["HostConfig"]["SecurityOpt"] = ["seccomp=unconfined"]
     elif mutation == "mounts":
         changed["Mounts"] = []
     elif mutation == "mount-source":
-        changed["Mounts"][0]["Source"] = "/home/example/.windows"
-    else:
+        changed["Mounts"][0]["Source"] = "/tmp/unmanaged-windows"
+    elif mutation == "restart":
         changed["HostConfig"]["RestartPolicy"] = {"Name": "always", "MaximumRetryCount": 0}
+    elif mutation == "network-mode":
+        changed["HostConfig"]["NetworkMode"] = "host"
+    elif mutation == "extra-network":
+        changed["NetworkSettings"]["Networks"]["unexpected"] = {}
+    else:
+        changed["HostConfig"]["AutoRemove"] = True
     try:
         migration.validate_windows_exception(changed)
     except ValueError:
@@ -167,6 +207,33 @@ for mutation in ("image", "labels", "devices", "mounts", "mount-source", "restar
     else:
         raise AssertionError(f"unmanaged Windows exception passed: {mutation}")
 print("ok - only Omarchy's managed Windows runtime qualifies for the rootful exception")
+
+source_volume = {"Name": "project-data", "Driver": "local", "Options": None,
+                 "Labels": {"project": "fixture"}}
+ownership = migration.volume_identity(container, container["Mounts"][0])
+assert ownership != migration.volume_identity(container, container["Mounts"][0])
+raced_volume = copy.deepcopy(source_volume)
+raced_volume["Labels"] = {"project": "fixture"}
+migration.inspect = lambda engine, kind, name: copy.deepcopy(raced_volume)
+try:
+    migration.verify_volume_definition(source_volume, "project-data", ownership)
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("an independently created destination volume was claimed")
+owned_volume = copy.deepcopy(source_volume)
+owned_volume["Labels"][migration.VOLUME_LABEL] = ownership
+migration.inspect = lambda engine, kind, name: copy.deepcopy(owned_volume)
+migration.verify_volume_definition(source_volume, "project-data", ownership)
+reserved_source = copy.deepcopy(source_volume)
+reserved_source["Labels"][migration.VOLUME_LABEL] = "foreign"
+try:
+    migration.validate_source_volume(container, reserved_source)
+except ValueError:
+    pass
+else:
+    raise AssertionError("a source volume with the migration ownership label was accepted")
+print("ok - destination volumes require an unpredictable ownership label before copy or cleanup")
 
 blocked = (
     ("Privileged", True), ("CapAdd", ["SYS_ADMIN"]),
@@ -255,8 +322,39 @@ else:
     raise AssertionError("a restarted source received a completion receipt")
 print("ok - completion re-inspects the source and refuses a stale stopped state")
 
+intent_source = copy.deepcopy(container)
+intent_source["Mounts"] = []
+intent_source["HostConfig"]["Binds"] = []
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    intent = migration.record_migration_intent(intent_source)
+    assert migration.migration_intent(intent_source) == intent
+    stopped_intent_source = copy.deepcopy(intent_source)
+    stopped_intent_source["State"] = {
+        "Running": False, "StartedAt": "start", "FinishedAt": "stopped", "ExitCode": 0,
+    }
+    intent = migration.record_migration_intent(stopped_intent_source, stopped_intent_source["State"], intent)
+    intent = migration.record_migration_intent(stopped_intent_source, stopped_intent_source["State"], intent,
+                                               restart_disabled=True)
+    disabled_source = copy.deepcopy(stopped_intent_source)
+    disabled_source["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
+    loaded = migration.migration_intent(disabled_source)
+    restored_plan = migration.planned_source(disabled_source, loaded)
+    assert restored_plan["HostConfig"]["RestartPolicy"] == intent_source["HostConfig"]["RestartPolicy"]
+    assert migration.snapshot_digest(restored_plan) == migration.snapshot_digest(stopped_intent_source)
+    changed = copy.deepcopy(disabled_source)
+    changed["Config"]["Hostname"] = "changed-during-interruption"
+    try:
+        migration.migration_intent(changed)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("interrupted source configuration drift was accepted")
+    assert migration.intent_path(intent_source["Id"]).stat().st_mode & 0o777 == 0o600
+print("ok - durable migration intent restores lifecycle and restart policy after interruption")
 
-def exercise_failed_transfer(after_start, mutate_source=False):
+
+def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image=False):
     source = copy.deepcopy(container)
     source["Id"] = ("d" if after_start else "c") * 64
     source["Name"] = "/post-start" if after_start else "/pre-start"
@@ -265,6 +363,7 @@ def exercise_failed_transfer(after_start, mutate_source=False):
     current_source = copy.deepcopy(source)
     current_target = {"State": {"Running": False}}
     calls = []
+    pipes = []
 
     def fake_inspect(engine, kind, name):
         return copy.deepcopy(current_source if engine == migration.SOURCE else current_target)
@@ -286,8 +385,8 @@ def exercise_failed_transfer(after_start, mutate_source=False):
 
     migration.inspect = fake_inspect
     migration.run = fake_run
-    migration.exists = lambda kind, name: False
-    migration.pipe = lambda producer, consumer: None
+    migration.exists = lambda kind, name: preexisting_image and kind == "image"
+    migration.pipe = lambda producer, consumer: pipes.append((producer, consumer))
     if after_start:
         migration.verify_runtime = lambda value: None
     else:
@@ -301,28 +400,80 @@ def exercise_failed_transfer(after_start, mutate_source=False):
             pass
         else:
             raise AssertionError("failed transfer was reported as complete")
-    return calls, current_source
+        intent_retained = migration.intent_path(source["Id"]).exists()
+    return calls, current_source, pipes, intent_retained
 
 
-calls, source = exercise_failed_transfer(False)
+calls, source, pipes, intent_retained = exercise_failed_transfer(False)
 assert (migration.TARGET, "rm", "--force", "pre-start") in calls
 assert (migration.TARGET, "image", "rm", "sha256:" + "e" * 64) in calls
+assert (migration.SOURCE, "stop", "-t", "300", "c" * 64) in calls
 assert (migration.SOURCE, "start", "c" * 64) in calls
 assert source["State"]["Running"]
+assert not intent_retained
 print("ok - verification failure before first start removes the destination and restores the source")
 
-calls, source = exercise_failed_transfer(False, mutate_source=True)
+calls, source, pipes, intent_retained = exercise_failed_transfer(False, mutate_source=True)
 assert not any(call[:2] == (migration.SOURCE, "commit") for call in calls)
 assert (migration.SOURCE, "start", "c" * 64) in calls
 assert source["State"]["Running"]
+assert intent_retained
 print("ok - source configuration changes during stop abort before image transfer")
 
-calls, source = exercise_failed_transfer(True)
+calls, source, pipes, intent_retained = exercise_failed_transfer(True)
 assert (migration.TARGET, "start", "post-start") in calls
 assert not any(call[:2] == (migration.TARGET, "rm") for call in calls)
 assert not any(call[:3] == (migration.TARGET, "image", "rm") for call in calls)
 assert not any(call[:2] == (migration.SOURCE, "start") for call in calls)
 assert source["HostConfig"]["RestartPolicy"]["Name"] == "no"
 assert not source["State"]["Running"]
+assert intent_retained
 print("ok - any destination start attempt retains both copies and keeps the source stopped")
+
+calls, source, pipes, intent_retained = exercise_failed_transfer(False, preexisting_image=True)
+assert not pipes
+assert not any(call[:3] == (migration.TARGET, "image", "rm") for call in calls)
+assert (migration.SOURCE, "image", "rm", "sha256:" + "e" * 64) in calls
+print("ok - a preexisting target image digest is reused without claiming or deleting it")
+
+retry_original = copy.deepcopy(container)
+retry_original["Id"] = "9" * 64
+retry_original["Name"] = "/interrupted-retry"
+retry_original["Mounts"] = []
+retry_original["HostConfig"]["Binds"] = []
+retry_source = copy.deepcopy(retry_original)
+retry_source["State"] = {
+    "Running": False, "StartedAt": "start", "FinishedAt": "power-loss-stop", "ExitCode": 0,
+}
+retry_source["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
+retry_target = {"State": {"Running": False}}
+retry_calls = []
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    retry_intent = migration.record_migration_intent(retry_original)
+    retry_intent = migration.record_migration_intent(retry_original, retry_source["State"], retry_intent,
+                                                     restart_disabled=True)
+
+    def retry_inspect(engine, kind, name):
+        return copy.deepcopy(retry_source if engine == migration.SOURCE else retry_target)
+
+    def retry_run(*args, **kwargs):
+        retry_calls.append(args)
+        if args[:2] == (migration.SOURCE, "commit"):
+            return "sha256:" + "8" * 64
+        if args[:2] == (migration.TARGET, "start"):
+            retry_target["State"]["Running"] = True
+
+    migration.inspect = retry_inspect
+    migration.run = retry_run
+    migration.exists = lambda kind, name: False
+    migration.pipe = lambda producer, consumer: None
+    migration.verify_runtime = lambda value: None
+    migration.record_completion = lambda source, state, running: None
+    migration.migrate(retry_source)
+    create_call = next(call for call in retry_calls if call[:2] == (migration.TARGET, "create"))
+    assert create_call[create_call.index("--restart") + 1] == "unless-stopped"
+    assert (migration.TARGET, "start", "interrupted-retry") in retry_calls
+    assert not migration.intent_path(retry_source["Id"]).exists()
+print("ok - a fresh process resumes a stopped migration with the original running and restart intent")
 PY

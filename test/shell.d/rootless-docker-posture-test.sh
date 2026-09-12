@@ -52,6 +52,9 @@ socket_line=$(grep -n "socket_owner=" "$migration" | cut -d: -f1)
   fail "the legacy group socket remains writable during source migration"
 grep -q -- '--check-windows "$windows_id"' "$migration" ||
   fail "the name-based Windows exception is not authenticated against its managed runtime"
+windows_secure_line=$(grep -n '^/usr/bin/omarchy-windows-vm __migration-secure$' "$migration" | cut -d: -f1)
+[[ -n $windows_secure_line && -n $inventory_line ]] && (( windows_secure_line < inventory_line )) ||
+  fail "legacy Windows credentials and mounts are not secured before rootful inventory"
 pass "migration serializes ownership, restricts the source socket, and validates the Windows exception"
 
 grep -q "alias d='docker'" "$ROOT/default/bash/aliases" || fail "the d alias remains Docker"

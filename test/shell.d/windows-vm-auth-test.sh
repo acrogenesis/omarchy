@@ -45,3 +45,24 @@ with tempfile.TemporaryDirectory() as directory:
             os.close(master)
         print(f"ok - {name} uses {expected} while privileged status output is captured")
 PY
+
+test_dir=$(mktemp -d)
+trap 'rm -rf "$test_dir"' EXIT
+touch "$test_dir/docker-compose.yml"
+MODE_LOG="$test_dir/mode" OMARCHY_WINDOWS_DIR="$test_dir" ROOT="$ROOT" bash -c '
+  set -e
+  set -- help
+  source "$ROOT/bin/omarchy-windows-vm" >/dev/null
+  priv() { printf "%s" "$1" >"$MODE_LOG"; }
+  secure_windows_migration
+  [[ $(<"$MODE_LOG") == "secure" ]]
+  valid_priv_action secure
+  rm "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+  mkdir -p "$HOME/.config/windows"
+  touch "$HOME/.config/windows/docker-compose.yml"
+  migrate_legacy_compose() { return 23; }
+  if secure_windows_migration; then
+    exit 1
+  fi
+'
+pass "migration security repair authenticates and propagates upgrade failures"

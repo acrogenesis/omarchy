@@ -106,6 +106,11 @@ with os.fdopen(lock_fd, "w") as lock:
         temporary.replace(owner)
 PY
 
+# Migrate any legacy user-side definition, pin its data into the protected root
+# anchors, and rewrite the credential-bearing Compose file to root:root 0600.
+# This performs no Docker lifecycle action.
+/usr/bin/omarchy-windows-vm __migration-secure
+
 sudo /usr/bin/systemctl daemon-reload
 sudo /usr/bin/systemctl start docker.socket
 source_host="unix:///run/docker.sock"

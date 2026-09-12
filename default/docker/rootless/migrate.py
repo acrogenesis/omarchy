@@ -3,15 +3,19 @@
 import hashlib
 import json
 import os
+import pwd
 import re
+import secrets
 import stat
 import subprocess
 import sys
+from copy import deepcopy
 from decimal import Decimal
 from pathlib import Path
 
 
 LABEL = "io.omarchy.rootless-docker.source-id"
+VOLUME_LABEL = "io.omarchy.rootless-docker.source-volume"
 SOURCE = "source"
 TARGET = "target"
 TRUSTED_MANIFEST = "/usr/share/omarchy/default/docker/rootless/volume-manifest.py"
@@ -160,7 +164,7 @@ def allowed_capabilities(container):
     # Explicit --cap-add gives even non-root processes capabilities. Docker's
     # default non-root process has none, so keep that source boundary.
     user = (container["Config"].get("User") or "").split(":", 1)[0]
-    if user and not user.isdecimal():
+    if user and not re.fullmatch(r"[0-9]+", user):
         raise ValueError(f'{container["Name"].lstrip("/")}: named image users need an explicit migration')
     if user and int(user) != 0:
         return set()
@@ -306,10 +310,123 @@ def destination_volume(container, mount):
     return mount["Name"] if explicit else f'omarchy-migrated-{mount["Name"]}'
 
 
+def volume_identity(container, mount):
+    # Docker volume create is idempotent rather than exclusive. An unpredictable
+    # token lets us prove that the volume returned by that call is the one this
+    # migration just requested, even if another client races the predictable
+    # destination name between the existence check and creation.
+    return f'{container["Id"]}:{mount["Name"]}:{secrets.token_hex(32)}'
+
+
 def completion_path(identity):
     if not re.fullmatch(r"[a-f0-9]{64}", identity):
         raise ValueError("Unsupported Docker container identity")
     return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "omarchy/rootless-docker-migration" / identity
+
+
+def intent_path(identity):
+    receipt = completion_path(identity)
+    return receipt.with_name(f"{receipt.name}.in-progress")
+
+
+def write_private_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_suffix(f"{path.suffix}.tmp-{os.getpid()}")
+    try:
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "w") as output:
+            json.dump(payload, output)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        temporary.replace(path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def record_migration_intent(container, stopped_state=None, saved=None, restart_disabled=False):
+    state = container["State"]
+    if saved is None:
+        payload = {
+            "source": container["Id"],
+            "source_snapshot": snapshot_digest(container),
+            "source_snapshot_ignore_restart": snapshot_digest(container, ignore_restart=True),
+            "source_restart_policy": deepcopy(container["HostConfig"].get("RestartPolicy") or {}),
+            "started_at": state["StartedAt"],
+            "target_running": bool(state["Running"]),
+            "restart_disabled": False,
+        }
+        if not state["Running"]:
+            payload["stopped"] = stopped_identity(state)
+    else:
+        payload = deepcopy(saved)
+    if stopped_state is not None:
+        payload["stopped"] = stopped_identity(stopped_state)
+    if restart_disabled:
+        payload["restart_disabled"] = True
+    write_private_json(intent_path(container["Id"]), payload)
+    return payload
+
+
+def migration_intent(container):
+    path = intent_path(container["Id"])
+    if not path.exists():
+        return None
+    try:
+        saved = json.loads(path.read_text())
+        restart_policy = saved["source_restart_policy"]
+        if (saved["source"] != container["Id"] or
+                not isinstance(saved["target_running"], bool) or
+                not isinstance(saved["restart_disabled"], bool) or
+                not isinstance(restart_policy, dict) or
+                saved["started_at"] != container["State"]["StartedAt"]):
+            raise ValueError
+        exact_snapshot = saved["source_snapshot"] == snapshot_digest(container)
+        disabled_snapshot = (
+            saved["restart_disabled"] is True and
+            (container["HostConfig"].get("RestartPolicy") or {}).get("Name") == "no" and
+            saved["source_snapshot_ignore_restart"] == snapshot_digest(container, ignore_restart=True)
+        )
+        if not exact_snapshot and not disabled_snapshot:
+            raise ValueError
+        if container["State"]["Running"]:
+            if saved["target_running"] is not True or "stopped" in saved:
+                raise ValueError
+        else:
+            current_stopped = stopped_identity(container["State"])
+            if "stopped" in saved and saved["stopped"] != current_stopped:
+                raise ValueError
+        return saved
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        raise ValueError(f'{container["Name"].lstrip("/")}: interrupted migration state changed; inspect both engines') from error
+
+
+def planned_source(container, intent):
+    if intent is None:
+        return container
+    planned = deepcopy(container)
+    planned["HostConfig"]["RestartPolicy"] = deepcopy(intent["source_restart_policy"])
+    if snapshot_digest(planned) != intent["source_snapshot"]:
+        raise ValueError(f'{container["Name"].lstrip("/")}: interrupted migration cannot reconstruct the source configuration')
+    return planned
+
+
+def clear_migration_intent(identity):
+    path = intent_path(identity)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def completed(container, target):
@@ -344,22 +461,12 @@ def record_completion(container, source_state, target_running):
         raise RuntimeError(f'{container["Name"].lstrip("/")}: Docker source changed before completion; inspect both engines')
     container = latest_source
     target = inspect(TARGET, "container", container["Name"].lstrip("/"))
-    receipt = completion_path(container["Id"])
-    receipt.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary = receipt.with_suffix(f".tmp-{os.getpid()}")
-    try:
-        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, "w") as output:
-            json.dump({"target": target["Id"], "source": stopped_identity(source_state),
-                       "target_running": target_running,
-                       "source_snapshot": snapshot_digest(container),
-                       "target_snapshot": snapshot_digest(target)}, output)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        temporary.replace(receipt)
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_private_json(completion_path(container["Id"]), {
+        "target": target["Id"], "source": stopped_identity(source_state),
+        "target_running": target_running,
+        "source_snapshot": snapshot_digest(container),
+        "target_snapshot": snapshot_digest(target),
+    })
 
 
 def validate(container):
@@ -372,6 +479,10 @@ def validate(container):
     if LABEL in labels:
         raise ValueError(f"{name}: reserved Omarchy migration labels need an explicit migration")
     allowed_capabilities(container)
+    stop_timeout = container["Config"].get("StopTimeout")
+    if (stop_timeout is not None and
+            (isinstance(stop_timeout, bool) or not isinstance(stop_timeout, int) or stop_timeout < -1)):
+        raise ValueError(f"{name}: unsupported stop timeout")
     environment = container["Config"].get("Env") or []
     if (not isinstance(environment, list) or
             any(not isinstance(entry, str) or "=" not in entry for entry in environment) or
@@ -432,22 +543,38 @@ def validate_windows_exception(container):
     mounts_by_destination = {mount.get("Destination"): mount for mount in mounts}
     storage = mounts_by_destination.get("/storage") or {}
     shared = mounts_by_destination.get("/shared") or {}
-    storage_match = re.fullmatch(r"/var/lib/omarchy/windows/mounts/users/([1-9][0-9]*)/storage",
-                                 storage.get("Source") or "")
+    account = pwd.getpwuid(os.getuid())
+    protected = f"/var/lib/omarchy/windows/mounts/users/{account.pw_uid}"
+    legacy = account.pw_dir
+    previous = f'{Path(account.pw_dir).parent}/.omarchy-windows/users/{account.pw_uid}'
+    allowed_mounts = {
+        (f"{protected}/storage", f"{protected}/shared"),
+        (f"{legacy}/.windows", f"{legacy}/Windows"),
+        (f"{previous}/storage", f"{previous}/shared"),
+    }
+    networks = container.get("NetworkSettings", {}).get("Networks") or {}
     if (name != "omarchy-windows" or
             not re.fullmatch(r"[a-f0-9]{64}", container["Id"]) or
             config.get("Image") not in ("dockurr/windows", "dockurr/windows:latest") or
             labels.get("com.docker.compose.project") != "windows" or
             labels.get("com.docker.compose.service") != "windows" or
             host.get("Privileged") is not False or
+            host.get("AutoRemove") not in (None, False) or host.get("ReadonlyRootfs") not in (None, False) or
             {capability.upper().removeprefix("CAP_") for capability in host.get("CapAdd") or []} != {"NET_ADMIN"} or
+            host.get("CapDrop") or host.get("DeviceRequests") or host.get("DeviceCgroupRules") or
+            host.get("SecurityOpt") or host.get("PidMode") or host.get("UTSMode") or host.get("UsernsMode") or
+            host.get("NetworkMode") != "windows_default" or
+            host.get("IpcMode") not in (None, "", "private") or
+            host.get("CgroupnsMode") not in (None, "", "private") or
+            host.get("Runtime") not in (None, "", "runc") or
             devices != {("/dev/kvm", "/dev/kvm"), ("/dev/net/tun", "/dev/net/tun")} or
+            len(host.get("Devices") or []) != 2 or
             ports != expected_ports or
             (host.get("RestartPolicy") or {}).get("Name") != "no" or
             len(mounts) != 2 or any(mount.get("Type") != "bind" for mount in mounts) or
             any(mount.get("RW") is not True for mount in mounts) or
-            not storage_match or
-            shared.get("Source") != f"/var/lib/omarchy/windows/mounts/users/{storage_match.group(1)}/shared"):
+            (storage.get("Source"), shared.get("Source")) not in allowed_mounts or
+            set(networks) != {"windows_default"}):
         raise ValueError("omarchy-windows: the rootful exception does not match Omarchy's managed Windows VM")
     return name
 
@@ -482,6 +609,22 @@ def transfer_volume(volume, target):
 def source_volume_digest(volume):
     return run("/usr/bin/sudo", "/usr/bin/python3", TRUSTED_MANIFEST,
                volume["Mountpoint"], capture=True)
+
+
+def validate_source_volume(container, volume):
+    name = container["Name"].lstrip("/")
+    if (volume.get("Driver") != "local" or volume.get("Options") or
+            VOLUME_LABEL in (volume.get("Labels") or {})):
+        raise ValueError(f"{name}: custom volume configuration requires an explicit transfer")
+
+
+def verify_volume_definition(volume, target, ownership):
+    expected_labels = dict(volume.get("Labels") or {})
+    expected_labels[VOLUME_LABEL] = ownership
+    actual = inspect(TARGET, "volume", target)
+    if (actual.get("Name") != target or actual.get("Driver") != "local" or
+            actual.get("Options") not in (None, {}) or actual.get("Labels") != expected_labels):
+        raise RuntimeError("Destination volume ownership or configuration changed; retained it for inspection")
 
 
 def validate_trusted_manifest():
@@ -546,10 +689,12 @@ def migrate(container):
     container = refresh_source(container)
     name = container["Name"].lstrip("/")
     identity = container["Id"]
+    intent = migration_intent(container)
     if exists("container", name):
         target = inspect(TARGET, "container", name)
         container = refresh_source(container)
         if completed(container, target):
+            clear_migration_intent(identity)
             print(f"{name}: already migrated")
             return
         raise ValueError(f"{name}: an existing rootless Docker container needs review; no completed transfer matches it")
@@ -557,16 +702,27 @@ def migrate(container):
         raise ValueError(f"{name}: a previously migrated destination is missing; inspect retained data before retrying")
 
     container = refresh_source(container)
-    running = container["State"]["Running"]
+    intent = migration_intent(container)
+    planned = planned_source(container, intent)
+    running = intent["target_running"] if intent is not None else bool(container["State"]["Running"])
     created = False
     image = None
+    image_committed = False
     image_loaded = False
     start_attempted = False
     restart_changed = False
     new_volumes = []
     verified_volumes = {}
+    restart = planned["HostConfig"].get("RestartPolicy") or {}
+    policy = restart.get("Name") or "no"
+    if policy == "on-failure" and restart.get("MaximumRetryCount"):
+        policy += f':{restart["MaximumRetryCount"]}'
     try:
-        run(SOURCE, "stop", "-t", "120", identity)
+        if intent is None:
+            intent = record_migration_intent(container)
+        configured_timeout = planned["Config"].get("StopTimeout")
+        stop_timeout = -1 if configured_timeout == -1 else max(120, configured_timeout or 0)
+        run(SOURCE, "stop", "-t", str(stop_timeout), identity)
         stopped_source = inspect(SOURCE, "container", identity)
         state = stopped_source["State"]
         if state["Running"] or (running and state["ExitCode"] in (137, 139)):
@@ -575,19 +731,23 @@ def migrate(container):
         if snapshot_digest(stopped_source) != snapshot_digest(container):
             raise RuntimeError(f"{name}: Docker source configuration changed while stopping; rerun after workloads are stable")
         container = stopped_source
+        intent = record_migration_intent(container, state, intent)
         # Commit includes writable-layer changes and the exact image config.
         # Volume data is copied separately while the source container is stopped.
         image = run(SOURCE, "commit", identity, capture=True)
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", image or ""):
             raise RuntimeError(f"{name}: Docker did not return a transferable committed image")
-        pipe([SOURCE, "image", "save", image], [TARGET, "image", "load", "--quiet"])
-        image_loaded = True
+        image_committed = True
+        if not exists("image", image):
+            pipe([SOURCE, "image", "save", image], [TARGET, "image", "load", "--quiet"])
+            image_loaded = True
         run(SOURCE, "image", "rm", image)
+        image_committed = False
         arguments = [TARGET, "create", "--pull=never", "--name", name,
                      "--label", f"{LABEL}={identity}", "--privileged=false",
                      "--ipc=private", "--cgroupns=private", "--network=bridge"]
-        arguments += runtime_arguments(container)
-        config = container["Config"]
+        arguments += runtime_arguments(planned)
+        config = planned["Config"]
         if config.get("Hostname"):
             arguments += ["--hostname", config["Hostname"]]
         if config.get("StopTimeout") is not None:
@@ -599,27 +759,25 @@ def migrate(container):
             arguments += ["--tty"]
         if config.get("OpenStdin"):
             arguments += ["--interactive"]
-        restart = container["HostConfig"].get("RestartPolicy") or {}
-        policy = restart.get("Name") or "no"
-        if policy == "on-failure" and restart.get("MaximumRetryCount"):
-            policy += f':{restart["MaximumRetryCount"]}'
         arguments += ["--restart", policy]
-        for port, bindings in (container["HostConfig"].get("PortBindings") or {}).items():
+        for port, bindings in (planned["HostConfig"].get("PortBindings") or {}).items():
             for binding in bindings or []:
                 arguments += ["--publish", f'127.0.0.1:{binding["HostPort"]}:{port}']
-        for mount in container.get("Mounts", []):
+        for mount in planned.get("Mounts", []):
             volume = inspect(SOURCE, "volume", mount["Name"])
-            if volume.get("Options"):
-                raise ValueError(f"{name}: volume driver options require an explicit transfer")
-            target = destination_volume(container, mount)
+            validate_source_volume(container, volume)
+            target = destination_volume(planned, mount)
             if exists("volume", target):
                 raise ValueError(f"{name}: destination volume already exists; retained it for inspection")
             volume_arguments = [TARGET, "volume", "create"]
             for key, value in (volume.get("Labels") or {}).items():
                 volume_arguments += ["--label", f"{key}={value}"]
+            ownership = volume_identity(planned, mount)
+            volume_arguments += ["--label", f"{VOLUME_LABEL}={ownership}"]
             run(*volume_arguments, target)
+            verify_volume_definition(volume, target, ownership)
             new_volumes.append(target)
-            verified_volumes[target] = (volume, transfer_volume(volume, target))
+            verified_volumes[target] = (volume, ownership, transfer_volume(volume, target))
             mount_arg = f'type=volume,src={target},dst={mount["Destination"]},volume-nocopy'
             if not mount.get("RW"):
                 mount_arg += ",readonly"
@@ -629,9 +787,10 @@ def migrate(container):
         created = True
         # The container has not started, and volume-nocopy prevents image data
         # from replacing the restored volume contents.
-        verify_runtime(container)
+        verify_runtime(planned)
         for target, expected in verified_volumes.items():
-            volume, digest = expected
+            volume, ownership, digest = expected
+            verify_volume_definition(volume, target, ownership)
             verify_volume(target, digest)
             if source_volume_digest(volume) != digest:
                 raise RuntimeError(f"{name}: source volume changed during transfer; inspect both engines")
@@ -641,11 +800,12 @@ def migrate(container):
             raise RuntimeError(f"{name}: Docker source changed during transfer; inspect both engines")
         # A later workload may fail, leaving Docker installed. Prevent a daemon
         # restart from reviving this stale source alongside its migrated copy.
+        intent = record_migration_intent(container, state, intent, restart_disabled=True)
         restart_changed = True
         run(SOURCE, "update", "--restart=no", identity)
         source_after = inspect(SOURCE, "container", identity)
         if (stopped_identity(source_after["State"]) != stopped_identity(state) or
-                snapshot_digest(source_after, ignore_restart=True) != snapshot_digest(container, ignore_restart=True) or
+                snapshot_digest(source_after, ignore_restart=True) != snapshot_digest(planned, ignore_restart=True) or
                 (source_after["HostConfig"].get("RestartPolicy") or {}).get("Name") != "no"):
             raise RuntimeError(f"{name}: Docker source changed during finalization; inspect both engines")
         if running:
@@ -658,8 +818,9 @@ def migrate(container):
         target_state = inspect(TARGET, "container", name)["State"]
         if bool(target_state["Running"]) != bool(running):
             raise RuntimeError(f"{name}: destination lifecycle differs from the source")
-        verify_runtime(container)
+        verify_runtime(planned)
         record_completion(source_after, state, bool(running))
+        clear_migration_intent(identity)
         print(f"{name}: migrated to rootless Docker; rootful copy retained for recovery")
     except BaseException:
         if start_attempted:
@@ -667,13 +828,16 @@ def migrate(container):
                   "Inspect rootless Docker before resuming the rootful copy or retrying migration.", file=sys.stderr)
             raise
         recovery = []
+        recovery_failed = False
         if created:
             recovery.append((TARGET, "rm", "--force", name))
         for volume in new_volumes:
             recovery.append((TARGET, "volume", "rm", volume))
         if image_loaded:
             recovery.append((TARGET, "image", "rm", image))
-        if restart_changed:
+        if image_committed:
+            recovery.append((SOURCE, "image", "rm", image))
+        if restart_changed or (container["HostConfig"].get("RestartPolicy") or {}) != restart:
             recovery.append((SOURCE, "update", f"--restart={policy}", identity))
         if running:
             recovery.append((SOURCE, "start", identity))
@@ -682,7 +846,16 @@ def migrate(container):
                 run(*command)
             except Exception:
                 # A failed cleanup must not prevent trying to restart Docker.
+                recovery_failed = True
                 print(f"{name}: a recovery step failed; inspect both engines before retrying", file=sys.stderr)
+        if not recovery_failed:
+            try:
+                restored = inspect(SOURCE, "container", identity)
+                if (bool(restored["State"]["Running"]) == bool(running) and
+                        snapshot_digest(restored) == snapshot_digest(planned)):
+                    clear_migration_intent(identity)
+            except Exception:
+                pass
         raise
 
 
@@ -715,7 +888,11 @@ def main():
             continue
         for mount in container.get("Mounts", []):
             volume = inspect(SOURCE, "volume", mount["Name"])
-            if volume.get("Options") or mount["Name"] in volumes:
+            try:
+                validate_source_volume(container, volume)
+            except ValueError as error:
+                blockers.append(str(error))
+            if mount["Name"] in volumes:
                 blockers.append(f'{container["Name"].lstrip("/")}: custom or shared volumes require an explicit transfer')
             volumes.add(mount["Name"])
     if blockers:

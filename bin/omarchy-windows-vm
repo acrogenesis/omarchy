@@ -129,7 +129,7 @@ valid_password() { [[ $1 =~ ^[[:print:]]{1,64}$ ]]; }
 # ../tmp/evil from running an arbitrary file as root.
 valid_priv_action() {
   case "$1" in
-  write_compose | up | up_wait | down | status | remove) return 0 ;;
+  write_compose | secure | up | up_wait | down | status | remove) return 0 ;;
   *) return 1 ;;
   esac
 }
@@ -893,6 +893,8 @@ assert_mounts_safe() {
 
 __priv_up() { assert_mounts_safe && dc up -d; }
 
+__priv_secure() { assert_mounts_safe; }
+
 __priv_down() { dc down; }
 
 # Bring the VM up and wait until the guest reports it is ready, all under a
@@ -1117,6 +1119,15 @@ migrate_legacy_compose() {
     return 1
   fi
   rm -f "$LEGACY_COMPOSE_FILE"
+}
+
+secure_windows_migration() {
+  if [[ ! -f $COMPOSE_FILE && -f $LEGACY_COMPOSE_FILE ]]; then
+    migrate_legacy_compose || return 1
+  fi
+  if [[ -f $COMPOSE_FILE ]]; then
+    priv secure || return 1
+  fi
 }
 
 # --- prerequisites -----------------------------------------------------------
@@ -1549,6 +1560,9 @@ show_usage() {
 
 # Main command dispatcher
 case "$1" in
+__migration-secure)
+  secure_windows_migration
+  ;;
 __priv)
   ((EUID == 0)) || {
     echo "omarchy-windows-vm __priv must run as root" >&2
