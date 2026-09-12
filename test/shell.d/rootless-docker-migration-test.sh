@@ -440,7 +440,10 @@ with tempfile.TemporaryDirectory() as directory:
     sys.argv = ["migrate.py", "--check", overlap_source["Name"].lstrip("/")]
     migration.main()
     assert migration.intent_path(overlap_source["Id"]).exists()
-print("ok - a valid completion receipt wins over its stale post-start journal")
+    sys.argv = ["migrate.py", "--quiesce-all", "-", overlap_source["Name"].lstrip("/")]
+    migration.main()
+    assert not migration.intent_path(overlap_source["Id"]).exists()
+print("ok - a valid completion receipt clears its stale journal in check, transfer, and quiesce phases")
 
 restarted = copy.deepcopy(stopped)
 restarted["State"]["Running"] = True
@@ -832,6 +835,58 @@ with tempfile.TemporaryDirectory() as directory:
     assert (migration.TARGET, "start", "interrupted-retry") in resume_calls
     assert not migration.intent_path(resume_source["Id"]).exists()
 print("ok - a verified destination resumes safely across interruption before its first start")
+
+for unsafe_kind in ("destination", "guard"):
+    unsafe_original = copy.deepcopy(retry_original)
+    unsafe_original["Id"] = ("a" if unsafe_kind == "destination" else "b") * 64
+    unsafe_original["Name"] = f"/{unsafe_kind}-race"
+    unsafe_source = copy.deepcopy(unsafe_original)
+    unsafe_source["State"] = {
+        "Status": "exited", "Running": False, "StartedAt": unsafe_original["State"]["StartedAt"],
+        "FinishedAt": "source-stop", "ExitCode": 0,
+    }
+    unsafe_source["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
+    with tempfile.TemporaryDirectory() as directory:
+        os.environ["XDG_STATE_HOME"] = directory
+        unsafe_intent = migration.record_migration_intent(unsafe_original)
+        unsafe_intent = migration.record_migration_intent(
+            unsafe_source, unsafe_source["State"], unsafe_intent, restart_disabled=True,
+        )
+        unsafe_name = (unsafe_source["Name"].lstrip("/") if unsafe_kind == "destination"
+                       else migration.volume_guard_name(unsafe_intent))
+        unsafe_target = {
+            "Id": "c" * 64, "Name": f"/{unsafe_name}",
+            "Config": {"Labels": {
+                migration.LABEL: unsafe_source["Id"],
+                migration.OWNERSHIP_LABEL: unsafe_intent["target_ownership"],
+            }},
+            "State": {"Status": "exited", "Running": False, "StartedAt": "outside-start",
+                      "FinishedAt": "outside-stop", "ExitCode": 0},
+        }
+
+        def unsafe_inspect(engine, kind, name):
+            if engine == migration.SOURCE:
+                return copy.deepcopy(unsafe_source)
+            if name in (unsafe_target["Id"], unsafe_name):
+                return copy.deepcopy(unsafe_target)
+            raise migration.subprocess.CalledProcessError(1, ["docker", "inspect"])
+
+        migration.inspect = unsafe_inspect
+        migration.exists = lambda kind, name: kind == "container" and name == unsafe_name
+        try:
+            migration.migrate(unsafe_source)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"a raced {unsafe_kind} allowed automatic migration")
+        assert migration.migration_intent(unsafe_source)["start_attempted"] is True
+        try:
+            migration.restore_source(unsafe_source["Id"])
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError(f"a raced {unsafe_kind} allowed rootful source restart")
+print("ok - a destination or guard run after preflight durably blocks rootful source restart")
 
 pinned_source = copy.deepcopy(container)
 pinned_source["Name"] = "/pinned-volume"

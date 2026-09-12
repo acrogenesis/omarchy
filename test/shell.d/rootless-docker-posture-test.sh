@@ -8,8 +8,8 @@ for package in docker docker-buildx docker-compose docker-rootless-extras rootle
 done
 pass "the base install keeps Docker tooling and adds the rootless runtime"
 
-grep -q 'systemctl --global enable docker.service' "$ROOT/install/config/enable-services.sh" ||
-  fail "fresh installs globally enable the rootless Docker user service"
+! rg -q 'systemctl --global enable docker.service' "$ROOT/install" "$ROOT/migrations/1789164756.sh" ||
+  fail "rootless Docker starts globally before each account is initialized"
 grep -q 'docker.service' "$ROOT/install/user/first-run/enable-user-units.sh" ||
   fail "first login starts the rootless Docker user service"
 grep -q 'rootless_docker_ensure_subids' "$ROOT/install/config/docker.sh" ||
@@ -33,6 +33,13 @@ rm "$home/.local/state/omarchy/rootless-docker/enabled"
 pass "the Docker endpoint activates only after rootless setup completes"
 
 migration="$ROOT/migrations/1789164756.sh"
+reset_line=$(grep -n 'systemctl --user reset-failed docker.service' "$migration" | cut -d: -f1)
+user_enable_line=$(grep -n 'systemctl --user enable docker.service' "$migration" | cut -d: -f1)
+user_restart_line=$(grep -n 'systemctl --user restart docker.service' "$migration" | cut -d: -f1)
+daemon_config_line=$(grep -n 'install -m 0644.*config/docker/daemon.json' "$migration" | cut -d: -f1)
+[[ -n $reset_line && -n $user_enable_line && -n $user_restart_line && -n $daemon_config_line ]] &&
+  (( daemon_config_line < reset_line && reset_line < user_enable_line && user_enable_line < user_restart_line )) ||
+  fail "migration does not recover and restart only the initialized user's daemon after writing config"
 grep -q 'migration_user=$(id -un)' "$migration" || fail "migration trusts the USER environment instead of the current account"
 lock_line=$(grep -n '/usr/bin/flock -n' "$migration" | cut -d: -f1)
 package_line=$(grep -n '^omarchy-pkg-add docker-rootless-extras' "$migration" | cut -d: -f1)
@@ -62,6 +69,10 @@ windows_check_line=$(grep -n -- '--check-windows "$windows_id"' "$migration" | h
 owner_claim_line=$(grep -n 'owner = root / "migration-owner"' "$migration" | cut -d: -f1)
 [[ -n $windows_check_line && -n $owner_claim_line ]] && (( windows_check_line < owner_claim_line )) ||
   fail "the machine migration owner is claimed before proving ownership of an existing Windows VM"
+owner_replace_line=$(grep -n 'temporary.replace(owner)' "$migration" | cut -d: -f1)
+owner_sync_line=$(grep -n 'os.fsync(directory_fd)' "$migration" | head -n1 | cut -d: -f1)
+[[ -n $owner_replace_line && -n $owner_sync_line ]] && (( owner_replace_line < owner_sync_line )) ||
+  fail "the machine migration owner rename is not directory-synced"
 quiesce_line=$(grep -n -- '--quiesce-all "$windows_arg"' "$migration" | cut -d: -f1)
 restart_line=$(grep -n 'systemctl restart docker.service' "$migration" | cut -d: -f1)
 transfer_line=$(grep -n '^  /usr/bin/python3 "$migrator" "${container_names\[@\]}"' "$migration" | cut -d: -f1)

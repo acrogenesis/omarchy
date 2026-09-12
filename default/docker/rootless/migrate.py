@@ -464,6 +464,12 @@ def persist_migration_intent(container, intent):
     return intent
 
 
+def record_destination_may_have_run(container, intent):
+    saved = deepcopy(intent)
+    saved["start_attempted"] = True
+    return persist_migration_intent(container, saved)
+
+
 def target_owned(container, target, intent):
     labels = target["Config"].get("Labels") or {}
     return (labels.get(LABEL) == container["Id"] and
@@ -888,6 +894,11 @@ def restore_source(identity, validator=validate):
 
 def quiesce(container, validator=validate):
     container = refresh_source(container, validator)
+    name = container["Name"].lstrip("/")
+    if exists("container", name) and completed(container, inspect(TARGET, "container", name)):
+        clear_migration_intent(container["Id"])
+        print(f"{name}: already migrated")
+        return
     intent = migration_intent(container)
     planned = planned_source(container, intent)
     if intent is None:
@@ -999,7 +1010,10 @@ def migrate(container):
             return
         if intent is not None and intent["start_attempted"]:
             raise ValueError(f"{name}: destination start was attempted; inspect both engines")
-        if intent is None or not target_owned(container, target, intent):
+        if intent is None:
+            raise ValueError(f"{name}: an existing rootless Docker container needs review; no owned transfer matches it")
+        if not target_owned(container, target, intent):
+            intent = record_destination_may_have_run(container, intent)
             raise ValueError(f"{name}: an existing rootless Docker container needs review; no owned transfer matches it")
         if intent.get("destination") is not None:
             if exists("container", volume_guard_name(intent)):
@@ -1007,13 +1021,19 @@ def migrate(container):
             resume_verified_migration(container, target, intent)
             return
         if not target_never_started(target):
+            intent = record_destination_may_have_run(container, intent)
             raise ValueError(f"{name}: an incomplete rootless destination may have run; inspect both engines")
         owned_id = target["Id"]
         run(TARGET, "rm", "--force", owned_id)
         if exists("container", name):
+            intent = record_destination_may_have_run(container, intent)
             raise ValueError(f"{name}: rootless destination name was replaced during recovery")
     if intent is not None:
-        remove_volume_guard(container, intent)
+        try:
+            remove_volume_guard(container, intent)
+        except BaseException:
+            intent = record_destination_may_have_run(container, intent)
+            raise
     if intent is not None and intent["start_attempted"]:
         raise ValueError(f"{name}: destination start was attempted; inspect both engines")
     if completion_path(identity).exists():

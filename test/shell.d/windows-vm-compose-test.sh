@@ -178,16 +178,35 @@ docker() {
 }
 dc() { printf '%s\n' "$*" >>"$secure_log"; }
 __priv_secure
-[[ $(tail -n1 "$secure_log") == "up -d --force-recreate" ]] || fail "running VM was not recreated running"
+[[ $(tail -n1 "$secure_log") == "up -d" ]] || fail "running VM was not reconciled running"
 windows_status=exited
 __priv_secure
-[[ $(tail -n1 "$secure_log") == "up --no-start --force-recreate" ]] || fail "stopped VM was not recreated stopped"
+[[ $(tail -n1 "$secure_log") == "up --no-start" ]] || fail "stopped VM was not reconciled stopped"
+
+# A failed recreation retains the original lifecycle before Docker mutation. A
+# retry uses that durable state instead of mistaking the partial replacement's
+# created status for the user's original stopped intent.
+windows_status=running
+fail_secure_once=1
+dc() {
+  printf '%s\n' "$*" >>"$secure_log"
+  if ((fail_secure_once)); then
+    fail_secure_once=0
+    windows_status=created
+    return 1
+  fi
+  [[ $* == "up -d" ]] && windows_status=running
+}
+__priv_secure 2>/dev/null && fail "interrupted Windows reconciliation succeeded"
+[[ $(<"$SECURITY_MIGRATION_STATE") == running ]] || fail "running lifecycle was not durable before recreation"
+__priv_secure
+[[ $windows_status == running && ! -e $SECURITY_MIGRATION_STATE ]] || fail "retry did not restore and clear running lifecycle"
 rm -f "$COMPOSE"
 __priv_secure 2>/dev/null && fail "live Windows container without trusted Compose passed migration"
 docker() { [[ $1 == inspect ]] && return 1; }
 __priv_secure || fail "an absent Windows VM required a Compose definition"
 unset -f docker dc
-pass "security migration recreates hardened Windows while preserving its lifecycle"
+pass "security migration reconciles hardened Windows while durably preserving its lifecycle"
 
 # Both sources are pinned before a bind; bad symlinks stay untouched.
 reset_case

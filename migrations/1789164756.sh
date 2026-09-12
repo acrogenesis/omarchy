@@ -47,7 +47,13 @@ if [[ ! -e $HOME/.config/docker/daemon.json ]]; then
 fi
 
 systemctl --user daemon-reload
-systemctl --user enable --now docker.service
+# A global user-unit enablement would start this daemon for secondary accounts
+# before their subordinate IDs and per-user daemon config exist. Enable only
+# this initialized account, clear any early start-limit failure, and restart so
+# an already-running daemon consumes the just-installed configuration.
+systemctl --user reset-failed docker.service
+systemctl --user enable docker.service
+systemctl --user restart docker.service
 target_host="unix://$XDG_RUNTIME_DIR/docker.sock"
 if ! /usr/bin/docker --host "$target_host" info >/dev/null; then
   echo "Rootless Docker did not start. Rootful Docker has not been changed." >&2
@@ -59,7 +65,6 @@ fi
 # inspect or claim the retained recovery copies owned by the first account.
 machine_state=/var/lib/omarchy/rootless-docker
 if sudo /usr/bin/test -f "$machine_state/enabled"; then
-  sudo /usr/bin/systemctl --global enable docker.service
   remove_legacy_docker_group
   touch "$rootless_state/enabled"
   chmod 0600 "$rootless_state/enabled"
@@ -171,7 +176,17 @@ import sys
 
 uid, name = int(sys.argv[1]), sys.argv[2]
 root = Path("/var/lib/omarchy/rootless-docker")
+root_was_missing = not root.exists()
 root.mkdir(mode=0o755, parents=True, exist_ok=True)
+metadata = root.lstat()
+if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+    raise SystemExit("unsafe rootless Docker machine-state directory")
+if root_was_missing:
+    parent_fd = os.open(root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
 lock_fd = os.open("/run/lock/omarchy-rootless-docker-owner.lock",
                   os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
 with os.fdopen(lock_fd, "w") as lock:
@@ -192,6 +207,11 @@ with os.fdopen(lock_fd, "w") as lock:
             output.flush()
             os.fsync(output.fileno())
         temporary.replace(owner)
+        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 PY
 
 if [[ -n $windows_id ]]; then
@@ -233,10 +253,25 @@ if [[ $latest_inventory != "$docker_inventory" ]]; then
   exit 1
 fi
 
-sudo /usr/bin/systemctl --global enable docker.service
 sudo /usr/bin/touch /var/lib/omarchy/rootless-docker/enabled
 sudo /usr/bin/chown root:root /var/lib/omarchy/rootless-docker/enabled
 sudo /usr/bin/chmod 0644 /var/lib/omarchy/rootless-docker/enabled
+sudo /usr/bin/python3 - <<'PY'
+import os
+
+
+path = "/var/lib/omarchy/rootless-docker/enabled"
+descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+directory = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
 touch "$rootless_state/enabled"
 chmod 0600 "$rootless_state/enabled"
 

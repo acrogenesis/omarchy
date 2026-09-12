@@ -26,6 +26,7 @@ CREDENTIALS_FILE="$HOME/.config/windows/credentials"
 IMAGE="dockurr/windows"
 CONTAINER="omarchy-windows"
 VM_LOCK_DIR=/run/lock/omarchy-windows-vm
+SECURITY_MIGRATION_STATE="$RUNTIME_DIR/.security-migration-state"
 # Removal is the only path that recursively proves there are no bind aliases.
 # Bound every metadata walk so a large or hostile caller tree fails closed
 # instead of hanging a privileged action indefinitely.
@@ -681,6 +682,44 @@ finally:
 PY
 }
 
+write_security_migration_state() (
+  local lifecycle="$1" old_umask tmp=""
+  [[ $lifecycle == "running" || $lifecycle == "stopped" ]] || exit 1
+  old_umask=$(umask)
+  umask 077
+  tmp=$(mktemp "$RUNTIME_DIR/.security-migration-state.XXXXXX") || exit 1
+  trap 'rm -f -- "$tmp"; umask "$old_umask"' EXIT
+  printf '%s\n' "$lifecycle" >"$tmp" || exit 1
+  chmod 0600 "$tmp" || exit 1
+  if ((EUID == 0)); then
+    chown root:root "$tmp" || exit 1
+  fi
+  fsync_regular_file "$tmp" || exit 1
+  mv -fT -- "$tmp" "$SECURITY_MIGRATION_STATE" || exit 1
+  tmp=""
+  fsync_directory "$RUNTIME_DIR" || exit 1
+  trap - EXIT
+  umask "$old_umask"
+)
+
+read_security_migration_state() {
+  local expected lifecycle metadata
+  [[ -f $SECURITY_MIGRATION_STATE && ! -L $SECURITY_MIGRATION_STATE ]] || return 1
+  expected=$(boundary_owner)
+  metadata=$(stat -Lc '%u:%a' "$SECURITY_MIGRATION_STATE") || return 1
+  [[ $metadata == "$expected:600" ]] || return 1
+  IFS= read -r lifecycle <"$SECURITY_MIGRATION_STATE" || return 1
+  [[ $lifecycle == "running" || $lifecycle == "stopped" ]] || return 1
+  [[ $(wc -l <"$SECURITY_MIGRATION_STATE") == 1 ]] || return 1
+  [[ $(<"$SECURITY_MIGRATION_STATE") == "$lifecycle" ]] || return 1
+  printf '%s' "$lifecycle"
+}
+
+clear_security_migration_state() {
+  rm -f -- "$SECURITY_MIGRATION_STATE" || return 1
+  fsync_directory "$RUNTIME_DIR"
+}
+
 write_compose_atomically() (
   local ram="$1" cores="$2" disk="$3" username="$4" password="$5" tz="$6"
   local tmp="" rc esc_password
@@ -929,24 +968,49 @@ assert_mounts_safe() {
 __priv_up() { assert_mounts_safe && dc up -d; }
 
 __priv_secure() {
-  local status
+  local desired status
   if [[ ! -f $COMPOSE_FILE ]]; then
     if docker inspect "$CONTAINER" >/dev/null 2>&1; then
       echo "omarchy-windows-vm: an existing Windows container has no trusted Compose definition" >&2
       return 1
     fi
+    if [[ -e $SECURITY_MIGRATION_STATE || -L $SECURITY_MIGRATION_STATE ]]; then
+      read_security_migration_state >/dev/null || {
+        echo "omarchy-windows-vm: refusing an untrusted Windows security-migration state" >&2
+        return 1
+      }
+      clear_security_migration_state || return 1
+    fi
     return 0
   fi
   assert_mounts_safe || return 1
-  status=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null) || return 0
-  if [[ $status == "running" ]]; then
-    dc up -d --force-recreate
-  elif [[ $status == "created" || $status == "exited" ]]; then
-    dc up --no-start --force-recreate
+  if [[ -e $SECURITY_MIGRATION_STATE || -L $SECURITY_MIGRATION_STATE ]]; then
+    desired=$(read_security_migration_state) || {
+      echo "omarchy-windows-vm: refusing an untrusted Windows security-migration state" >&2
+      return 1
+    }
   else
-    echo "omarchy-windows-vm: transitional Windows lifecycle needs manual review" >&2
-    return 1
+    status=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null) || return 0
+    if [[ $status == "running" ]]; then
+      desired=running
+    elif [[ $status == "created" || $status == "exited" ]]; then
+      desired=stopped
+    else
+      echo "omarchy-windows-vm: transitional Windows lifecycle needs manual review" >&2
+      return 1
+    fi
+    write_security_migration_state "$desired" || return 1
   fi
+  if [[ $desired == "running" ]]; then
+    dc up -d || return 1
+    status=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null) || return 1
+    [[ $status == "running" ]] || return 1
+  else
+    dc up --no-start || return 1
+    status=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null) || return 1
+    [[ $status == "created" || $status == "exited" ]] || return 1
+  fi
+  clear_security_migration_state
 }
 
 __priv_down() { dc down; }
@@ -1025,7 +1089,8 @@ __priv_remove() {
   umount -- "$EXPECTED_SHARED" || return 1
   umount -- "$EXPECTED_STORAGE" || return 1
   docker rmi "$IMAGE" 2>/dev/null || true
-  rm -f "$COMPOSE_FILE"
+  rm -f "$COMPOSE_FILE" "$SECURITY_MIGRATION_STATE"
+  fsync_directory "$RUNTIME_DIR" || return 1
   rmdir -- "$EXPECTED_STORAGE" "$EXPECTED_SHARED" "$CALLER_DATA_ROOT" 2>/dev/null || true
 }
 
