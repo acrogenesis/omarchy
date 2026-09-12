@@ -51,6 +51,38 @@ fi
     log.write_text('')
     result = subprocess.run([str(launcher)], env=dict(environment, FAIL_SOCKET='1'))
     assert result.returncode != 0 and 'desktop ' not in log.read_text()
+    script(binary / 'omarchy-launch-tui', '''#!/bin/bash
+printf '%s\\n' "$@" >>"$TEST_LOG"
+''')
+    script(binary / 'podman', '''#!/bin/bash
+[[ ${FAIL_CONNECTIONS:-0} == 0 ]] || exit 1
+if [[ $* == 'system connection list --format {{.Name}}' ]]; then
+  printf '%s' "${EXISTING_CONNECTIONS:-}"
+else
+  printf '%s\\n' "$*" >>"$TEST_LOG"
+fi
+''')
+    script(launcher, (root / 'bin/omarchy-launch-podman-tui').read_text())
+    log.write_text('')
+    subprocess.run([str(launcher), '--log-file', 'path with spaces'], env=environment, check=True)
+    calls = log.read_text()
+    assert calls.splitlines() == ['systemctl --user start podman.socket',
+                                 'system connection add omarchy-local unix://' + str(endpoint),
+                                 'podman-tui', '--log-file', 'path with spaces'], calls
+    log.write_text('')
+    subprocess.run([str(launcher)], env=dict(environment, EXISTING_CONNECTIONS='my-server'), check=True)
+    assert 'connection add' not in log.read_text()
+    log.write_text('')
+    result = subprocess.run([str(launcher)], env=dict(environment, FAIL_CONNECTIONS='1'))
+    assert result.returncode != 0 and 'podman-tui' not in log.read_text()
+    endpoint.unlink();log.write_text('')
+    subprocess.run([str(launcher)], env=environment, check=True)
+    calls = log.read_text()
+    assert calls.index('stop podman.service') < calls.index('restart podman.socket') < calls.index('podman-tui')
+    log.write_text('')
+    result = subprocess.run([str(launcher)], env=dict(environment, FAIL_SOCKET='1'))
+    assert result.returncode != 0 and 'podman-tui' not in log.read_text()
 print('ok - Desktop reuses the managed API, forwards other commands and preserves launcher arguments')
 print('ok - a missing socket is repaired without stopping containers; service failure prevents launch')
+print('ok - Podman TUI uses the user socket and styled terminal, preserves arguments, and aborts on service failure')
 PY

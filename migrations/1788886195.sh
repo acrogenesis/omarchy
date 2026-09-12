@@ -23,7 +23,7 @@ fi
 
 omarchy-pkg-add podman podman-compose
 if [[ ! -f $HOME/.local/state/omarchy/preinstalls-removed ]]; then
-  omarchy-pkg-add podman-desktop
+  omarchy-pkg-add podman-desktop podman-tui
 fi
 
 # Check every workload before stopping any. Windows keeps its external disk;
@@ -183,6 +183,7 @@ fi
 rm -f "$HOME/.local/share/applications/Docker.desktop"
 if [[ ! -f $HOME/.local/state/omarchy/preinstalls-removed ]]; then
   install -Dm644 "$OMARCHY_PATH/applications/io.podman_desktop.PodmanDesktop.desktop" "$HOME/.local/share/applications/io.podman_desktop.PodmanDesktop.desktop"
+  install -Dm644 "$OMARCHY_PATH/applications/Podman TUI.desktop" "$HOME/.local/share/applications/Podman TUI.desktop"
 fi
 if [[ -f $HOME/.local/share/applications/windows-vm.desktop ]]; then
   sed -i 's/Windows VM via Docker/Windows VM via Podman/' "$HOME/.local/share/applications/windows-vm.desktop"

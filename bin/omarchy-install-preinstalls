@@ -22,6 +22,7 @@ if gum confirm "Are you sure you want to restore all preinstalled web apps, TUI 
     kdenlive \
     moonlight-qt \
     podman-desktop \
+    podman-tui \
     omacut \
     omacalc \
     omawrite; then

@@ -73,6 +73,7 @@ verify_runtime_tools() {
   [[ $(timeout 10 podman info --format '{{.Host.Security.Rootless}}') == true ]] ||
     fail "Podman runs rootless for the desktop user"
   podman-compose --version >/dev/null || fail "Podman Compose is installed"
+  podman-tui version >/dev/null || fail "Podman TUI is installed"
   systemctl --user is-enabled --quiet podman.socket podman-restart.service ||
     fail "Podman user services are enabled"
   [[ $(pacman -Qqo /usr/bin/docker) == "podman-docker" ]] || fail "Docker command must be provided by Podman"

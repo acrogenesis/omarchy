@@ -20,7 +20,7 @@ To install, say, Ruby, you'd run `mise use -g ruby`, which will both install Rub
 
 ## Podman
 
-[Podman](https://podman.io/) runs containers without a root daemon. Use `podman run`, `podman build`, and `podman-compose up`; the `d` alias also runs Podman. Omarchy includes Podman Compose and [Podman Desktop](https://podman-desktop.io/) to manage your containers and images with `Super + Shift + D`.
+[Podman](https://podman.io/) runs containers without a root daemon. Use `podman run`, `podman build`, and `podman-compose up`; the `d` alias also runs Podman. Press `Super + Shift + D` for [Podman TUI](https://github.com/containers/podman-tui), the terminal interface for containers, pods, images, volumes, and networks. You can also launch it with `omarchy launch podman-tui`. [Podman Desktop](https://podman-desktop.io/) remains available from the application launcher or `omarchy launch podman` for graphical management.
 
 The `docker` command is provided by `podman-docker` and forwards to Podman, including in scripts. You can keep using commands such as `docker ps`, `docker build`, and `docker compose up`. Docker Engine is not installed; compatibility follows Podman's supported commands and Compose options. Docker SDK clients in the desktop session use the rootless socket through `DOCKER_HOST`. An explicitly configured endpoint is preserved. For an SSH session or a tool with its own environment, set `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock` as needed.
 
