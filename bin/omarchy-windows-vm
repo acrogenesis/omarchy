@@ -650,6 +650,37 @@ rollback_new_caller_mounts() {
   return "$failed"
 }
 
+fsync_regular_file() {
+  /usr/bin/python3 - "$1" <<'PY'
+import os
+import stat
+import sys
+
+
+descriptor = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+try:
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        raise SystemExit("refusing to sync a non-regular file")
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
+fsync_directory() {
+  /usr/bin/python3 - "$1" <<'PY'
+import os
+import sys
+
+
+descriptor = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    os.fsync(descriptor)
+finally:
+    os.close(descriptor)
+PY
+}
+
 write_compose_atomically() (
   local ram="$1" cores="$2" disk="$3" username="$4" password="$5" tz="$6"
   local tmp="" rc esc_password
@@ -712,8 +743,10 @@ EOF
   if ((EUID == 0)); then
     chown root:root "$tmp" || exit 1
   fi
+  fsync_regular_file "$tmp" || exit 1
   mv -fT -- "$tmp" "$COMPOSE_FILE" || exit 1
   tmp=""
+  fsync_directory "$RUNTIME_DIR" || exit 1
   trap - EXIT
 )
 
@@ -815,7 +848,9 @@ rewrite_compose_security() {
       return 1
     }
   fi
+  fsync_regular_file "$tmp" || { rm -f "$tmp"; return 1; }
   mv -fT -- "$tmp" "$COMPOSE_FILE" || { rm -f "$tmp"; return 1; }
+  fsync_directory "$RUNTIME_DIR"
 }
 
 assert_compose_trusted() {
@@ -893,7 +928,26 @@ assert_mounts_safe() {
 
 __priv_up() { assert_mounts_safe && dc up -d; }
 
-__priv_secure() { assert_mounts_safe; }
+__priv_secure() {
+  local status
+  if [[ ! -f $COMPOSE_FILE ]]; then
+    if docker inspect "$CONTAINER" >/dev/null 2>&1; then
+      echo "omarchy-windows-vm: an existing Windows container has no trusted Compose definition" >&2
+      return 1
+    fi
+    return 0
+  fi
+  assert_mounts_safe || return 1
+  status=$(docker inspect --format='{{.State.Status}}' "$CONTAINER" 2>/dev/null) || return 0
+  if [[ $status == "running" ]]; then
+    dc up -d --force-recreate
+  elif [[ $status == "created" || $status == "exited" ]]; then
+    dc up --no-start --force-recreate
+  else
+    echo "omarchy-windows-vm: transitional Windows lifecycle needs manual review" >&2
+    return 1
+  fi
+}
 
 __priv_down() { dc down; }
 
@@ -1063,7 +1117,8 @@ write_credentials() {
   umask 077
   tmp=$(mktemp "$dir/.credentials.XXXXXX") || { umask "$old_umask"; return 1; }
   if ! printf 'USERNAME=%s\nPASSWORD=%s\n' "$username" "$password" >"$tmp" ||
-    ! chmod 0600 "$tmp" || ! mv -fT -- "$tmp" "$CREDENTIALS_FILE"; then
+    ! chmod 0600 "$tmp" || ! fsync_regular_file "$tmp" ||
+    ! mv -fT -- "$tmp" "$CREDENTIALS_FILE" || ! fsync_directory "$dir"; then
     rm -f -- "$tmp"
     umask "$old_umask"
     return 1
@@ -1118,16 +1173,15 @@ migrate_legacy_compose() {
     echo "Re-run: omarchy-windows-vm install" >&2
     return 1
   fi
-  rm -f "$LEGACY_COMPOSE_FILE"
+  rm -f "$LEGACY_COMPOSE_FILE" || return 1
+  fsync_directory "$(dirname -- "$LEGACY_COMPOSE_FILE")"
 }
 
 secure_windows_migration() {
   if [[ ! -f $COMPOSE_FILE && -f $LEGACY_COMPOSE_FILE ]]; then
     migrate_legacy_compose || return 1
   fi
-  if [[ -f $COMPOSE_FILE ]]; then
-    priv secure || return 1
-  fi
+  priv secure
 }
 
 # --- prerequisites -----------------------------------------------------------

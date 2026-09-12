@@ -3,7 +3,6 @@
 import hashlib
 import json
 import os
-import pwd
 import re
 import secrets
 import stat
@@ -471,6 +470,33 @@ def target_owned(container, target, intent):
             labels.get(OWNERSHIP_LABEL) == intent["target_ownership"])
 
 
+def volume_guard_name(intent):
+    ownership = intent.get("target_ownership")
+    if not re.fullmatch(r"[a-f0-9]{64}", ownership or ""):
+        raise ValueError("Interrupted rootless Docker ownership is invalid")
+    return f"omarchy-volume-guard-{ownership}"
+
+
+def volume_guard_owned(container, guard, intent):
+    name = volume_guard_name(intent)
+    return (guard.get("Name") == f"/{name}" and
+            target_owned(container, guard, intent) and
+            target_never_started(guard))
+
+
+def remove_volume_guard(container, intent):
+    name = volume_guard_name(intent)
+    if not exists("container", name):
+        return
+    guard = inspect(TARGET, "container", name)
+    if (not re.fullmatch(r"[a-f0-9]{64}", guard.get("Id") or "") or
+            not volume_guard_owned(container, guard, intent)):
+        raise ValueError(f'{container["Name"].lstrip("/")}: rootless volume guard changed or ran; inspect both engines')
+    run(TARGET, "rm", "--force", guard["Id"])
+    if exists("container", name):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: rootless volume guard name was replaced during cleanup')
+
+
 def completed(container, target):
     if (target["Config"].get("Labels") or {}).get(LABEL) != container["Id"]:
         return False
@@ -512,6 +538,11 @@ def record_completion(container, source_state, target_running):
         raise RuntimeError(f'{container["Name"].lstrip("/")}: Docker source changed before completion; inspect both engines')
     container = latest_source
     target = inspect(TARGET, "container", container["Name"].lstrip("/"))
+    if target_running:
+        if target["State"].get("Running") is not True:
+            raise RuntimeError(f'{container["Name"].lstrip("/")}: destination stopped before completion')
+    elif not target_never_started(target):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: stopped destination ran before completion')
     write_private_json(completion_path(container["Id"]), {
         "target": target["Id"], "source": stopped_identity(source_state),
         "target_running": target_running,
@@ -603,15 +634,12 @@ def validate_windows_exception(container):
     mounts_by_destination = {mount.get("Destination"): mount for mount in mounts}
     storage = mounts_by_destination.get("/storage") or {}
     shared = mounts_by_destination.get("/shared") or {}
-    account = pwd.getpwuid(os.getuid())
-    protected = f"/var/lib/omarchy/windows/mounts/users/{account.pw_uid}"
-    legacy = account.pw_dir
-    previous = f'{Path(account.pw_dir).parent}/.omarchy-windows/users/{account.pw_uid}'
-    allowed_mounts = {
-        (f"{protected}/storage", f"{protected}/shared"),
-        (f"{legacy}/.windows", f"{legacy}/Windows"),
-        (f"{previous}/storage", f"{previous}/shared"),
-    }
+    protected = f"/var/lib/omarchy/windows/mounts/users/{os.getuid()}"
+    environment = config.get("Env") or []
+    valid_environment = (isinstance(environment, list) and
+                         all(isinstance(entry, str) and "=" in entry for entry in environment) and
+                         len({entry.split("=", 1)[0] for entry in environment}) == len(environment))
+    environment_map = dict(entry.split("=", 1) for entry in environment) if valid_environment else {}
     networks = container.get("NetworkSettings", {}).get("Networks") or {}
     if (name != "omarchy-windows" or
             not re.fullmatch(r"[a-f0-9]{64}", container["Id"]) or
@@ -633,7 +661,9 @@ def validate_windows_exception(container):
             (host.get("RestartPolicy") or {}).get("Name") != "no" or
             len(mounts) != 2 or any(mount.get("Type") != "bind" for mount in mounts) or
             any(mount.get("RW") is not True for mount in mounts) or
-            (storage.get("Source"), shared.get("Source")) not in allowed_mounts or
+            (storage.get("Source"), shared.get("Source")) !=
+            (f"{protected}/storage", f"{protected}/shared") or
+            environment_map.get("PROTECT") != "Y" or
             set(networks) != {"windows_default"}):
         raise ValueError("omarchy-windows: the rootful exception does not match Omarchy's managed Windows VM")
     return name
@@ -962,6 +992,8 @@ def migrate(container):
         target = inspect(TARGET, "container", name)
         container = refresh_source(container)
         if completed(container, target):
+            if intent is not None:
+                remove_volume_guard(container, intent)
             clear_migration_intent(identity)
             print(f"{name}: already migrated")
             return
@@ -970,6 +1002,8 @@ def migrate(container):
         if intent is None or not target_owned(container, target, intent):
             raise ValueError(f"{name}: an existing rootless Docker container needs review; no owned transfer matches it")
         if intent.get("destination") is not None:
+            if exists("container", volume_guard_name(intent)):
+                raise ValueError(f"{name}: completed volume transfer still has a guard; inspect both engines")
             resume_verified_migration(container, target, intent)
             return
         if not target_never_started(target):
@@ -978,6 +1012,8 @@ def migrate(container):
         run(TARGET, "rm", "--force", owned_id)
         if exists("container", name):
             raise ValueError(f"{name}: rootless destination name was replaced during recovery")
+    if intent is not None:
+        remove_volume_guard(container, intent)
     if intent is not None and intent["start_attempted"]:
         raise ValueError(f"{name}: destination start was attempted; inspect both engines")
     if completion_path(identity).exists():
@@ -988,6 +1024,7 @@ def migrate(container):
     planned = planned_source(container, intent)
     running = intent["target_running"] if intent is not None else bool(container["State"]["Running"])
     created_id = None
+    guard_id = None
     image = None
     image_committed = False
     image_loaded = False
@@ -1080,26 +1117,44 @@ def migrate(container):
                 mount_arg += ",readonly"
             arguments += ["--mount", mount_arg]
         arguments.append(image)
-        run(*arguments)
-        created_target = inspect(TARGET, "container", name)
-        if (not re.fullmatch(r"[a-f0-9]{64}", created_target.get("Id") or "") or
-                not target_never_started(created_target) or not target_owned(planned, created_target, intent)):
-            raise RuntimeError(f"{name}: rootless destination ownership could not be proven")
-        created_id = created_target["Id"]
-        # The stopped destination pins every volume before mutation, so another
-        # Docker client cannot remove and replace its predictable name between
-        # ownership verification and clearing or transfer. volume-nocopy keeps
-        # the committed image from changing the restored contents.
-        verify_runtime(planned, intent["target_ownership"])
+        if pending_volumes:
+            guard_name = volume_guard_name(intent)
+            guard_arguments = [
+                TARGET, "create", "--pull=never", "--name", guard_name,
+                "--label", f"{LABEL}={identity}",
+                "--label", f'{OWNERSHIP_LABEL}={intent["target_ownership"]}',
+                "--privileged=false", "--read-only", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", "--ipc=private",
+                "--cgroupns=private", "--network=none", "--runtime", "runc",
+                "--restart", "no", "--entrypoint", f"/.{guard_name}",
+            ]
+            for mount in planned.get("Mounts", []):
+                target = destination_volume(planned, mount)
+                mount_arg = f'type=volume,src={target},dst={mount["Destination"]},volume-nocopy'
+                if not mount.get("RW"):
+                    mount_arg += ",readonly"
+                guard_arguments += ["--mount", mount_arg]
+            guard_arguments.append(image)
+            run(*guard_arguments)
+            guard = inspect(TARGET, "container", guard_name)
+            if (not re.fullmatch(r"[a-f0-9]{64}", guard.get("Id") or "") or
+                    not volume_guard_owned(planned, guard, intent)):
+                raise RuntimeError(f"{name}: rootless volume guard ownership could not be proven")
+            guard_id = guard["Id"]
+            for target, pending in pending_volumes.items():
+                volume, ownership, _record = pending
+                verify_volume_definition(volume, target, ownership)
+                if set(volume_users(target)) != {guard_id}:
+                    raise RuntimeError(f"{name}: destination volume guard changed; retained it for inspection")
         for target, pending in pending_volumes.items():
             volume, ownership, record = pending
             verify_volume_definition(volume, target, ownership)
-            if volume_users(target) != [created_id]:
-                raise RuntimeError(f"{name}: destination volume pin changed; retained it for inspection")
+            if set(volume_users(target)) != {guard_id}:
+                raise RuntimeError(f"{name}: destination volume guard changed; retained it for inspection")
             clear_volume(target)
             verify_volume_definition(volume, target, ownership)
-            if volume_users(target) != [created_id]:
-                raise RuntimeError(f"{name}: destination volume pin changed; retained it for inspection")
+            if set(volume_users(target)) != {guard_id}:
+                raise RuntimeError(f"{name}: destination volume guard changed; retained it for inspection")
             digest = transfer_volume(volume, target)
             record["digest"] = digest
             persist_migration_intent(container, intent)
@@ -1114,9 +1169,36 @@ def migrate(container):
         if (stopped_identity(latest_source["State"]) != stopped_identity(state) or
                 snapshot_digest(latest_source) != snapshot_digest(container)):
             raise RuntimeError(f"{name}: Docker source changed during transfer; inspect both engines")
+        if guard_id is not None:
+            guard = inspect(TARGET, "container", guard_id)
+            if not volume_guard_owned(planned, guard, intent):
+                raise RuntimeError(f"{name}: rootless volume guard changed or ran during transfer")
+        run(*arguments)
+        target = inspect(TARGET, "container", name)
+        if (not re.fullmatch(r"[a-f0-9]{64}", target.get("Id") or "") or
+                not target_never_started(target) or not target_owned(planned, target, intent)):
+            raise RuntimeError(f"{name}: rootless destination ownership could not be proven")
+        created_id = target["Id"]
+        verify_runtime(planned, intent["target_ownership"])
+        for target_name, pending in pending_volumes.items():
+            volume, ownership, _record = pending
+            verify_volume_definition(volume, target_name, ownership)
+            if set(volume_users(target_name)) != {guard_id, created_id}:
+                raise RuntimeError(f"{name}: destination volume references changed; retained it for inspection")
+        if guard_id is not None:
+            guard = inspect(TARGET, "container", guard_id)
+            if not volume_guard_owned(planned, guard, intent):
+                raise RuntimeError(f"{name}: rootless volume guard changed or ran during finalization")
+            run(TARGET, "rm", "--force", guard_id)
+            guard_id = None
+            if exists("container", volume_guard_name(intent)):
+                raise RuntimeError(f"{name}: rootless volume guard name was replaced during finalization")
+        for target_name in pending_volumes:
+            if set(volume_users(target_name)) != {created_id}:
+                raise RuntimeError(f"{name}: final destination volume references changed; retained it for inspection")
         target = inspect(TARGET, "container", created_id)
-        if not target_owned(planned, target, intent):
-            raise RuntimeError(f"{name}: rootless destination ownership changed during transfer")
+        if not target_never_started(target) or not target_owned(planned, target, intent):
+            raise RuntimeError(f"{name}: rootless destination changed or ran during finalization")
         intent["destination"] = {"id": created_id, "snapshot": snapshot_digest(target)}
         persist_migration_intent(container, intent)
         source_after = inspect(SOURCE, "container", identity)
@@ -1148,16 +1230,52 @@ def migrate(container):
                   "Inspect rootless Docker before resuming the rootful copy or retrying migration.", file=sys.stderr)
             raise
         recovery_failed = False
+        destination_may_have_run = False
         try:
             owned_target = inspect(TARGET, "container", created_id or name)
             if not target_owned(planned, owned_target, intent):
+                destination_may_have_run = True
                 raise RuntimeError("rootless destination ownership changed")
+            if not target_never_started(owned_target):
+                destination_may_have_run = True
+                raise RuntimeError("rootless destination may have run")
             run(TARGET, "rm", "--force", owned_target["Id"])
+            if exists("container", name):
+                destination_may_have_run = True
+                raise RuntimeError("rootless destination name was replaced")
+        except subprocess.CalledProcessError:
+            if exists("container", name):
+                destination_may_have_run = True
+                recovery_failed = True
+                print(f"{name}: destination identity was replaced; retained both stores for review", file=sys.stderr)
+        except Exception:
+            recovery_failed = True
+            print(f"{name}: destination cleanup was not ownership-safe; retained it for inspection", file=sys.stderr)
+        try:
+            guard_name = volume_guard_name(intent)
+            if exists("container", guard_name):
+                guard = inspect(TARGET, "container", guard_name)
+                if ((guard_id is not None and guard.get("Id") != guard_id) or
+                        not volume_guard_owned(planned, guard, intent)):
+                    destination_may_have_run = True
+                    raise RuntimeError("rootless volume guard changed or ran")
+                run(TARGET, "rm", "--force", guard["Id"])
+                if exists("container", guard_name):
+                    destination_may_have_run = True
+                    raise RuntimeError("rootless volume guard name was replaced")
         except subprocess.CalledProcessError:
             pass
         except Exception:
             recovery_failed = True
-            print(f"{name}: destination cleanup was not ownership-safe; retained it for inspection", file=sys.stderr)
+            print(f"{name}: volume guard cleanup was not ownership-safe; retained it for inspection", file=sys.stderr)
+        if destination_may_have_run:
+            try:
+                intent["start_attempted"] = True
+                persist_migration_intent(container, intent)
+            except Exception:
+                pass
+            print(f"{name}: a rootless migration container may have run; both stores were retained for review", file=sys.stderr)
+            raise
         recovery = []
         if image_loaded:
             recovery.append((TARGET, "image", "rm", image))

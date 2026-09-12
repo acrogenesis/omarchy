@@ -58,6 +58,9 @@ MODE_LOG="$test_dir/mode" OMARCHY_WINDOWS_DIR="$test_dir" ROOT="$ROOT" bash -c '
   [[ $(<"$MODE_LOG") == "secure" ]]
   valid_priv_action secure
   rm "$OMARCHY_WINDOWS_DIR/docker-compose.yml"
+  : >"$MODE_LOG"
+  secure_windows_migration
+  [[ $(<"$MODE_LOG") == "secure" ]]
   mkdir -p "$HOME/.config/windows"
   touch "$HOME/.config/windows/docker-compose.yml"
   migrate_legacy_compose() { return 23; }

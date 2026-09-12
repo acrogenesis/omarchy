@@ -7,8 +7,10 @@ python3 - <<'PY'
 import copy
 import importlib.util
 import os
+import re
 import sys
 import tempfile
+from pathlib import Path
 
 
 sys.dont_write_bytecode = True
@@ -202,6 +204,7 @@ windows = copy.deepcopy(container)
 windows["Name"] = "/omarchy-windows"
 windows["Id"] = "f" * 64
 windows["Config"]["Image"] = "dockurr/windows"
+windows["Config"]["Env"] = ["VERSION=11", "PROTECT=Y"]
 windows["Config"]["Labels"] = {
     "com.docker.compose.project": "windows",
     "com.docker.compose.service": "windows",
@@ -233,12 +236,11 @@ windows["Mounts"] = [
 windows["NetworkSettings"]["Networks"] = {"windows_default": {}}
 assert migration.validate_windows_exception(windows) == "omarchy-windows"
 legacy_windows = copy.deepcopy(windows)
-account = migration.pwd.getpwuid(uid)
-legacy_windows["Mounts"][0]["Source"] = f"{account.pw_dir}/.windows"
-legacy_windows["Mounts"][1]["Source"] = f"{account.pw_dir}/Windows"
-assert migration.validate_windows_exception(legacy_windows) == "omarchy-windows"
+legacy_windows["Mounts"][0]["Source"] = f"{Path.home()}/.windows"
+legacy_windows["Mounts"][1]["Source"] = f"{Path.home()}/Windows"
 for mutation in ("image", "labels", "devices", "extra-device", "device-rules", "security-opt",
-                 "mounts", "mount-source", "restart", "network-mode", "extra-network", "autoremove"):
+                 "mounts", "mount-source", "restart", "network-mode", "extra-network", "autoremove",
+                 "missing-protect", "duplicate-protect"):
     changed = copy.deepcopy(windows)
     if mutation == "image":
         changed["Config"]["Image"] = "example/custom"
@@ -262,6 +264,10 @@ for mutation in ("image", "labels", "devices", "extra-device", "device-rules", "
         changed["HostConfig"]["NetworkMode"] = "host"
     elif mutation == "extra-network":
         changed["NetworkSettings"]["Networks"]["unexpected"] = {}
+    elif mutation == "missing-protect":
+        changed["Config"]["Env"] = ["VERSION=11"]
+    elif mutation == "duplicate-protect":
+        changed["Config"]["Env"] += ["PROTECT=N"]
     else:
         changed["HostConfig"]["AutoRemove"] = True
     try:
@@ -270,6 +276,12 @@ for mutation in ("image", "labels", "devices", "extra-device", "device-rules", "
         pass
     else:
         raise AssertionError(f"unmanaged Windows exception passed: {mutation}")
+try:
+    migration.validate_windows_exception(legacy_windows)
+except ValueError:
+    pass
+else:
+    raise AssertionError("legacy home-mounted Windows runtime passed the protected exception")
 print("ok - only Omarchy's managed Windows runtime qualifies for the rootful exception")
 
 source_volume = {"Name": "project-data", "Driver": "local", "Options": None,
@@ -368,6 +380,10 @@ stopped["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
 target = copy.deepcopy(stopped)
 target["Id"] = "b" * 64
 target["Config"]["Labels"][migration.LABEL] = stopped["Id"]
+target["State"] = {
+    "Status": "created", "Running": False, "StartedAt": "0001-01-01T00:00:00Z",
+    "FinishedAt": "0001-01-01T00:00:00Z", "ExitCode": 0,
+}
 with tempfile.TemporaryDirectory() as directory:
     os.environ["XDG_STATE_HOME"] = directory
     migration.inspect = lambda engine, kind, name: copy.deepcopy(stopped if engine == migration.SOURCE else target)
@@ -415,7 +431,7 @@ with tempfile.TemporaryDirectory() as directory:
         overlap_source if engine == migration.SOURCE else overlap_target
     )
     migration.record_completion(overlap_source, overlap_source["State"], True)
-    migration.exists = lambda kind, name: kind == "container"
+    migration.exists = lambda kind, name: kind == "container" and name == "project-worker"
     migration.migrate(overlap_source)
     assert not migration.intent_path(overlap_source["Id"]).exists()
 
@@ -613,8 +629,11 @@ def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image
 
     migration.inspect = fake_inspect
     migration.run = fake_run
-    migration.exists = lambda kind, name: ((kind == "container" and current_target is not None) or
-                                            (preexisting_image and kind == "image"))
+    migration.exists = lambda kind, name: (
+        (kind == "container" and current_target is not None and
+         name in (current_target.get("Id"), current_target.get("Name", "").lstrip("/"))) or
+        (preexisting_image and kind == "image")
+    )
     migration.pipe = lambda producer, consumer: pipes.append((producer, consumer))
     if after_start:
         migration.verify_runtime = lambda value, ownership=None: None
@@ -676,9 +695,9 @@ print("ok - a preexisting target image digest is reused without claiming or dele
 
 calls, source, pipes, intent_retained = exercise_failed_transfer(False, replace_target=True)
 assert not any(call[:3] == (migration.TARGET, "rm", "--force") for call in calls)
-assert source["State"]["Running"]
+assert not source["State"]["Running"]
 assert intent_retained
-print("ok - rollback never deletes a concurrently replaced destination container")
+print("ok - a concurrently replaced destination is retained without restarting its rootful source")
 
 retry_original = copy.deepcopy(container)
 retry_original["Id"] = "9" * 64
@@ -824,6 +843,7 @@ source_volume = {
 }
 target_volume = None
 pinned_target = None
+pinned_guard = None
 pin_events = []
 
 
@@ -836,13 +856,14 @@ def pin_inspect(engine, kind, name):
         if target_volume is None:
             raise migration.subprocess.CalledProcessError(1, ["docker", "inspect"])
         return copy.deepcopy(target_volume)
-    if pinned_target is None:
-        raise migration.subprocess.CalledProcessError(1, ["docker", "inspect"])
-    return copy.deepcopy(pinned_target)
+    for candidate in (pinned_target, pinned_guard):
+        if candidate is not None and name in (candidate["Id"], candidate["Name"].lstrip("/")):
+            return copy.deepcopy(candidate)
+    raise migration.subprocess.CalledProcessError(1, ["docker", "inspect"])
 
 
 def pin_run(*args, **kwargs):
-    global target_volume, pinned_target
+    global target_volume, pinned_target, pinned_guard
     pin_events.append(args)
     if args[:2] == (migration.SOURCE, "update"):
         current_pinned_source["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
@@ -869,27 +890,43 @@ def pin_run(*args, **kwargs):
             if argument == "--label":
                 key, value = args[index + 1].split("=", 1)
                 labels[key] = value
-        pinned_target = {
-            "Id": "6" * 64, "Config": {"Labels": labels},
+        created_name = args[args.index("--name") + 1]
+        created = {
+            "Id": ("8" if created_name.startswith("omarchy-volume-guard-") else "6") * 64,
+            "Name": f"/{created_name}", "Config": {"Labels": labels},
             "State": {"Status": "created", "Running": False,
                       "StartedAt": "0001-01-01T00:00:00Z",
                       "FinishedAt": "0001-01-01T00:00:00Z"},
         }
+        if created_name.startswith("omarchy-volume-guard-"):
+            pinned_guard = created
+        else:
+            pinned_target = created
     elif args[:3] == (migration.TARGET, "container", "ls"):
-        return pinned_target["Id"] if pinned_target is not None else ""
+        return "\n".join(candidate["Id"] for candidate in (pinned_guard, pinned_target)
+                         if candidate is not None)
+    elif args[:3] == (migration.TARGET, "rm", "--force"):
+        if pinned_guard is not None and args[3] == pinned_guard["Id"]:
+            pinned_guard = None
+        elif pinned_target is not None and args[3] == pinned_target["Id"]:
+            pinned_target = None
     elif args[:2] == (migration.TARGET, "start"):
         pinned_target["State"]["Status"] = "running"
         pinned_target["State"]["Running"] = True
+
+
+def pin_exists(kind, name):
+    if kind == "volume":
+        return target_volume is not None
+    return any(candidate is not None and name in (candidate["Id"], candidate["Name"].lstrip("/"))
+               for candidate in (pinned_guard, pinned_target))
 
 
 with tempfile.TemporaryDirectory() as directory:
     os.environ["XDG_STATE_HOME"] = directory
     migration.inspect = pin_inspect
     migration.run = pin_run
-    migration.exists = lambda kind, name: (
-        (kind == "container" and pinned_target is not None) or
-        (kind == "volume" and target_volume is not None)
-    )
+    migration.exists = pin_exists
     migration.pipe = lambda producer, consumer: pin_events.append(("pipe",))
     migration.verify_runtime = lambda value, ownership=None: None
     migration.verify_volume = lambda target, digest: None
@@ -899,16 +936,27 @@ with tempfile.TemporaryDirectory() as directory:
     migration.record_completion = lambda source, state, running: None
     migration.migrate(pinned_source)
 
-create_index = next(index for index, event in enumerate(pin_events)
-                    if event[:2] == (migration.TARGET, "create"))
+create_indexes = [index for index, event in enumerate(pin_events)
+                  if event[:2] == (migration.TARGET, "create")]
+assert len(create_indexes) == 2
+guard_index, create_index = create_indexes
 clear_index = pin_events.index(("clear", "project-data"))
 transfer_index = pin_events.index(("transfer", "project-data"))
-assert create_index < clear_index < transfer_index
+assert guard_index < clear_index < transfer_index < create_index
+guard_call = pin_events[guard_index]
 create_call = pin_events[create_index]
+assert "--network=none" in guard_call
+assert "--read-only" in guard_call and "--cap-drop" in guard_call
+guard_entrypoint = guard_call[guard_call.index("--entrypoint") + 1]
+assert re.fullmatch(r"/\.omarchy-volume-guard-[a-f0-9]{64}", guard_entrypoint)
 assert create_call[create_call.index("--runtime") + 1] == "runc"
 assert any(event[:3] == (migration.TARGET, "container", "ls")
-           for event in pin_events[create_index + 1:clear_index])
-print("ok - the stopped destination pins each owned volume before clearing or transfer")
+           for event in pin_events[guard_index + 1:clear_index])
+guard_remove_index = next(index for index, event in enumerate(pin_events)
+                          if event[:3] == (migration.TARGET, "rm", "--force") and event[3] == "8" * 64)
+start_index = pin_events.index((migration.TARGET, "start", "pinned-volume"))
+assert create_index < guard_remove_index < start_index
+print("ok - an inert random guard pins volumes while the application container does not yet exist")
 
 batch = []
 for index in (1, 2):

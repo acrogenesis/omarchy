@@ -72,7 +72,8 @@ fi
 
 # Migrate any legacy user-side definition, pin its data into the protected root
 # anchors, and rewrite the credential-bearing Compose file to root:root 0600.
-# This performs no Docker lifecycle action.
+# An existing managed VM is recreated from that hardened definition while its
+# running or stopped lifecycle is preserved.
 /usr/bin/omarchy-windows-vm __migration-secure
 
 sudo /usr/bin/systemctl daemon-reload
@@ -109,10 +110,24 @@ verify_rootful_listeners() {
   sudo /usr/bin/python3 "$listener_verifier" "$main_pid"
 }
 
+verify_rootful_socket_unit() {
+  local socket_group socket_listen socket_mode socket_user
+  socket_user=$(sudo /usr/bin/systemctl show docker.socket --property=SocketUser --value)
+  socket_group=$(sudo /usr/bin/systemctl show docker.socket --property=SocketGroup --value)
+  socket_mode=$(sudo /usr/bin/systemctl show docker.socket --property=SocketMode --value)
+  socket_listen=$(sudo /usr/bin/systemctl show docker.socket --property=Listen --value)
+  if [[ $socket_user != "root" || $socket_group != "root" || $socket_mode != "0600" ||
+    $socket_listen != "/run/docker.sock (Stream)" ]]; then
+    echo "The effective rootful Docker socket unit is not root-only. Remove custom overrides before migration." >&2
+    return 1
+  fi
+}
+
 # Load the packaged socket policy and prevent new unprivileged rootful clients
 # before taking the source inventory. Existing accepted connections are closed
 # by the daemon restart after every workload has been safely quiesced below.
 restrict_rootful_socket
+verify_rootful_socket_unit
 sudo /usr/bin/docker --host "$source_host" info >/dev/null
 verify_rootful_listeners
 remove_legacy_docker_group
@@ -192,6 +207,7 @@ fi
 sudo /usr/bin/systemctl restart docker.service
 sudo /usr/bin/systemctl start docker.socket
 restrict_rootful_socket
+verify_rootful_socket_unit
 verify_rootful_listeners
 
 revoked_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)

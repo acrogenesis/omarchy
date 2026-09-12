@@ -72,6 +72,12 @@ transfer_line=$(grep -n '^  /usr/bin/python3 "$migrator" "${container_names\[@\]
   fail "rootful socket policy is not rechecked after daemon restart"
 (( $(grep -c '^verify_rootful_listeners$' "$migration") == 2 )) ||
   fail "rootful Docker listeners are not rechecked after daemon restart"
+(( $(grep -c '^verify_rootful_socket_unit$' "$migration") == 2 )) ||
+  fail "the effective rootful socket unit is not rechecked after daemon restart"
+for property in SocketUser SocketGroup SocketMode Listen; do
+  grep -q -- "--property=$property" "$migration" ||
+    fail "migration does not verify effective docker.socket $property"
+done
 grep -q -- '--restore-windows "$windows_id"' "$migration" ||
   fail "a running Windows VM is not restored after rootful connection revocation"
 pass "migration serializes ownership, secures Windows, and revokes existing rootful connections"

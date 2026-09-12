@@ -85,7 +85,7 @@ grep -q 'PASSWORD: ".*\$\$.*"' "$COMPOSE" || fail "dollar not escaped"
 [[ $(unescape "$(read_compose_value PASSWORD "$COMPOSE")") == "$tricky" ]] || fail "password did not round-trip"
 pass "password with quote, backslash, and dollar round-trips"
 
-for action in write_compose up up_wait down status remove; do
+for action in write_compose up up_wait down status remove secure; do
   valid_priv_action "$action" || fail "known action rejected: $action"
 done
 for action in '/../evil/x' bogus 'up;rm' '' '__priv_up'; do
@@ -161,6 +161,33 @@ chmod 0666 "$COMPOSE"
 assert_mounts_safe 2>/dev/null && fail "writable compose accepted"
 chmod 0640 "$COMPOSE"
 pass "bring-up rejects tampered, duplicate, unprotected, and writable compose inputs"
+
+# The one-time security migration replaces the live container from the trusted
+# hardened definition and preserves whether it was running or stopped.
+reset_case
+prepare_user_mount_sources
+write 8G 4 64G secure-user secure-pass UTC
+secure_log="$TMPDIR/secure-compose"
+windows_status=running
+docker() {
+  if [[ $1 == inspect && ${2:-} == --format=* ]]; then
+    printf '%s' "$windows_status"
+    return 0
+  fi
+  [[ $1 == inspect ]]
+}
+dc() { printf '%s\n' "$*" >>"$secure_log"; }
+__priv_secure
+[[ $(tail -n1 "$secure_log") == "up -d --force-recreate" ]] || fail "running VM was not recreated running"
+windows_status=exited
+__priv_secure
+[[ $(tail -n1 "$secure_log") == "up --no-start --force-recreate" ]] || fail "stopped VM was not recreated stopped"
+rm -f "$COMPOSE"
+__priv_secure 2>/dev/null && fail "live Windows container without trusted Compose passed migration"
+docker() { [[ $1 == inspect ]] && return 1; }
+__priv_secure || fail "an absent Windows VM required a Compose definition"
+unset -f docker dc
+pass "security migration recreates hardened Windows while preserving its lifecycle"
 
 # Both sources are pinned before a bind; bad symlinks stay untouched.
 reset_case
