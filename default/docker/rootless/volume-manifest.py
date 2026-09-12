@@ -1,5 +1,6 @@
 """Fingerprint a quiesced volume, using the caller's numeric UID/GID namespace."""
 
+import ctypes
 import hashlib
 import json
 import os
@@ -62,10 +63,27 @@ def clear(root):
         remove(child)
 
 
+def sync_filesystem(root):
+    root = Path(root)
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError("volume root is not a directory")
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.syncfs(descriptor) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), root)
+    finally:
+        os.close(descriptor)
+
+
 if __name__ == '__main__':
     if sys.argv[1:2] == ["--clear"] and len(sys.argv) == 3:
         clear(sys.argv[2])
+    elif sys.argv[1:2] == ["--sync"] and len(sys.argv) == 3:
+        sync_filesystem(sys.argv[2])
     elif len(sys.argv) == 2:
         print(fingerprint(sys.argv[1]))
     else:
-        raise SystemExit("usage: volume-manifest.py [--clear] ROOT")
+        raise SystemExit("usage: volume-manifest.py [--clear|--sync] ROOT")

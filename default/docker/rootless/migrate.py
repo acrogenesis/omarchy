@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 from copy import deepcopy
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from pathlib import Path
 LABEL = "io.omarchy.rootless-docker.source-id"
 OWNERSHIP_LABEL = "io.omarchy.rootless-docker.ownership"
 VOLUME_LABEL = "io.omarchy.rootless-docker.source-volume"
+VOLUME_EVENT_LABEL = "io.omarchy.rootless-docker.event-marker"
 SOURCE = "source"
 TARGET = "target"
 TRUSTED_MANIFEST = "/usr/share/omarchy/default/docker/rootless/volume-manifest.py"
@@ -35,6 +37,10 @@ RESOURCE_FLAGS = {
     "MemorySwap": "--memory-swap", "CpuShares": "--cpu-shares",
     "CpuQuota": "--cpu-quota", "CpuPeriod": "--cpu-period",
     "CpusetCpus": "--cpuset-cpus", "CpusetMems": "--cpuset-mems",
+}
+DEFAULT_ZERO_HOST_CONFIG = {
+    "BlkioWeight", "CpuCount", "CpuPercent", "CpuRealtimePeriod", "CpuRealtimeRuntime",
+    "IOMaximumBandwidth", "IOMaximumIOps", "OomScoreAdj",
 }
 
 
@@ -129,7 +135,13 @@ def validate_security(container):
         "SecurityOpt", "CapDrop", "LogConfig", "NanoCpus", "Mounts", *RESOURCE_FLAGS,
     }
     for key, value in host.items():
-        if key in handled or value in (None, False, "", [], {}):
+        # bool is an int subclass, so membership in a tuple containing False
+        # also accepts integer zero. Allow only the stock zero-valued fields
+        # Docker currently emits; an unknown zero can be meaningful (for
+        # example MemorySwappiness=0) and must fail closed.
+        if (key in handled or value is None or value is False or
+                value == "" or value == [] or value == {} or
+                (key in DEFAULT_ZERO_HOST_CONFIG and type(value) is int and value == 0)):
             continue
         if key == "ConsoleSize" and value == [0, 0]:
             continue
@@ -337,8 +349,26 @@ def intent_path(identity):
     return receipt.with_name(f"{receipt.name}.in-progress")
 
 
+def ensure_state_directory(path):
+    missing = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # fsync every directory that received a new child entry. This includes the
+    # first pre-existing ancestor, making a newly created state hierarchy
+    # durable before its journal can authorize source mutation.
+    for created in missing:
+        directory = os.open(created.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
 def write_private_json(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    ensure_state_directory(path.parent)
     temporary = path.with_suffix(f"{path.suffix}.tmp-{os.getpid()}")
     try:
         descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
@@ -372,6 +402,8 @@ def record_migration_intent(container, stopped_state=None, saved=None, restart_d
             "restore_started": False,
             "start_attempted": False,
             "target_ownership": secrets.token_hex(32),
+            "source_volumes": None,
+            "volume_event": None,
             "volumes": {},
         }
         if not state["Running"]:
@@ -395,6 +427,8 @@ def migration_intent(container):
     try:
         saved = json.loads(path.read_text())
         restart_policy = saved["source_restart_policy"]
+        source_volumes = saved.get("source_volumes")
+        volume_event = saved.get("volume_event")
         if (saved["source"] != container["Id"] or
                 not isinstance(saved["target_running"], bool) or
                 not isinstance(saved["restart_disabled"], bool) or
@@ -402,10 +436,22 @@ def migration_intent(container):
                 not isinstance(saved["restore_started"], bool) or
                 not isinstance(saved["start_attempted"], bool) or
                 not re.fullmatch(r"[a-f0-9]{64}", saved["target_ownership"]) or
+                (source_volumes is not None and
+                 (not isinstance(source_volumes, dict) or
+                 any(not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", name) or
+                      not re.fullmatch(r"[a-f0-9]{64}", digest)
+                      for name, digest in source_volumes.items()))) or
+                (volume_event is not None and
+                 (not isinstance(volume_event, dict) or
+                  set(volume_event) != {"name", "since"} or
+                  volume_event.get("name") != f'omarchy-volume-event-marker-{saved["target_ownership"]}' or
+                  not isinstance(volume_event.get("since"), str) or not volume_event["since"])) or
                 not isinstance(saved["volumes"], dict) or
                 not isinstance(restart_policy, dict) or
                 not isinstance(saved["started_at"], str)):
             raise ValueError
+        saved.setdefault("source_volumes", None)
+        saved.setdefault("volume_event", None)
         exact_snapshot = saved["source_snapshot"] == snapshot_digest(container)
         disabled_snapshot = (
             saved["restart_disabled"] is True and
@@ -707,6 +753,11 @@ def clear_volume(target):
     run("target-namespace", "/usr/bin/python3", TRUSTED_MANIFEST, "--clear", destination)
 
 
+def sync_volume(target):
+    destination = inspect(TARGET, "volume", target)["Mountpoint"]
+    run("target-namespace", "/usr/bin/python3", TRUSTED_MANIFEST, "--sync", destination)
+
+
 def volume_users(target):
     output = run(TARGET, "container", "ls", "--all", "--no-trunc", "--filter",
                  f"volume={target}", "--format", "{{.ID}}", capture=True)
@@ -716,9 +767,104 @@ def volume_users(target):
     return users
 
 
+def volume_event_marker_name(intent):
+    ownership = intent.get("target_ownership")
+    if not re.fullmatch(r"[a-f0-9]{64}", ownership or ""):
+        raise ValueError("Interrupted rootless Docker ownership is invalid")
+    return f"omarchy-volume-event-marker-{ownership}"
+
+
+def volume_event_marker_owned(container, marker, intent):
+    expected_labels = {
+        LABEL: container["Id"],
+        OWNERSHIP_LABEL: intent["target_ownership"],
+        VOLUME_EVENT_LABEL: "1",
+    }
+    return (marker.get("Name") == volume_event_marker_name(intent) and
+            marker.get("Driver") == "local" and marker.get("Options") in (None, {}) and
+            marker.get("Labels") == expected_labels)
+
+
+def remove_volume_event_marker(container, intent):
+    name = volume_event_marker_name(intent)
+    if not exists("volume", name):
+        return
+    marker = inspect(TARGET, "volume", name)
+    if not volume_event_marker_owned(container, marker, intent) or volume_users(name):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: volume event marker changed; retained it for inspection')
+    run(TARGET, "volume", "rm", name)
+    if exists("volume", name):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: volume event marker name was replaced during cleanup')
+
+
+def begin_volume_event_window(container, intent):
+    remove_volume_event_marker(container, intent)
+    since = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    name = volume_event_marker_name(intent)
+    run(TARGET, "volume", "create",
+        "--label", f"{LABEL}={container['Id']}",
+        "--label", f"{OWNERSHIP_LABEL}={intent['target_ownership']}",
+        "--label", f"{VOLUME_EVENT_LABEL}=1", name)
+    marker = inspect(TARGET, "volume", name)
+    if not volume_event_marker_owned(container, marker, intent) or volume_users(name):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: volume event marker ownership could not be proven')
+    return {"name": name, "since": since}
+
+
+def verify_volume_event_window(container, intent, window, targets, allowed_container=None):
+    until = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    output = run(TARGET, "events", "--since", window["since"], "--until", until,
+                 "--filter", "type=volume", "--format", "{{json .}}", capture=True)
+    try:
+        events = [json.loads(line) for line in output.splitlines() if line]
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Cannot verify destination volume access events") from error
+    if any(not isinstance(event, dict) for event in events):
+        raise RuntimeError("Cannot verify destination volume access events")
+    marker_events = [event for event in events
+                     if event.get("Type") == "volume" and event.get("Action") == "create" and
+                     (event.get("Actor") or {}).get("ID") == window["name"]]
+    if len(marker_events) != 1:
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: destination volume event history is incomplete')
+    expected_mounts = set()
+    for event in events:
+        actor = event.get("Actor") or {}
+        if (event.get("Type") != "volume" or event.get("Action") != "mount" or
+                actor.get("ID") not in targets):
+            continue
+        mounted_by = (actor.get("Attributes") or {}).get("container")
+        if allowed_container is None or mounted_by != allowed_container:
+            raise RuntimeError(f'{container["Name"].lstrip("/")}: another container accessed a destination volume during transfer')
+        expected_mounts.add(actor["ID"])
+    if allowed_container is not None and expected_mounts != set(targets):
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: destination volume mount history is incomplete')
+    remove_volume_event_marker(container, intent)
+
+
 def source_volume_digest(volume):
     return run("/usr/bin/sudo", "/usr/bin/python3", TRUSTED_MANIFEST,
                volume["Mountpoint"], capture=True)
+
+
+def current_source_volume_digests(container):
+    digests = {}
+    for mount in container.get("Mounts", []):
+        volume = inspect(SOURCE, "volume", mount["Name"])
+        validate_source_volume(container, volume)
+        digests[mount["Name"]] = source_volume_digest(volume)
+    return digests
+
+
+def seal_quiesced_source_volumes(container, intent):
+    actual = current_source_volume_digests(container)
+    expected = intent.get("source_volumes")
+    if expected is None:
+        saved = deepcopy(intent)
+        saved["source_volumes"] = actual
+        return persist_migration_intent(container, saved)
+    if expected != actual:
+        raise RuntimeError(f'{container["Name"].lstrip("/")}: source volume changed after quiescing; inspect rootful Docker')
+    return intent
 
 
 def validate_source_volume(container, volume):
@@ -851,6 +997,10 @@ def begin_quiesce(container, intent):
     if container["State"]["Running"]:
         intent["started_at"] = container["State"]["StartedAt"]
         intent.pop("stopped", None)
+        # A source restored after an earlier pre-transfer failure may have
+        # changed its volume normally while it ran. Establish the next cutover
+        # snapshot only after this quiesce stops it again.
+        intent["source_volumes"] = None
     return persist_migration_intent(container, intent)
 
 
@@ -927,6 +1077,7 @@ def quiesce(container, validator=validate):
             snapshot_digest(disabled, ignore_restart=True) != snapshot_digest(planned, ignore_restart=True) or
             (disabled["HostConfig"].get("RestartPolicy") or {}).get("Name") != "no"):
         raise RuntimeError(f'{container["Name"].lstrip("/")}: source changed while being quiesced')
+    seal_quiesced_source_volumes(disabled, intent)
     print(f'{container["Name"].lstrip("/")}: quiesced before rootful Docker access revocation')
 
 
@@ -937,6 +1088,7 @@ def verify_resumable_migration(container, target, intent):
     if intent["restore_started"]:
         raise ValueError(f"{name}: source ran after destination creation; inspect both engines")
     planned = planned_source(container, intent)
+    seal_quiesced_source_volumes(container, intent)
     destination = intent.get("destination")
     if (not isinstance(destination, dict) or destination.get("id") != target.get("Id") or
             destination.get("snapshot") != snapshot_digest(target) or
@@ -988,6 +1140,13 @@ def resume_verified_migration(container, target, intent):
     target = inspect(TARGET, "container", name)
     if bool(target["State"]["Running"]) != intent["target_running"]:
         raise RuntimeError(f"{name}: resumed destination lifecycle differs from the source")
+    expected_volumes = {destination_volume(planned, mount) for mount in planned.get("Mounts", [])}
+    event_window = intent.get("volume_event")
+    if expected_volumes and event_window is None:
+        raise RuntimeError(f"{name}: interrupted destination volume event history is missing")
+    if event_window is not None:
+        verify_volume_event_window(planned, intent, event_window, expected_volumes,
+                                   target["Id"] if intent["target_running"] else None)
     verify_runtime(planned, intent["target_ownership"])
     record_completion(source_after, state, intent["target_running"])
     clear_migration_intent(container["Id"])
@@ -1045,6 +1204,7 @@ def migrate(container):
     running = intent["target_running"] if intent is not None else bool(container["State"]["Running"])
     created_id = None
     guard_id = None
+    event_window = None
     image = None
     image_committed = False
     image_loaded = False
@@ -1074,6 +1234,7 @@ def migrate(container):
             raise RuntimeError(f"{name}: Docker source configuration changed while stopping; rerun after workloads are stable")
         container = stopped_source
         intent = record_migration_intent(container, state, intent)
+        intent = seal_quiesced_source_volumes(container, intent)
         # Commit includes writable-layer changes and the exact image config.
         # Volume data is copied separately while the source container is stopped.
         image = run(SOURCE, "commit", identity, capture=True)
@@ -1166,6 +1327,10 @@ def migrate(container):
                 verify_volume_definition(volume, target, ownership)
                 if set(volume_users(target)) != {guard_id}:
                     raise RuntimeError(f"{name}: destination volume guard changed; retained it for inspection")
+            event_window = begin_volume_event_window(planned, intent)
+            intent = deepcopy(intent)
+            intent["volume_event"] = event_window
+            persist_migration_intent(container, intent)
         for target, pending in pending_volumes.items():
             volume, ownership, record = pending
             verify_volume_definition(volume, target, ownership)
@@ -1182,6 +1347,10 @@ def migrate(container):
         for target, expected in verified_volumes.items():
             volume, ownership, digest = expected
             verify_volume_definition(volume, target, ownership)
+            # A digest proves what the page cache currently returns. Flush the
+            # destination filesystem before any completion metadata can outlive
+            # the copied volume data across sudden power loss.
+            sync_volume(target)
             verify_volume(target, digest)
             if source_volume_digest(volume) != digest:
                 raise RuntimeError(f"{name}: source volume changed during transfer; inspect both engines")
@@ -1238,6 +1407,10 @@ def migrate(container):
         target_state = inspect(TARGET, "container", name)["State"]
         if bool(target_state["Running"]) != bool(running):
             raise RuntimeError(f"{name}: destination lifecycle differs from the source")
+        if event_window is not None:
+            verify_volume_event_window(planned, intent, event_window, set(pending_volumes),
+                                       created_id if running else None)
+            event_window = None
         verify_runtime(planned, intent["target_ownership"])
         record_completion(source_after, state, bool(running))
         clear_migration_intent(identity)
@@ -1288,6 +1461,13 @@ def migrate(container):
         except Exception:
             recovery_failed = True
             print(f"{name}: volume guard cleanup was not ownership-safe; retained it for inspection", file=sys.stderr)
+        try:
+            if event_window is not None:
+                remove_volume_event_marker(planned, intent)
+                event_window = None
+        except Exception:
+            recovery_failed = True
+            print(f"{name}: volume event marker cleanup was not ownership-safe; retained it for inspection", file=sys.stderr)
         if destination_may_have_run:
             try:
                 intent["start_attempted"] = True
@@ -1350,10 +1530,13 @@ def main():
         containers = [inspect(SOURCE, "container", name) for name in names]
         volumes = set()
         blockers = []
+        intents = {}
         for container in containers:
             try:
                 validate(container)
-            except ValueError as error:
+                intent = migration_intent(container)
+                intents[container["Id"]] = intent
+            except (ValueError, RuntimeError) as error:
                 blockers.append(str(error))
                 continue
             for mount in container.get("Mounts", []):
@@ -1376,6 +1559,16 @@ def main():
             raise ValueError("\n".join(blockers))
         if volumes:
             validate_trusted_manifest()
+        for container in containers:
+            intent = intents[container["Id"]]
+            if (intent is not None and not container["State"]["Running"] and
+                    intent.get("source_volumes") is not None):
+                try:
+                    seal_quiesced_source_volumes(container, intent)
+                except (ValueError, RuntimeError) as error:
+                    blockers.append(str(error))
+        if blockers:
+            raise ValueError("\n".join(blockers))
         quiesced = []
         try:
             for container in containers:
@@ -1417,10 +1610,13 @@ def main():
     containers = [inspect(SOURCE, "container", name) for name in names]
     volumes = set()
     blockers = []
+    intents = {}
     for container in containers:
         try:
             validate(container)
-        except ValueError as error:
+            intent = migration_intent(container)
+            intents[container["Id"]] = intent
+        except (ValueError, RuntimeError) as error:
             blockers.append(str(error))
             continue
         for mount in container.get("Mounts", []):
@@ -1436,6 +1632,16 @@ def main():
         raise ValueError("\n".join(blockers))
     if volumes:
         validate_trusted_manifest()
+    for container in containers:
+        intent = intents[container["Id"]]
+        if (intent is not None and not container["State"]["Running"] and
+                intent.get("source_volumes") is not None):
+            try:
+                seal_quiesced_source_volumes(container, intent)
+            except (ValueError, RuntimeError) as error:
+                blockers.append(str(error))
+    if blockers:
+        raise ValueError("\n".join(blockers))
     if check_completed:
         for container in containers:
             name = container["Name"].lstrip("/")

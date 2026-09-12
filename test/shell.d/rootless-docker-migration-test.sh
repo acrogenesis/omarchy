@@ -6,6 +6,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 python3 - <<'PY'
 import copy
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -41,7 +42,30 @@ with tempfile.TemporaryDirectory() as directory:
     manifest.clear(volume)
     assert not os.listdir(volume)
     assert open(os.path.join(outside, "keep")).read() == "safe"
+    with open(os.path.join(volume, "durable"), "w") as output:
+        output.write("new")
+    manifest.sync_filesystem(volume)
 print("ok - retained-volume reset removes stale entries without following symlinks")
+
+with tempfile.TemporaryDirectory() as directory:
+    state_home = Path(directory) / "new-state-home"
+    observed_syncs = []
+    original_fsync = migration.os.fsync
+
+    def tracing_fsync(descriptor):
+        observed_syncs.append(Path(os.readlink(f"/proc/self/fd/{descriptor}")).resolve())
+        original_fsync(descriptor)
+
+    migration.os.fsync = tracing_fsync
+    try:
+        migration.write_private_json(
+            state_home / "omarchy/rootless-docker-migration" / ("a" * 64 + ".in-progress"),
+            {"state": "durable"},
+        )
+    finally:
+        migration.os.fsync = original_fsync
+    assert Path(directory).resolve() in observed_syncs
+print("ok - first journal creation synchronizes the new state hierarchy into its existing parent")
 
 source_security = ["name=seccomp,profile=builtin", "name=cgroupns"]
 target_security = ["name=seccomp,profile=builtin", "name=rootless", "name=cgroupns"]
@@ -83,6 +107,9 @@ container = {
         "MaskedPaths": sorted(migration.MASKED_PATHS),
         "ReadonlyPaths": sorted(migration.READONLY_PATHS),
         "Runtime": "runc", "CgroupnsMode": "private", "ConsoleSize": [0, 0],
+        "OomScoreAdj": 0, "BlkioWeight": 0, "CpuRealtimePeriod": 0,
+        "CpuRealtimeRuntime": 0, "CpuCount": 0, "CpuPercent": 0,
+        "IOMaximumIOps": 0, "IOMaximumBandwidth": 0,
         "PortBindings": {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18080"}]},
         "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0},
         "LogConfig": {"Type": "json-file", "Config": {"max-size": "10m", "max-file": "5"}},
@@ -286,6 +313,52 @@ print("ok - only Omarchy's managed Windows runtime qualifies for the rootful exc
 
 source_volume = {"Name": "project-data", "Driver": "local", "Options": None,
                  "Labels": {"project": "fixture"}}
+sealed_container = copy.deepcopy(container)
+sealed_container["State"] = {
+    "Status": "created", "Running": False,
+    "StartedAt": "0001-01-01T00:00:00Z",
+    "FinishedAt": "0001-01-01T00:00:00Z", "ExitCode": 0,
+}
+sealed_container["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
+sealed_digest = ["1" * 64]
+original_inspect = migration.inspect
+original_source_volume_digest = migration.source_volume_digest
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    migration.inspect = lambda engine, kind, name: copy.deepcopy(source_volume)
+    migration.source_volume_digest = lambda volume: sealed_digest[0]
+    sealed_intent = migration.record_migration_intent(sealed_container)
+    sealed_intent = migration.seal_quiesced_source_volumes(sealed_container, sealed_intent)
+    assert sealed_intent["source_volumes"] == {"project-data": "1" * 64}
+    sealed_digest[0] = "2" * 64
+    try:
+        migration.seal_quiesced_source_volumes(sealed_container, sealed_intent)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a rootful client changed a volume after quiescing without detection")
+    sealed_digest[0] = "1" * 64
+    seal_order = []
+    original_validate_trusted_manifest = migration.validate_trusted_manifest
+    original_daemon_security = migration.daemon_security
+    original_exists = migration.exists
+    migration.validate_trusted_manifest = lambda: seal_order.append("trusted-helper")
+    migration.daemon_security = lambda engine: source_security if engine == migration.SOURCE else target_security
+    migration.inspect = lambda engine, kind, name: copy.deepcopy(
+        sealed_container if kind == "container" else source_volume
+    )
+    migration.exists = lambda kind, name: False
+    migration.source_volume_digest = lambda volume: (seal_order.append("source-digest") or sealed_digest[0])
+    sys.argv = ["migrate.py", "--check", sealed_container["Name"].lstrip("/")]
+    migration.main()
+    assert seal_order[:2] == ["trusted-helper", "source-digest"]
+    migration.validate_trusted_manifest = original_validate_trusted_manifest
+    migration.daemon_security = original_daemon_security
+    migration.exists = original_exists
+migration.inspect = original_inspect
+migration.source_volume_digest = original_source_volume_digest
+print("ok - trusted helper validation precedes quiesced source-volume seal checks")
+
 ownership = migration.volume_identity(container, container["Mounts"][0])
 assert ownership != migration.volume_identity(container, container["Mounts"][0])
 raced_volume = copy.deepcopy(source_volume)
@@ -311,7 +384,36 @@ except RuntimeError:
     pass
 else:
     raise AssertionError("an ambiguous destination-volume attachment passed validation")
+real_remove_event_marker = migration.remove_volume_event_marker
+migration.remove_volume_event_marker = lambda source, intent: None
+migration.run = lambda *args, **kwargs: "\n".join((
+    json.dumps({"Type": "volume", "Action": "create", "Actor": {
+        "ID": "marker", "Attributes": {"driver": "local"}}}),
+    json.dumps({"Type": "volume", "Action": "mount", "Actor": {
+        "ID": "project-data", "Attributes": {"container": "e" * 64}}}),
+))
+try:
+    migration.verify_volume_event_window(
+        container, {"target_ownership": "d" * 64},
+        {"name": "marker", "since": "time"}, {"project-data"}, "f" * 64,
+    )
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("a transient destination-volume writer escaped event validation")
+migration.run = lambda *args, **kwargs: "\n".join((
+    json.dumps({"Type": "volume", "Action": "create", "Actor": {
+        "ID": "marker", "Attributes": {"driver": "local"}}}),
+    json.dumps({"Type": "volume", "Action": "mount", "Actor": {
+        "ID": "project-data", "Attributes": {"container": "f" * 64}}}),
+))
+migration.verify_volume_event_window(
+    container, {"target_ownership": "d" * 64},
+    {"name": "marker", "since": "time"}, {"project-data"}, "f" * 64,
+)
 migration.run = real_run
+migration.remove_volume_event_marker = real_remove_event_marker
+print("ok - volume event windows reject transient writers and require the intended mount")
 reserved_source = copy.deepcopy(source_volume)
 reserved_source["Labels"][migration.VOLUME_LABEL] = "foreign"
 try:
@@ -331,6 +433,8 @@ blocked = (
     ("SecurityOpt", ["seccomp=unconfined"]),
     ("Binds", ["/home/example/project:/data:rw"]),
     ("Mounts", [{"Type": "bind", "Source": "/home/example", "Target": "/data"}]),
+    ("MemorySwappiness", 0),
+    ("FutureNumericOption", 0),
     ("FuturePrivilegeOption", {"enabled": True}),
 )
 for field, value in blocked:
@@ -836,6 +940,56 @@ with tempfile.TemporaryDirectory() as directory:
     assert not migration.intent_path(resume_source["Id"]).exists()
 print("ok - a verified destination resumes safely across interruption before its first start")
 
+receipt_source = copy.deepcopy(resume_source)
+receipt_source["Id"] = "4" * 64
+receipt_source["Name"] = "/receipt-window"
+receipt_source["Mounts"] = [copy.deepcopy(container["Mounts"][0])]
+receipt_target = copy.deepcopy(resume_target)
+receipt_target["Id"] = "3" * 64
+receipt_target["State"]["Running"] = False
+receipt_events = []
+original_verify_resumable = migration.verify_resumable_migration
+original_verify_event_window = migration.verify_volume_event_window
+original_record_completion = migration.record_completion
+with tempfile.TemporaryDirectory() as directory:
+    os.environ["XDG_STATE_HOME"] = directory
+    receipt_intent = migration.record_migration_intent(receipt_source)
+    receipt_intent["volume_event"] = {
+        "name": migration.volume_event_marker_name(receipt_intent),
+        "since": "2026-09-12T00:00:00Z",
+    }
+    migration.persist_migration_intent(receipt_source, receipt_intent)
+    migration.verify_resumable_migration = lambda source, target, intent: (
+        copy.deepcopy(receipt_source), copy.deepcopy(receipt_source["State"]),
+    )
+    migration.inspect = lambda engine, kind, name: copy.deepcopy(
+        receipt_source if engine == migration.SOURCE else receipt_target
+    )
+    migration.verify_volume_event_window = lambda source, intent, window, targets, allowed=None: (
+        receipt_events.append((copy.deepcopy(window), set(targets), allowed))
+    )
+
+    def interrupt_receipt(source, state, running):
+        assert migration.migration_intent(source)["volume_event"] == receipt_intent["volume_event"]
+        raise RuntimeError("power loss before receipt")
+
+    migration.record_completion = interrupt_receipt
+    try:
+        migration.resume_verified_migration(receipt_source, receipt_target, receipt_intent)
+    except RuntimeError as error:
+        assert str(error) == "power loss before receipt"
+    else:
+        raise AssertionError("an interrupted completion unexpectedly removed its event window")
+    assert migration.migration_intent(receipt_source)["volume_event"] == receipt_intent["volume_event"]
+    migration.record_completion = lambda source, state, running: None
+    migration.resume_verified_migration(receipt_source, receipt_target, receipt_intent)
+    assert len(receipt_events) == 2
+    assert not migration.intent_path(receipt_source["Id"]).exists()
+migration.verify_resumable_migration = original_verify_resumable
+migration.verify_volume_event_window = original_verify_event_window
+migration.record_completion = original_record_completion
+print("ok - an interrupted receipt retains and replays the destination volume event window")
+
 for unsafe_kind in ("destination", "guard"):
     unsafe_original = copy.deepcopy(retry_original)
     unsafe_original["Id"] = ("a" if unsafe_kind == "destination" else "b") * 64
@@ -988,6 +1142,12 @@ with tempfile.TemporaryDirectory() as directory:
     migration.source_volume_digest = lambda volume: "7" * 64
     migration.clear_volume = lambda target: pin_events.append(("clear", target))
     migration.transfer_volume = lambda volume, target: (pin_events.append(("transfer", target)) or "7" * 64)
+    migration.begin_volume_event_window = lambda source, intent: (
+        pin_events.append(("event-window-begin",)) or {"name": "marker", "since": "time"}
+    )
+    migration.verify_volume_event_window = lambda source, intent, window, targets, allowed=None: (
+        pin_events.append(("event-window-verify", tuple(sorted(targets)), allowed))
+    )
     migration.record_completion = lambda source, state, running: None
     migration.migrate(pinned_source)
 
@@ -997,7 +1157,8 @@ assert len(create_indexes) == 2
 guard_index, create_index = create_indexes
 clear_index = pin_events.index(("clear", "project-data"))
 transfer_index = pin_events.index(("transfer", "project-data"))
-assert guard_index < clear_index < transfer_index < create_index
+event_begin_index = pin_events.index(("event-window-begin",))
+assert guard_index < event_begin_index < clear_index < transfer_index < create_index
 guard_call = pin_events[guard_index]
 create_call = pin_events[create_index]
 assert "--network=none" in guard_call
@@ -1010,8 +1171,14 @@ assert any(event[:3] == (migration.TARGET, "container", "ls")
 guard_remove_index = next(index for index, event in enumerate(pin_events)
                           if event[:3] == (migration.TARGET, "rm", "--force") and event[3] == "8" * 64)
 start_index = pin_events.index((migration.TARGET, "start", "pinned-volume"))
-assert create_index < guard_remove_index < start_index
-print("ok - an inert random guard pins volumes while the application container does not yet exist")
+event_verify = next(event for event in pin_events if event[:1] == ("event-window-verify",))
+event_verify_index = pin_events.index(event_verify)
+assert create_index < guard_remove_index < start_index < event_verify_index
+assert event_verify[1:] == (("project-data",), "6" * 64)
+sync_index = next(index for index, event in enumerate(pin_events)
+                  if event[:4] == ("target-namespace", "/usr/bin/python3", migration.TRUSTED_MANIFEST, "--sync"))
+assert transfer_index < sync_index < create_index
+print("ok - an inert random guard pins and durably verifies volumes before application start")
 
 batch = []
 for index in (1, 2):
