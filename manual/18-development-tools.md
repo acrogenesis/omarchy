@@ -24,7 +24,7 @@ To install, say, Ruby, you'd run `mise use -g ruby`, which will both install Rub
 
 The daemon for development containers runs as your user and keeps its data in your home directory. Plain `docker`, `docker compose`, `docker buildx`, and the `d` alias use it directly, without `sudo` and without membership in the root-equivalent `docker` group. A container that escapes this daemon reaches only your user privileges rather than root privileges on the host.
 
-Existing installs automatically move compatible running or never-started development containers and private named volumes into the rootless Docker store during update. The old rootful containers remain stopped as recovery copies. Already-exited containers and containers that depend on elevated privileges, host directories, devices, custom runtimes, or custom networks stay untouched and stop the migration with an explanation so Omarchy never reruns an exited workload or silently weakens or changes its access.
+Existing installs automatically move compatible running or never-started development containers and private named volumes into the rootless Docker store during update. The old rootful containers remain stopped as recovery copies. Already-exited containers, custom rootful Docker API listeners, and containers that depend on elevated privileges, host directories, devices, custom runtimes, or custom networks stay untouched and stop the migration with an explanation so Omarchy never reruns an exited workload or silently weakens or changes its access.
 
 Remember to check out Lazydocker to manage your development containers in a cool TUI using `Super + Shift + D`. It connects to the same rootless daemon and does not need an authorization prompt.
 

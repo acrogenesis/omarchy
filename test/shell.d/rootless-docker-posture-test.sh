@@ -50,6 +50,9 @@ later_group_drop=$(sed -n "${completion_line},${completion_return}p" "$migration
 socket_line=$(grep -n "socket_owner=" "$migration" | cut -d: -f1)
 [[ -n $socket_line && -n $inventory_line ]] && (( socket_line < inventory_line )) ||
   fail "the legacy group socket remains writable during source migration"
+listener_line=$(grep -n '^verify_rootful_listeners$' "$migration" | head -n1 | cut -d: -f1)
+[[ -n $listener_line ]] && (( socket_line < listener_line && listener_line < inventory_line )) ||
+  fail "custom rootful Docker listeners are not rejected before source migration"
 grep -q -- '--check-windows "$windows_id"' "$migration" ||
   fail "the name-based Windows exception is not authenticated against its managed runtime"
 windows_secure_line=$(grep -n '^/usr/bin/omarchy-windows-vm __migration-secure$' "$migration" | cut -d: -f1)
@@ -67,9 +70,54 @@ transfer_line=$(grep -n '^  /usr/bin/python3 "$migrator" "${container_names\[@\]
   fail "rootful connections are not revoked between durable quiesce and transfer"
 (( $(grep -c '^restrict_rootful_socket$' "$migration") == 2 )) ||
   fail "rootful socket policy is not rechecked after daemon restart"
+(( $(grep -c '^verify_rootful_listeners$' "$migration") == 2 )) ||
+  fail "rootful Docker listeners are not rechecked after daemon restart"
 grep -q -- '--restore-windows "$windows_id"' "$migration" ||
   fail "a running Windows VM is not restored after rootful connection revocation"
 pass "migration serializes ownership, secures Windows, and revokes existing rootful connections"
+
+listener_verifier="$ROOT/default/docker/rootless/rootful-listeners.py"
+python3 - "$listener_verifier" <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("rootful_listeners", sys.argv[1])
+listeners = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(listeners)
+
+with tempfile.TemporaryDirectory() as directory:
+    proc = Path(directory)
+    descriptors = proc / "4242/fd"
+    descriptors.mkdir(parents=True)
+    (proc / "net").mkdir()
+    (proc / "4242/cmdline").write_bytes(b"/usr/bin/dockerd\0-H\0fd://\0")
+    os.symlink("socket:[101]", descriptors / "3")
+    (proc / "net/unix").write_text(
+        "Num RefCount Protocol Flags Type St Inode Path\n"
+        "00000000: 00000002 00000000 00010000 0001 01 101 /run/docker.sock\n"
+    )
+    tcp_header = "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"
+    (proc / "net/tcp").write_text(tcp_header)
+    (proc / "net/tcp6").write_text(tcp_header)
+    listeners.verify(4242, proc, proc)
+
+    os.symlink("socket:[102]", descriptors / "4")
+    (proc / "net/tcp").write_text(
+        tcp_header +
+        "0: 0100007F:0947 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 102\n"
+    )
+    try:
+        listeners.verify(4242, proc, proc)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("a rootful TCP API listener was accepted")
+print("ok - listener verification accepts only the protected rootful Unix socket")
+PY
+pass "rootful Docker listener verification rejects extra API endpoints"
 
 grep -q "alias d='docker'" "$ROOT/default/bash/aliases" || fail "the d alias remains Docker"
 ! rg -q 'sudo[[:space:]]+docker' "$ROOT/bin/omarchy-install-docker-dbs" ||

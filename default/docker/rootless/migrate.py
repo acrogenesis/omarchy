@@ -211,6 +211,8 @@ def verify_runtime(container, ownership=None):
     }
     if any(target_host.get(key, "") != value for key, value in private_modes.items()):
         raise RuntimeError(f"{name}: rootless Docker changed a private namespace boundary")
+    if target_host.get("Runtime") != "runc":
+        raise RuntimeError(f"{name}: rootless Docker changed the OCI runtime")
     expected_mounts = sorted((mount["Destination"], destination_volume(container, mount), bool(mount.get("RW")))
                              for mount in container.get("Mounts", []))
     actual_mounts = target.get("Mounts") or []
@@ -492,6 +494,15 @@ def stopped_identity(state):
     if state["Running"] or not state.get("StartedAt") or not state.get("FinishedAt"):
         raise ValueError("Docker source was restarted or its stopped state cannot be verified")
     return {key: state[key] for key in ("StartedAt", "FinishedAt")}
+
+
+def target_never_started(container):
+    state = container.get("State") or {}
+    never = "0001-01-01T00:00:00Z"
+    return (state.get("Status") == "created" and state.get("Running") is False and
+            state.get("Paused") is not True and state.get("Restarting") is not True and
+            state.get("Dead") is not True and state.get("StartedAt") == never and
+            state.get("FinishedAt") == never)
 
 
 def record_completion(container, source_state, target_running):
@@ -817,14 +828,18 @@ def restore_source(identity, validator=validate):
         raise RuntimeError(f'{current["Name"].lstrip("/")}: destination start was attempted; source recovery needs review')
     planned = planned_source(current, intent)
     desired_restart = planned["HostConfig"].get("RestartPolicy") or {}
+    if intent["target_running"] and not intent["restore_started"]:
+        # Re-enabling `always` can make Docker start the container after a daemon
+        # restart. Record that lifecycle restoration has begun before changing
+        # the policy so a fresh process can recognize that exact transition.
+        intent["restore_started"] = True
+        intent["quiesce_started"] = False
+        persist_migration_intent(current, intent)
     if (current["HostConfig"].get("RestartPolicy") or {}) != desired_restart:
         run(SOURCE, "update", f"--restart={restart_policy_argument(planned)}", identity)
         current = inspect(SOURCE, "container", identity)
     if intent["target_running"]:
         if not current["State"]["Running"]:
-            intent["restore_started"] = True
-            intent["quiesce_started"] = False
-            persist_migration_intent(current, intent)
             run(SOURCE, "start", identity)
     elif current["State"]["Running"]:
         raise RuntimeError(f'{current["Name"].lstrip("/")}: stopped source restarted during recovery')
@@ -886,8 +901,8 @@ def verify_resumable_migration(container, target, intent):
             destination.get("snapshot") != snapshot_digest(target) or
             not target_owned(container, target, intent)):
         raise ValueError(f"{name}: interrupted rootless destination changed; inspect both engines")
-    if target["State"]["Running"]:
-        raise ValueError(f"{name}: interrupted rootless destination has an unexpected lifecycle")
+    if not target_never_started(target):
+        raise ValueError(f"{name}: interrupted rootless destination may have run; inspect both engines")
     verify_runtime(planned, intent["target_ownership"])
 
     expected_volumes = {destination_volume(planned, mount): mount
@@ -943,8 +958,6 @@ def migrate(container):
     name = container["Name"].lstrip("/")
     identity = container["Id"]
     intent = migration_intent(container)
-    if intent is not None and intent["start_attempted"]:
-        raise ValueError(f"{name}: destination start was attempted; inspect both engines")
     if exists("container", name):
         target = inspect(TARGET, "container", name)
         container = refresh_source(container)
@@ -952,17 +965,21 @@ def migrate(container):
             clear_migration_intent(identity)
             print(f"{name}: already migrated")
             return
+        if intent is not None and intent["start_attempted"]:
+            raise ValueError(f"{name}: destination start was attempted; inspect both engines")
         if intent is None or not target_owned(container, target, intent):
             raise ValueError(f"{name}: an existing rootless Docker container needs review; no owned transfer matches it")
         if intent.get("destination") is not None:
             resume_verified_migration(container, target, intent)
             return
-        if target["State"]["Running"] or intent["start_attempted"]:
+        if not target_never_started(target):
             raise ValueError(f"{name}: an incomplete rootless destination may have run; inspect both engines")
         owned_id = target["Id"]
         run(TARGET, "rm", "--force", owned_id)
         if exists("container", name):
             raise ValueError(f"{name}: rootless destination name was replaced during recovery")
+    if intent is not None and intent["start_attempted"]:
+        raise ValueError(f"{name}: destination start was attempted; inspect both engines")
     if completion_path(identity).exists():
         raise ValueError(f"{name}: a previously migrated destination is missing; inspect retained data before retrying")
 
@@ -1014,7 +1031,7 @@ def migrate(container):
         arguments = [TARGET, "create", "--pull=never", "--name", name,
                      "--label", f"{LABEL}={identity}",
                      "--label", f'{OWNERSHIP_LABEL}={intent["target_ownership"]}', "--privileged=false",
-                     "--ipc=private", "--cgroupns=private", "--network=bridge"]
+                     "--ipc=private", "--cgroupns=private", "--network=bridge", "--runtime", "runc"]
         arguments += runtime_arguments(planned)
         config = planned["Config"]
         if config.get("Hostname"):
@@ -1032,6 +1049,7 @@ def migrate(container):
         for port, bindings in (planned["HostConfig"].get("PortBindings") or {}).items():
             for binding in bindings or []:
                 arguments += ["--publish", f'127.0.0.1:{binding["HostPort"]}:{port}']
+        pending_volumes = {}
         for mount in planned.get("Mounts", []):
             volume = inspect(SOURCE, "volume", mount["Name"])
             validate_source_volume(container, volume)
@@ -1054,15 +1072,9 @@ def migrate(container):
             if not retained:
                 run(*volume_arguments, target)
             verify_volume_definition(volume, target, ownership)
-            if retained:
-                if volume_users(target):
-                    raise RuntimeError(f"{name}: retained destination volume is attached; retained it for inspection")
-                clear_volume(target)
-                verify_volume_definition(volume, target, ownership)
-            digest = transfer_volume(volume, target)
-            record["digest"] = digest
-            persist_migration_intent(container, intent)
-            verified_volumes[target] = (volume, ownership, digest)
+            if volume_users(target):
+                raise RuntimeError(f"{name}: destination volume is attached; retained it for inspection")
+            pending_volumes[target] = (volume, ownership, record)
             mount_arg = f'type=volume,src={target},dst={mount["Destination"]},volume-nocopy'
             if not mount.get("RW"):
                 mount_arg += ",readonly"
@@ -1071,12 +1083,27 @@ def migrate(container):
         run(*arguments)
         created_target = inspect(TARGET, "container", name)
         if (not re.fullmatch(r"[a-f0-9]{64}", created_target.get("Id") or "") or
-                created_target["State"]["Running"] or not target_owned(planned, created_target, intent)):
+                not target_never_started(created_target) or not target_owned(planned, created_target, intent)):
             raise RuntimeError(f"{name}: rootless destination ownership could not be proven")
         created_id = created_target["Id"]
-        # The container has not started, and volume-nocopy prevents image data
-        # from replacing the restored volume contents.
+        # The stopped destination pins every volume before mutation, so another
+        # Docker client cannot remove and replace its predictable name between
+        # ownership verification and clearing or transfer. volume-nocopy keeps
+        # the committed image from changing the restored contents.
         verify_runtime(planned, intent["target_ownership"])
+        for target, pending in pending_volumes.items():
+            volume, ownership, record = pending
+            verify_volume_definition(volume, target, ownership)
+            if volume_users(target) != [created_id]:
+                raise RuntimeError(f"{name}: destination volume pin changed; retained it for inspection")
+            clear_volume(target)
+            verify_volume_definition(volume, target, ownership)
+            if volume_users(target) != [created_id]:
+                raise RuntimeError(f"{name}: destination volume pin changed; retained it for inspection")
+            digest = transfer_volume(volume, target)
+            record["digest"] = digest
+            persist_migration_intent(container, intent)
+            verified_volumes[target] = (volume, ownership, digest)
         for target, expected in verified_volumes.items():
             volume, ownership, digest = expected
             verify_volume_definition(volume, target, ownership)
@@ -1284,18 +1311,21 @@ def main():
         for container in containers:
             name = container["Name"].lstrip("/")
             intent = migration_intent(container)
-            if intent is not None and intent["start_attempted"]:
-                raise ValueError(f"{name}: destination start was attempted; inspect both engines")
             if exists("container", name):
                 target = inspect(TARGET, "container", name)
-                if not completed(container, target):
-                    if intent is None or not target_owned(container, target, intent):
-                        raise ValueError(f"{name}: an existing rootless Docker container needs review; no owned transfer matches it")
-                    if intent.get("destination") is not None:
-                        verify_resumable_migration(container, target, intent)
-                    elif target["State"]["Running"] or intent["start_attempted"]:
-                        raise ValueError(f"{name}: an incomplete rootless destination may have run; inspect both engines")
+                if completed(container, target):
+                    continue
+                if intent is not None and intent["start_attempted"]:
+                    raise ValueError(f"{name}: destination start was attempted; inspect both engines")
+                if intent is None or not target_owned(container, target, intent):
+                    raise ValueError(f"{name}: an existing rootless Docker container needs review; no owned transfer matches it")
+                if intent.get("destination") is not None:
+                    verify_resumable_migration(container, target, intent)
+                elif not target_never_started(target):
+                    raise ValueError(f"{name}: an incomplete rootless destination may have run; inspect both engines")
                 continue
+            if intent is not None and intent["start_attempted"]:
+                raise ValueError(f"{name}: destination start was attempted; inspect both engines")
             if completion_path(container["Id"]).exists():
                 raise ValueError(f"{name}: a previously migrated destination is missing; inspect retained data before retrying")
             for mount in container.get("Mounts", []):
@@ -1311,8 +1341,17 @@ def main():
         for container in containers:
             print(f'{container["Name"].lstrip("/")}: ready for rootless Docker migration')
     if not check_only:
-        for container in containers:
-            migrate(container)
+        try:
+            for container in containers:
+                migrate(container)
+        except BaseException:
+            for container in reversed(containers):
+                try:
+                    restore_source(container["Id"])
+                except Exception:
+                    print(f'{container["Name"].lstrip("/")}: a quiesced source could not be restored; inspect both engines',
+                          file=sys.stderr)
+            raise
 
 
 if __name__ == "__main__":

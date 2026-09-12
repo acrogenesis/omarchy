@@ -78,6 +78,7 @@ fi
 sudo /usr/bin/systemctl daemon-reload
 sudo /usr/bin/systemctl start docker.socket
 source_host="unix:///run/docker.sock"
+listener_verifier=/usr/share/omarchy/default/docker/rootless/rootful-listeners.py
 
 restrict_rootful_socket() {
   local socket_owner
@@ -93,10 +94,27 @@ restrict_rootful_socket() {
   fi
 }
 
+verify_rootful_listeners() {
+  local main_pid verifier_mode
+  if sudo /usr/bin/test -L "$listener_verifier" || ! sudo /usr/bin/test -f "$listener_verifier"; then
+    echo "The packaged rootful Docker listener verifier is not trusted. This migration remains pending." >&2
+    return 1
+  fi
+  verifier_mode=$(sudo /usr/bin/stat -Lc '%u:%g:%a' "$listener_verifier")
+  if [[ $verifier_mode != "0:0:644" ]]; then
+    echo "The packaged rootful Docker listener verifier is not trusted. This migration remains pending." >&2
+    return 1
+  fi
+  main_pid=$(sudo /usr/bin/systemctl show docker.service --property MainPID --value)
+  sudo /usr/bin/python3 "$listener_verifier" "$main_pid"
+}
+
 # Load the packaged socket policy and prevent new unprivileged rootful clients
 # before taking the source inventory. Existing accepted connections are closed
 # by the daemon restart after every workload has been safely quiesced below.
 restrict_rootful_socket
+sudo /usr/bin/docker --host "$source_host" info >/dev/null
+verify_rootful_listeners
 remove_legacy_docker_group
 
 docker_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
@@ -174,6 +192,7 @@ fi
 sudo /usr/bin/systemctl restart docker.service
 sudo /usr/bin/systemctl start docker.socket
 restrict_rootful_socket
+verify_rootful_listeners
 
 revoked_inventory=$(sudo /usr/bin/docker --host "$source_host" ps -a --no-trunc --format '{{.ID}} {{.Names}}' | sort)
 if [[ $revoked_inventory != "$docker_inventory" ]]; then
