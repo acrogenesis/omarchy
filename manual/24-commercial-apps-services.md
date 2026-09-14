@@ -34,7 +34,7 @@ It gets a panel in the bar, a web app for the admin console, and Taildrop for se
 
 Run `omarchy launch once` to open the interface, or pass ONCE commands such as `omarchy launch once list`. Local applications use addresses like `http://writebook.localhost:8080`. The proxy binds only to your computer's loopback address; public hosting and automatic public HTTPS are not configured by this installer. Background work continues after logout.
 
-Existing rootful ONCE installations need an explicit backup/restore migration. The engine migration stays pending when ONCE is installed, and the installer refuses an active or enabled legacy system service. It never silently disables that service or moves its application data. Test restored applications before retiring the old deployment.
+Existing rootful ONCE installations need an explicit backup/restore migration. The engine migration stays pending for a legacy ONCE package or an active or enabled legacy system service. The rootless `once` package alone does not block migration. The installer also refuses an active or enabled legacy system service. It never silently disables that service or moves its application data. Test restored applications before retiring the old deployment.
 
 ## NordVPN
 
