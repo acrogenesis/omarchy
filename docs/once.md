@@ -1,6 +1,6 @@
 # Rootless ONCE
 
-The optional installer uses the source-built `once` package from omarchy-pkgs. It is ONCE v0.3.2 with a small downstream patch, identified as `v0.3.2-omarchy1`; the vendor `once-bin` binary remains available separately. The launcher refuses an unpatched binary because the integration depends on proxy and backup behavior, not just API availability.
+The optional installer uses the source-built `once` package from omarchy-pkgs. It is ONCE v0.3.2 with a small downstream patch, identified as `v0.3.2-omarchy1`; the vendor `once-bin` binary remains available separately. The launcher refuses an unpatched binary because the integration depends on proxy and backup behavior, not just API availability. The account must complete rootless Docker setup before installing or launching ONCE; run `omarchy-migrate` if setup remains pending.
 
 `omarchy-launch-once` pins the engine socket to the current user's `/run/user/<uid>` directory, clears Docker environment overrides, checks that the engine reports rootless operation, and selects the `omarchy-once` namespace. It sets `ONCE_ROOTLESS=1`, disables ONCE's binary self-updater, and uses a private umask for backups. The package manager owns binary updates. The user service uses the same launcher implementation through its packaged absolute path.
 

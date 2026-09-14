@@ -44,6 +44,8 @@ def main(engine, args):
     runtime_stat = runtime.stat()
     if runtime_stat.st_uid != uid or stat.S_IMODE(runtime_stat.st_mode) & 0o077:
         raise RuntimeError("A private user runtime directory is required; log in again.")
+    if engine == "docker" and not (Path.home() / ".local/state/omarchy/rootless-docker/enabled").is_file():
+        raise RuntimeError("Rootless Docker is not initialized for this account. Complete omarchy-migrate before launching ONCE.")
     env = {key: value for key, value in os.environ.items() if not key.startswith("DOCKER_")}
     env.update(XDG_RUNTIME_DIR=str(runtime), DBUS_SESSION_BUS_ADDRESS=f"unix:path={runtime}/bus", ONCE_NO_SELF_UPDATE="1", ONCE_ROOTLESS="1")
     version = subprocess.check_output(["once", "version"], env=env, text=True).strip()
