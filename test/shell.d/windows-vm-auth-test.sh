@@ -51,6 +51,8 @@ trap 'rm -rf "$test_dir"' EXIT
 touch "$test_dir/docker-compose.yml"
 MODE_LOG="$test_dir/mode" OMARCHY_WINDOWS_DIR="$test_dir" ROOT="$ROOT" bash -c '
   set -e
+  export HOME="$OMARCHY_WINDOWS_DIR/home"
+  mkdir -p "$HOME"
   set -- help
   source "$ROOT/bin/omarchy-windows-vm" >/dev/null
   priv() { printf "priv:%s\n" "$1" >>"$MODE_LOG"; }

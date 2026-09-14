@@ -1342,7 +1342,12 @@ remove_legacy_compose() {
 sync_legacy_compose_parent() {
   local parent
   parent=$(dirname -- "$LEGACY_COMPOSE_FILE")
-  if [[ -e $parent || -L $parent ]]; then
+  # A linked user config directory with no legacy definition has nothing to
+  # synchronize. Existing private root configuration remains authoritative;
+  # actual legacy removals still require the real directory below.
+  if [[ -L $parent && ! -e $LEGACY_COMPOSE_FILE && ! -L $LEGACY_COMPOSE_FILE ]]; then
+    assert_compose_trusted && compose_root_private
+  elif [[ -e $parent || -L $parent ]]; then
     [[ -d $parent && ! -L $parent ]] || return 1
     fsync_directory "$parent"
   fi

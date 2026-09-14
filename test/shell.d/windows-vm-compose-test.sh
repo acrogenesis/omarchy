@@ -260,6 +260,37 @@ grep -Fxq "$(dirname -- "$LEGACY_COMPOSE_FILE")" "$fsync_log" ||
   fail "an apparently completed legacy unlink was not synchronized on retry"
 pass "ordinary retries synchronize a previously interrupted legacy unlink"
 
+# User configuration may be linked elsewhere after the root definition owns
+# the VM. It must not block ordinary reconciliation or the migration's secure
+# action, and must never make a legacy deletion through that link acceptable.
+mv "$HOME/.config/windows" "$TMPDIR/windows-config"
+ln -s "$TMPDIR/windows-config" "$HOME/.config/windows"
+: >"$fsync_log"
+migrate_legacy_compose || fail "linked user config blocked an existing private root definition"
+[[ ! -s $fsync_log ]] || fail "empty linked legacy directory was synchronized"
+(
+  priv() {
+    [[ $1 == secure ]] || fail "unexpected migration action"
+    assert_compose_trusted && compose_root_private
+    printf 'secure\n' >"$TMPDIR/linked-config-secure"
+  }
+  secure_windows_migration || fail "linked user config blocked root migration security checks"
+)
+[[ $(<"$TMPDIR/linked-config-secure") == secure ]] || fail "migration skipped its root security action"
+printf 'legacy credentials\n' >"$LEGACY_COMPOSE_FILE"
+migrate_legacy_compose && fail "legacy removal through a linked config directory was accepted"
+[[ $(<"$LEGACY_COMPOSE_FILE") == "legacy credentials" ]] || fail "linked legacy definition was changed"
+rm "$LEGACY_COMPOSE_FILE"
+ln -s "$TMPDIR/missing-legacy" "$LEGACY_COMPOSE_FILE"
+migrate_legacy_compose && fail "dangling legacy symlink bypassed the directory boundary"
+rm "$LEGACY_COMPOSE_FILE"
+chmod 0644 "$COMPOSE"
+migrate_legacy_compose && fail "non-private root definition bypassed the linked config boundary"
+chmod 0600 "$COMPOSE"
+rm "$HOME/.config/windows"
+mv "$TMPDIR/windows-config" "$HOME/.config/windows"
+pass "linked user config permits private root operations without authorizing legacy removals"
+
 # A crash after the root-owned Compose rename but before its directory fsync can
 # leave both definitions. Retry must authenticate, synchronize the trusted file,
 # and only then durably remove the old credential-bearing user file.
