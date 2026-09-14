@@ -1,13 +1,17 @@
 echo "Move development containers to rootless Docker"
 
-# Existing ONCE deployments have a separate manager, routing state and backups.
-# Generic container transfer must not silently move them away from that manager.
-if pacman -Qq once-bin >/dev/null 2>&1; then
-  echo "ONCE is installed. Export and verify its applications before migrating engines." >&2
+# Preserve legacy ONCE managers, including those using a replacement package.
+# Pacman resolves provides: the rootless once package also provides once-bin.
+if ! once_provider=$(pacman -Qq once-bin 2>/dev/null); then
+  pacman -Qq >/dev/null
+  once_provider=""
+fi
+if [[ -n $once_provider && $once_provider != "once" ]] ||
+  systemctl is-active --quiet once-background.service ||
+  systemctl is-enabled --quiet once-background.service; then
+  echo "Legacy ONCE is installed or enabled. Export and verify its applications before migrating engines." >&2
   echo "The existing ONCE service and Docker data were left unchanged; migration remains pending." >&2
   exit 1
-else
-  pacman -Qq >/dev/null
 fi
 
 migration_uid=$(id -u)
