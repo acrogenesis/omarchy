@@ -126,8 +126,18 @@ chmod 0755 "$TEST_ROOT/config-target"
 write_credentials linked secret
 [[ $(stat -c '%a' "$TEST_ROOT/config-target") == 700 ]]
 touch "$TEST_ROOT/config-target/keep"
+# These private candidates model SIGKILL/power-loss leftovers with no EXIT trap.
+for candidate in .credentials-install.ABC123 .credentials.XYZ123; do
+  printf 'interrupted private credentials\n' >"$TEST_ROOT/config-target/$candidate"
+  chmod 0600 "$TEST_ROOT/config-target/$candidate"
+done
+# Cleanup must unlink a planted candidate symlink without following its target.
+printf 'external data\n' >"$TEST_ROOT/candidate-victim"
+ln -s "$TEST_ROOT/candidate-victim" "$TEST_ROOT/config-target/.credentials.LINK12"
 migrate_legacy_compose() { return 1; }
 remove_windows
+[[ -z $(find "$TEST_ROOT/config-target" -name '.credentials*' -print) ]]
+[[ $(<"$TEST_ROOT/candidate-victim") == 'external data' ]]
 [[ ! -e $TEST_ROOT/config-target/credentials && -f $TEST_ROOT/config-target/keep ]]
 [[ ! -L $HOME/.config/windows && ! -e $HOME/.config/windows ]]
 ''')
@@ -138,7 +148,7 @@ ln -s "$TEST_ROOT/config-target" "$HOME/.config/windows"
 write_credentials linked secret
 migrate_legacy_compose() { return 1; }
 rm() {
-  if [[ ${!#} == "$CREDENTIALS_FILE" ]]; then return 1; fi
+  if [[ " $* " == *" $CREDENTIALS_FILE "* ]]; then return 1; fi
   command rm "$@"
 }
 if (remove_windows); then exit 9; fi

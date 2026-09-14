@@ -1655,9 +1655,12 @@ remove_windows() {
     }
   fi
 
-  # Remove credentials through a linked config directory before removing
-  # the link itself, and retain the link if that cleanup fails.
-  if ! rm -f -- "$CREDENTIALS_FILE" ||
+  # Remove credentials and candidates left by an interrupted install through
+  # a linked config directory before removing the link itself.
+  local credentials_dir
+  credentials_dir=$(dirname -- "$CREDENTIALS_FILE")
+  if ! rm -f -- "$CREDENTIALS_FILE" \
+    "$credentials_dir"/.credentials-install.* "$credentials_dir"/.credentials.* ||
     ! rm -f -- "$HOME/.local/share/applications/windows-vm.desktop" ||
     ! rm -rf -- "$HOME/.config/windows" "$HOME/.windows"; then
     echo "❌ Windows VM user data cleanup failed; inspect the remaining files before retrying." >&2
