@@ -260,8 +260,8 @@ grep -Fxq "$(dirname -- "$LEGACY_COMPOSE_FILE")" "$fsync_log" ||
   fail "an apparently completed legacy unlink was not synchronized on retry"
 pass "ordinary retries synchronize a previously interrupted legacy unlink"
 
-# User configuration may be linked elsewhere after the root definition owns
-# the VM. It must not block ordinary reconciliation or the migration's secure
+# User configuration may be linked elsewhere independently of VM setup. It
+# must not block ordinary reconciliation or the migration's secure
 # action, and must never make a legacy deletion through that link acceptable.
 mv "$HOME/.config/windows" "$TMPDIR/windows-config"
 ln -s "$TMPDIR/windows-config" "$HOME/.config/windows"
@@ -271,25 +271,49 @@ migrate_legacy_compose || fail "linked user config blocked an existing private r
 (
   priv() {
     [[ $1 == secure ]] || fail "unexpected migration action"
-    assert_compose_trusted && compose_root_private
+    assert_compose_trusted && compose_root_private || fail "root definition is not trusted and private"
     printf 'secure\n' >"$TMPDIR/linked-config-secure"
   }
   secure_windows_migration || fail "linked user config blocked root migration security checks"
 )
 [[ $(<"$TMPDIR/linked-config-secure") == secure ]] || fail "migration skipped its root security action"
 printf 'legacy credentials\n' >"$LEGACY_COMPOSE_FILE"
-migrate_legacy_compose && fail "legacy removal through a linked config directory was accepted"
+legacy_error=$(migrate_legacy_compose 2>&1) && fail "legacy removal through a linked config directory was accepted"
+[[ $legacy_error == *"$HOME/.config/windows"* ]] || fail "unsafe legacy directory error omitted its path"
 [[ $(<"$LEGACY_COMPOSE_FILE") == "legacy credentials" ]] || fail "linked legacy definition was changed"
 rm "$LEGACY_COMPOSE_FILE"
 ln -s "$TMPDIR/missing-legacy" "$LEGACY_COMPOSE_FILE"
 migrate_legacy_compose && fail "dangling legacy symlink bypassed the directory boundary"
 rm "$LEGACY_COMPOSE_FILE"
 chmod 0644 "$COMPOSE"
-migrate_legacy_compose && fail "non-private root definition bypassed the linked config boundary"
+migrate_legacy_compose || fail "linked user config blocked a root definition awaiting repair"
+(
+  priv() {
+    [[ $1 == secure ]] || fail "unexpected root repair action"
+    [[ $(stat -c '%a' "$COMPOSE_FILE") == 644 ]] || fail "root permissions changed before authorization"
+    printf 'repair\n' >"$TMPDIR/linked-config-repair"
+  }
+  secure_windows_migration || fail "linked user config blocked authenticated root repair"
+)
+[[ $(<"$TMPDIR/linked-config-repair") == repair ]] || fail "migration skipped root repair authorization"
 chmod 0600 "$COMPOSE"
+(
+  COMPOSE_FILE="$TMPDIR/no-vm-compose.yml"
+  priv() {
+    [[ $1 == secure ]] || fail "unexpected absent VM action"
+    __priv_secure
+  }
+  docker() {
+    [[ $1 == inspect && $2 == "$CONTAINER" ]] || fail "unexpected absent VM Docker command"
+    printf 'inspect\n' >"$TMPDIR/linked-config-no-vm"
+    return 1
+  }
+  secure_windows_migration || fail "linked user config blocked migration without a VM"
+)
+[[ $(<"$TMPDIR/linked-config-no-vm") == inspect ]] || fail "migration skipped the privileged absent VM check"
 rm "$HOME/.config/windows"
 mv "$TMPDIR/windows-config" "$HOME/.config/windows"
-pass "linked user config permits private root operations without authorizing legacy removals"
+pass "linked user config permits root operations, repair and absent VMs without authorizing legacy removals"
 
 # A crash after the root-owned Compose rename but before its directory fsync can
 # leave both definitions. Retry must authenticate, synchronize the trusted file,
@@ -695,6 +719,15 @@ unset -f mv
 [[ $(cat "$CREDENTIALS_FILE") == "$credentials_before" ]] || fail "failed credentials rename replaced the live file"
 ! find "$credentials_dir" -name '.credentials.*' -print -quit | grep -q . || fail "failed credentials write left a temporary file"
 pass "credentials are atomically replaced as a private regular file"
+
+# A linked user config directory is valid; synchronize its actual directory.
+mv "$credentials_dir" "$TMPDIR/linked-credentials-target"
+ln -s "$TMPDIR/linked-credentials-target" "$credentials_dir"
+write_credentials linked 'private=value' || fail "linked credentials directory rejected"
+[[ $(read_credential USERNAME) == linked && $(read_credential PASSWORD) == 'private=value' ]] || fail "linked credentials did not round-trip"
+[[ $(stat -c '%a' "$TMPDIR/linked-credentials-target") == 700 && $(stat -c '%a' "$CREDENTIALS_FILE") == 600 ]] || fail "linked credentials are not private"
+pass "credentials support a linked user configuration directory"
+
 
 # Free-space accounting follows the real storage target.
 reset_case

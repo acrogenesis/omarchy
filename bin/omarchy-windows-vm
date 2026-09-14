@@ -1231,6 +1231,7 @@ write_credentials() {
   local username="$1" password="$2" old_umask dir tmp
   dir=$(dirname -- "$CREDENTIALS_FILE")
   mkdir -p "$dir" || return 1
+  dir=$(realpath -e -- "$dir") || return 1
   chmod 0700 "$dir" || return 1
   old_umask=$(umask)
   umask 077
@@ -1343,12 +1344,15 @@ sync_legacy_compose_parent() {
   local parent
   parent=$(dirname -- "$LEGACY_COMPOSE_FILE")
   # A linked user config directory with no legacy definition has nothing to
-  # synchronize. Existing private root configuration remains authoritative;
+  # synchronize. The privileged action checks or repairs the root definition;
   # actual legacy removals still require the real directory below.
   if [[ -L $parent && ! -e $LEGACY_COMPOSE_FILE && ! -L $LEGACY_COMPOSE_FILE ]]; then
-    assert_compose_trusted && compose_root_private
+    return 0
   elif [[ -e $parent || -L $parent ]]; then
-    [[ -d $parent && ! -L $parent ]] || return 1
+    [[ -d $parent && ! -L $parent ]] || {
+      echo "omarchy-windows-vm: legacy configuration requires a real directory: $parent" >&2
+      return 1
+    }
     fsync_directory "$parent"
   fi
 }
