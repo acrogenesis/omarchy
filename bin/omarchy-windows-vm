@@ -1227,12 +1227,22 @@ decode_legacy_field() {
 # Store the RDP credentials privately for the user (0600) so the plaintext
 # password is not world-readable. The password is one validated printable line
 # (no newline), so plain KEY=VALUE is safe.
-write_credentials() {
-  local username="$1" password="$2" old_umask dir tmp
+credentials_directory() {
+  local dir
+  if [[ -d $CREDENTIALS_FILE && ! -L $CREDENTIALS_FILE ]]; then
+    echo "omarchy-windows-vm: credentials path is a directory: $CREDENTIALS_FILE" >&2
+    return 1
+  fi
   dir=$(dirname -- "$CREDENTIALS_FILE")
   mkdir -p "$dir" || return 1
   dir=$(realpath -e -- "$dir") || return 1
   chmod 0700 "$dir" || return 1
+  printf '%s\n' "$dir"
+}
+
+write_credentials() {
+  local username="$1" password="$2" old_umask dir tmp
+  dir=$(credentials_directory) || return 1
   old_umask=$(umask)
   umask 077
   tmp=$(mktemp "$dir/.credentials.XXXXXX") || { umask "$old_umask"; return 1; }
@@ -1245,6 +1255,34 @@ write_credentials() {
   fi
   umask "$old_umask"
 }
+
+# Validate and stage credentials before privileged installation. A failed
+# Compose write leaves an existing VM's credentials unchanged.
+write_install_configuration() (
+  local dir candidate
+  dir=$(credentials_directory) || {
+    echo "❌ Could not prepare the private RDP credentials directory." >&2
+    exit 1
+  }
+  candidate=$(mktemp "$dir/.credentials-install.XXXXXX") || exit 1
+  trap 'rm -f -- "$candidate"' EXIT
+  CREDENTIALS_FILE="$candidate" write_credentials "$4" "$5" || {
+    echo "❌ Failed to stage private RDP credentials." >&2
+    exit 1
+  }
+  write_compose "$@" || {
+    echo "❌ Failed to write the Windows VM configuration." >&2
+    exit 1
+  }
+  mv -fT -- "$candidate" "$CREDENTIALS_FILE" || {
+    echo "❌ Failed to publish private RDP credentials. The VM was not started." >&2
+    exit 1
+  }
+  fsync_directory "$dir" || {
+    echo "❌ Failed to synchronize private RDP credentials. The VM was not started." >&2
+    exit 1
+  }
+)
 
 # Read one field from the private credentials file; IFS on the first = keeps a
 # password that itself contains =.
@@ -1341,6 +1379,10 @@ remove_legacy_compose() {
 }
 
 sync_legacy_compose_parent() {
+  if [[ -L $LEGACY_COMPOSE_FILE ]]; then
+    echo "omarchy-windows-vm: legacy configuration must not be a symlink: $LEGACY_COMPOSE_FILE" >&2
+    return 1
+  fi
   local parent
   parent=$(dirname -- "$LEGACY_COMPOSE_FILE")
   # A linked user config directory with no legacy definition has nothing to
@@ -1551,18 +1593,8 @@ EOF
   local tz
   tz=$(timedatectl show -p Timezone --value 2>/dev/null || echo UTC)
 
-  # Write the root-owned compose from the validated settings. The writer pins
-  # the familiar home directories (or
-  # their legitimate symlink targets) into root-protected bind anchors.
-  write_compose "$SELECTED_RAM" "$SELECTED_CORES" "$SELECTED_DISK" \
-    "$USERNAME" "$PASSWORD" "$tz" || {
-    echo "❌ Failed to write the Windows VM configuration."
-    exit 1
-  }
-  write_credentials "$USERNAME" "$PASSWORD" || {
-    echo "❌ Failed to store private RDP credentials." >&2
-    exit 1
-  }
+  write_install_configuration "$SELECTED_RAM" "$SELECTED_CORES" "$SELECTED_DISK" \
+    "$USERNAME" "$PASSWORD" "$tz" || exit 1
 
   echo ""
   echo "Starting Windows VM installation..."
@@ -1623,9 +1655,14 @@ remove_windows() {
     }
   fi
 
-  rm -f "$HOME/.local/share/applications/windows-vm.desktop"
-  rm -rf "$HOME/.config/windows"
-  rm -rf "$HOME/.windows"
+  # Remove credentials through a linked config directory before removing
+  # the link itself, and retain the link if that cleanup fails.
+  if ! rm -f -- "$CREDENTIALS_FILE" ||
+    ! rm -f -- "$HOME/.local/share/applications/windows-vm.desktop" ||
+    ! rm -rf -- "$HOME/.config/windows" "$HOME/.windows"; then
+    echo "❌ Windows VM user data cleanup failed; inspect the remaining files before retrying." >&2
+    exit 1
+  fi
 
   echo ""
   echo "Windows VM removal completed!"

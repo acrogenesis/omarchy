@@ -723,6 +723,7 @@ pass "credentials are atomically replaced as a private regular file"
 # A linked user config directory is valid; synchronize its actual directory.
 mv "$credentials_dir" "$TMPDIR/linked-credentials-target"
 ln -s "$TMPDIR/linked-credentials-target" "$credentials_dir"
+chmod 0755 "$TMPDIR/linked-credentials-target"
 write_credentials linked 'private=value' || fail "linked credentials directory rejected"
 [[ $(read_credential USERNAME) == linked && $(read_credential PASSWORD) == 'private=value' ]] || fail "linked credentials did not round-trip"
 [[ $(stat -c '%a' "$TMPDIR/linked-credentials-target") == 700 && $(stat -c '%a' "$CREDENTIALS_FILE") == 600 ]] || fail "linked credentials are not private"
