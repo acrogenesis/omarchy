@@ -261,6 +261,46 @@ grep -q -- '--check-target-policy' "$behavior_log" ||
   fail "an incompatible active rootless daemon was changed before rejection"
 pass "active custom rootless workloads are rejected without service disruption"
 
+# Exercise service setup with systemd's first-install behavior: reset-failed
+# rejects an inactive unit which was unloaded by daemon-reload.
+service_setup="$test_dir/service-setup.sh"
+cat >"$service_setup" <<'EOF'
+set -euo pipefail
+target_was_active=0
+[[ $TEST_SERVICE_STATE != active ]] || target_was_active=1
+systemctl() {
+  echo "$*" >>"$TEST_SERVICE_LOG"
+  case "$*" in
+    '--user is-failed --quiet docker.service') [[ $TEST_SERVICE_STATE == failed ]] ;;
+    '--user reset-failed docker.service') [[ $TEST_SERVICE_STATE == failed && $TEST_SERVICE_FAIL != reset ]] ;;
+    '--user enable docker.service') [[ $TEST_SERVICE_FAIL != enable ]] ;;
+    '--user start docker.service') [[ $TEST_SERVICE_FAIL != start ]] ;;
+  esac
+}
+EOF
+sed -n '/^systemctl --user daemon-reload$/,/^target_host=/{ /^target_host=/d; p; }' "$migration" >>"$service_setup"
+for state in inactive failed active; do
+  service_log="$test_dir/service-$state.log"
+  TEST_SERVICE_STATE="$state" TEST_SERVICE_FAIL=none TEST_SERVICE_LOG="$service_log" bash "$service_setup" ||
+    fail "service setup fails for daemon state $state"
+  if [[ $state == failed ]]; then
+    grep -q -- '--user reset-failed docker.service' "$service_log" || fail "failed daemon was not reset"
+  else
+    ! grep -q -- '--user reset-failed docker.service' "$service_log" || fail "non-failed daemon was reset"
+  fi
+  if [[ $state == active ]]; then
+    ! grep -q -- '--user start docker.service' "$service_log" || fail "active daemon was started again"
+  else
+    grep -q -- '--user start docker.service' "$service_log" || fail "inactive daemon was not started"
+  fi
+done
+for operation in reset enable start; do
+  if TEST_SERVICE_STATE=failed TEST_SERVICE_FAIL="$operation" TEST_SERVICE_LOG="$test_dir/failure.log" bash "$service_setup"; then
+    fail "service setup ignored a $operation failure"
+  fi
+done
+pass "first-install service setup skips absent failure state, recovers failed units and preserves active workloads"
+
 reset_line=$(grep -n 'systemctl --user reset-failed docker.service' "$migration" | cut -d: -f1)
 user_enable_line=$(grep -n 'systemctl --user enable docker.service' "$migration" | cut -d: -f1)
 user_start_line=$(grep -n 'systemctl --user start docker.service' "$migration" | cut -d: -f1)

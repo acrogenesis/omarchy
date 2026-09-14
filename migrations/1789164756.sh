@@ -73,7 +73,9 @@ systemctl --user daemon-reload
 # before their subordinate IDs and per-user daemon config exist. Enable only
 # this initialized account and clear any early start-limit failure. Preserve an
 # existing daemon and its workloads; only start a daemon that was inactive.
-systemctl --user reset-failed docker.service
+if systemctl --user is-failed --quiet docker.service; then
+  systemctl --user reset-failed docker.service
+fi
 systemctl --user enable docker.service
 if (( target_was_active == 0 )); then
   systemctl --user start docker.service
