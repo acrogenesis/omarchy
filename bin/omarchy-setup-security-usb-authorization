@@ -22,6 +22,9 @@ while (( $# > 0 )); do
     echo "--boot also blocks USB devices from the start of kernel boot. Connected"
     echo "devices are added to USBGuard's policy, but remain unavailable before"
     echo "USBGuard starts, including at an encrypted-disk password prompt."
+    echo "Older snapshots without USBGuard keep all USB disabled after startup,"
+    echo "including keyboards, network adapters, and storage. Use --boot only if"
+    echo "disk unlock and recovery work without any USB devices."
     exit 0
     ;;
   *)
@@ -53,8 +56,11 @@ if (( ! assume_yes )); then
     echo
     echo "Boot-time protection blocks all USB devices until USBGuard starts."
     echo "A USB keyboard will not work at an encrypted-disk password prompt, even"
-    echo "when it is connected now. Continue only if unlock and recovery do not"
-    echo "depend on USB input."
+    echo "when it is connected now."
+    echo
+    echo "Older snapshots without USBGuard keep ALL USB disabled after startup,"
+    echo "including keyboards, network adapters, and storage."
+    echo "Continue only if disk unlock and recovery work without any USB devices."
   fi
   echo
   if (( from_boot )); then

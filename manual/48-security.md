@@ -19,7 +19,9 @@ Only approve hardware you recognize. A malicious USB device can forge the manufa
 
 The policy protects devices connected after USBGuard starts during boot. It does not replace operating-system and driver security updates, and USB devices needed before the service starts, such as a keyboard used to unlock an encrypted disk, remain governed by the kernel's boot-time policy.
 
-For machines whose disk unlock and recovery never depend on USB input, _Setup > Security > USB at Boot_ can extend the block to the beginning of kernel boot. Omarchy adds every currently connected device to USBGuard's trusted policy, sets `usbcore.authorized_default=0`, and updates current and Limine snapshot boot entries. The trusted policy applies only once USBGuard starts: even a trusted USB keyboard remains unavailable at an earlier encrypted-disk password prompt. _Remove > Security > USB at Boot_ restores the normal early-boot behavior while keeping USBGuard active after startup.
+For machines whose disk unlock and recovery never depend on any USB devices, _Setup > Security > USB at Boot_ can extend the block to the beginning of kernel boot. Omarchy adds every currently connected device to USBGuard's trusted policy, sets `usbcore.authorized_default=0`, and updates current and Limine snapshot boot entries. The trusted policy applies only once USBGuard starts: even a trusted USB keyboard remains unavailable at an earlier encrypted-disk password prompt.
+
+Older snapshots created before USBGuard was installed and enabled keep all USB disabled even after startup, including keyboards, network adapters, and storage. Trusting the devices connected now does not make them available in those snapshots. Enable boot-time protection only if you can unlock and recover the machine without any USB devices. _Remove > Security > USB at Boot_ restores the normal early-boot behavior while keeping USBGuard active after startup.
 
 ## Changing your passwords
 
