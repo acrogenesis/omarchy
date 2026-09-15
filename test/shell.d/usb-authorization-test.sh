@@ -67,6 +67,7 @@ generate-policy)
   ;;
 list-devices)
   if [[ ${2:-} == "--blocked" ]]; then
+    if [[ -n ${BLOCKED_DEVICES_FILE:-} ]]; then cat "$BLOCKED_DEVICES_FILE"; exit 0; fi
     if [[ ${BLOCKED_DEVICE_PRESENT:-1} == 1 ]]; then
       rule="${BLOCKED_DEVICE_RULE:?}"
       if [[ -n ${BLOCKED_DEVICE_RULE_FILE:-} && -f $BLOCKED_DEVICE_RULE_FILE ]]; then
@@ -126,7 +127,17 @@ cat >"$stub_bin/omarchy-notification-send" <<'STUB'
 printf 'notification' >>"$CALLS"
 printf ' <%s>' "$@" >>"$CALLS"
 printf '\n' >>"$CALLS"
-exit "${NOTIFICATION_FAIL:-0}"
+if [[ -n ${NOTIFICATION_FAILURE_MARKER:-} && ! -e $NOTIFICATION_FAILURE_MARKER ]]; then
+  touch "$NOTIFICATION_FAILURE_MARKER"
+  exit 1
+fi
+STUB
+cat >"$stub_bin/omarchy-notification-wait" <<'STUB'
+#!/bin/bash
+if [[ -n ${NOTIFICATION_READY_FILE:-} ]]; then
+  touch "$NOTIFICATION_READY_FILE.waited"
+  [[ -e $NOTIFICATION_READY_FILE ]]
+fi
 STUB
 chmod +x "$stub_bin"/*
 
@@ -515,16 +526,26 @@ fi
 pass "USB review binds approval to the device snapshot"
 
 notification_count=$(grep -c '^notification' "$calls")
-if NOTIFICATION_FAIL=1 USBGUARD_IPC_SIGNAL=IPC.Connected \
-  "$ROOT/bin/omarchy-usb-authorization-event"; then
-  fail "a failed notification must report failure"
-fi
-[[ ! -e $request ]] || fail "a failed notification must not suppress retries"
-USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event"
-[[ -f $request ]] || fail "reconnection retries a failed notification"
-[[ $(grep -c '^notification' "$calls") == $((notification_count + 2)) ]] ||
-  fail "reconnection must attempt delivery after an earlier send failure"
-pass "failed USB notifications can be retried on reconnection"
+printf '17: %s\n18: %s\n' "$malicious_rule" 'block id 1234:5678 name "Second blocked device" hash "second"' >"$scratch/two-blocked"
+NOTIFICATION_READY_FILE="$scratch/notification-ready" \
+  NOTIFICATION_FAILURE_MARKER="$scratch/first-send-failed" \
+  BLOCKED_DEVICES_FILE="$scratch/two-blocked" \
+  USBGUARD_IPC_SIGNAL=IPC.Connected \
+  timeout 10 "$ROOT/bin/omarchy-usb-authorization-event" &
+scan_pid=$!
+for ((attempt=0; attempt<50; attempt++)); do
+  [[ -e $scratch/notification-ready.waited ]] && break
+  sleep 0.02
+done
+[[ -e $scratch/notification-ready.waited ]] || fail "startup waits for notification readiness"
+[[ $(grep -c '^notification' "$calls") == "$notification_count" ]] ||
+  fail "startup does not send before the notification server is ready"
+touch "$scratch/notification-ready"
+wait "$scan_pid" || fail "startup scan must retry and finish without another USB event"
+[[ $(grep -c '^notification' "$calls") == $((notification_count + 3)) ]] ||
+  fail "two blocked devices must be notified despite a failed first send"
+[[ -f $request ]] || fail "successful retry leaves a reviewable request"
+pass "USB startup waits for notifications and automatically retries delivery for all devices"
 
 sysfs="$scratch/sys/bus/usb/devices"
 mkdir -p "$sysfs/usb1" "$sysfs/1-2"
