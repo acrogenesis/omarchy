@@ -68,11 +68,16 @@ jq -n \
 chmod 600 "$temporary"
 mv -f "$temporary" "$request"
 
-omarchy-notification-send \
+if ! omarchy-notification-send \
   --app-name omarchy-action \
   --urgency critical \
   --glyph 󰖀 \
   "USB accessory blocked" \
   "Click to review it. Keep it blocked unless you recognize the device." \
   --exec omarchy-launch-floating-terminal-with-presentation \
-  omarchy-usb-authorization-review "$token"
+  omarchy-usb-authorization-review "$token"; then
+  # Only a delivered notification may suppress subsequent attempts. Keep the
+  # lock until failure cleanup so another event cannot skip an unsent request.
+  rm -f "$request"
+  exit 1
+fi

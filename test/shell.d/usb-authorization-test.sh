@@ -123,6 +123,7 @@ cat >"$stub_bin/omarchy-notification-send" <<'STUB'
 printf 'notification' >>"$CALLS"
 printf ' <%s>' "$@" >>"$CALLS"
 printf '\n' >>"$CALLS"
+exit "${NOTIFICATION_FAIL:-0}"
 STUB
 chmod +x "$stub_bin"/*
 
@@ -438,6 +439,18 @@ fi
   fail "a reused USBGuard id cannot authorize a different device"
 [[ ! -e $request ]] || fail "a stale review request is discarded"
 pass "USB review binds approval to the device snapshot"
+
+notification_count=$(grep -c '^notification' "$calls")
+if NOTIFICATION_FAIL=1 USBGUARD_IPC_SIGNAL=IPC.Connected \
+  "$ROOT/bin/omarchy-usb-authorization-event"; then
+  fail "a failed notification must report failure"
+fi
+[[ ! -e $request ]] || fail "a failed notification must not suppress retries"
+USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event"
+[[ -f $request ]] || fail "reconnection retries a failed notification"
+[[ $(grep -c '^notification' "$calls") == $((notification_count + 2)) ]] ||
+  fail "reconnection must attempt delivery after an earlier send failure"
+pass "failed USB notifications can be retried on reconnection"
 
 sysfs="$scratch/sys/bus/usb/devices"
 mkdir -p "$sysfs/usb1" "$sysfs/1-2"
