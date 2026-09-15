@@ -269,6 +269,50 @@ usb_authorization_disable_snapshot_setting "$snapshot_config"
   fail "removing boot authorization restores future snapshot defaults"
 pass "boot authorization verifies generated entries despite Limine false-success exits"
 
+manifest="$scratch/snapshots.json"
+jq -n --arg hash "$boot_hash" '
+  def kernel:
+    {cmdlineDetails: [{limineKey: "CMDLINE", cmdline: "quiet rootflags=subvol=@", snapshotCmdline: "quiet rootflags=subvol=/snapshot"}],
+     allInConfig: ["  cmdline: quiet rootflags=subvol=@"],
+     allInSnapshotConfig: ["comment: kernel-id=linux", "path: boot():/vmlinuz-linux#" + $hash, "cmdline: quiet rootflags=subvol=/snapshot"],
+     subKernels: [], properties: {untouched: "usbcore.authorized_default=0"}};
+  {jsonFormatVersion: "1.3.0", snapshotEntries: [{kernelEntries: [kernel | .subKernels = [kernel | .allInSnapshotConfig = []]]}], uuid: "preserve-me"}
+' >"$manifest"
+cp "$manifest" "$scratch/manifest-original.json"
+for expected in enabled disabled; do
+  usb_authorization_rewrite_snapshot_manifest "$expected" "$manifest"
+  cp "$manifest" "$scratch/manifest-once.json"
+  usb_authorization_rewrite_snapshot_manifest "$expected" "$manifest"
+  cmp -s "$manifest" "$scratch/manifest-once.json" || fail "manifest updates are idempotent"
+  # Model both Limine render paths: cached lines and structured details.
+  for representation in cached structured; do
+    {
+      printf '/Omarchy\ncomment: machine-id=%s\n  //linux\n' "$machine_id"
+      if [[ $representation == "cached" ]]; then
+        jq -r '.snapshotEntries[0].kernelEntries[0].allInSnapshotConfig[]' "$manifest"
+      else
+        printf 'comment: kernel-id=linux\npath: boot():/vmlinuz-linux#%s\n' "$boot_hash"
+        jq -r '"cmdline: " + .snapshotEntries[0].kernelEntries[0].subKernels[0].cmdlineDetails[0].snapshotCmdline' "$manifest"
+      fi
+    } >"$scratch/regenerated.conf"
+    usb_authorization_verify_boot_entries "$expected" "$scratch/regenerated.conf" "$scratch" "$machine_id" disabled ||
+      fail "snapshot synchronization preserves $expected policy from $representation entries"
+  done
+  jq -e '.snapshotEntries[0].kernelEntries[0].properties.untouched == "usbcore.authorized_default=0"' "$manifest" >/dev/null ||
+    fail "manifest changes preserve unrelated metadata"
+done
+jq -S . "$manifest" >"$scratch/manifest-after.json"
+jq -S . "$scratch/manifest-original.json" >"$scratch/manifest-before.json"
+cmp -s "$scratch/manifest-before.json" "$scratch/manifest-after.json" ||
+  fail "disable restores all stored command lines without changing other snapshot data"
+printf '{bad json' >"$scratch/bad-manifest.json"
+if usb_authorization_rewrite_snapshot_manifest enabled "$scratch/bad-manifest.json" 2>/dev/null; then
+  fail "invalid manifests must fail closed"
+fi
+[[ $(<"$scratch/bad-manifest.json") == '{bad json' ]] || fail "failed manifest updates preserve the original"
+pass "USB boot policy survives snapshot regeneration from cached and structured manifests"
+
+
 : >"$calls"
 "$ROOT/bin/omarchy-remove-security-usb-authorization" --boot-only --yes >"$scratch/remove-boot-output"
 grep -Fqx 'sudo <omarchy-usb-authorization-boot> <disable>' "$calls" ||
