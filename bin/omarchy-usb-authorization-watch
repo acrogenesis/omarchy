@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# omarchy:hidden=true
+# omarchy:summary=Watch USBGuard for devices awaiting user approval
+
+set -euo pipefail
+
+event_handler="$OMARCHY_PATH/bin/omarchy-usb-authorization-event"
+
+# A device inserted while the graphical session was stopped is already safely
+# blocked by USBGuard. Surface it now so the user can approve it after login.
+while IFS= read -r line; do
+  if [[ $line =~ ^([0-9]+):[[:space:]](block.*)$ ]]; then
+    USBGUARD_IPC_SIGNAL=Device.PresenceChanged \
+      USBGUARD_DEVICE_ID="${BASH_REMATCH[1]}" \
+      USBGUARD_DEVICE_EVENT=Insert \
+      USBGUARD_DEVICE_TARGET=block \
+      USBGUARD_DEVICE_RULE="${BASH_REMATCH[2]}" \
+      "$event_handler"
+  fi
+done < <(usbguard list-devices --blocked)
+
+exec usbguard watch --wait --exec "$event_handler"

@@ -1,0 +1,40 @@
+#!/bin/bash
+
+# omarchy:hidden=true
+# omarchy:summary=Create an approval request for a blocked USB device
+
+set -euo pipefail
+
+[[ ${USBGUARD_IPC_SIGNAL:-} == "Device.PresenceChanged" ]] || exit 0
+[[ ${USBGUARD_DEVICE_EVENT:-} == "Insert" ]] || exit 0
+[[ ${USBGUARD_DEVICE_TARGET:-} == "block" ]] || exit 0
+[[ ${USBGUARD_DEVICE_ID:-} =~ ^[0-9]+$ ]] || exit 0
+[[ -n ${USBGUARD_DEVICE_RULE:-} ]] || exit 0
+
+requests="$HOME/.local/state/omarchy/usb-authorization/requests"
+mkdir -p "$requests"
+chmod 700 "${requests%/*}" "$requests"
+
+# The token is safe to carry through the presentation launcher's command
+# string. The device-controlled rule itself stays in a mode-0600 JSON file and
+# is never interpolated into a shell command.
+token="request-$(printf '%s\0%s' "$USBGUARD_DEVICE_ID" "$USBGUARD_DEVICE_RULE" | sha256sum | cut -d' ' -f1)"
+request="$requests/$token.json"
+temporary=$(mktemp "$requests/.request.XXXXXXXXXX")
+trap 'rm -f "$temporary"' EXIT
+
+jq -n \
+  --arg id "$USBGUARD_DEVICE_ID" \
+  --arg rule "$USBGUARD_DEVICE_RULE" \
+  '{id: $id, rule: $rule}' >"$temporary"
+chmod 600 "$temporary"
+mv -f "$temporary" "$request"
+
+omarchy-notification-send \
+  --app-name omarchy-action \
+  --urgency critical \
+  --glyph 󰖀 \
+  "USB accessory blocked" \
+  "Click to review it. Keep it blocked unless you recognize the device." \
+  --exec omarchy-launch-floating-terminal-with-presentation \
+  omarchy-usb-authorization-review "$token"
