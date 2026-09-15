@@ -5,9 +5,30 @@
 
 set -euo pipefail
 
-[[ ${USBGUARD_IPC_SIGNAL:-} == "Device.PresenceChanged" ]] || exit 0
-[[ ${USBGUARD_DEVICE_EVENT:-} == "Insert" ]] || exit 0
-[[ ${USBGUARD_DEVICE_TARGET:-} == "block" ]] || exit 0
+case "${USBGUARD_IPC_SIGNAL:-}" in
+IPC.Connected)
+  # USBGuard scans present devices before accepting IPC connections. Repeat
+  # this on every reconnect: temporary approvals disappear on daemon restart.
+  blocked=$(usbguard list-devices --blocked) || exit 1
+  while IFS= read -r line; do
+    if [[ $line =~ ^([0-9]+):[[:space:]](block.*)$ ]]; then
+      USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
+        USBGUARD_DEVICE_ID="${BASH_REMATCH[1]}" \
+        USBGUARD_DEVICE_TARGET_NEW=block \
+        USBGUARD_DEVICE_RULE="${BASH_REMATCH[2]}" \
+        "$OMARCHY_PATH/bin/omarchy-usb-authorization-event"
+    fi
+  done <<<"$blocked"
+  exit 0
+  ;;
+Device.PolicyApplied)
+  # PresenceChanged precedes policy evaluation, even for trusted devices.
+  # PolicyApplied also covers block-to-block and allow-to-block transitions.
+  [[ ${USBGUARD_DEVICE_TARGET_NEW:-} == "block" ]] || exit 0
+  ;;
+*) exit 0 ;;
+esac
+
 [[ ${USBGUARD_DEVICE_ID:-} =~ ^[0-9]+$ ]] || exit 0
 [[ -n ${USBGUARD_DEVICE_RULE:-} ]] || exit 0
 
@@ -20,6 +41,23 @@ chmod 700 "${requests%/*}" "$requests"
 # is never interpolated into a shell command.
 token="request-$(printf '%s\0%s' "$USBGUARD_DEVICE_ID" "$USBGUARD_DEVICE_RULE" | sha256sum | cut -d' ' -f1)"
 request="$requests/$token.json"
+# watch executes handlers concurrently. A reconnect scan and a policy event
+# can refer to the same device; publish only one pending request.
+exec 9>"$requests/.lock"
+flock 9
+[[ ! -e $request ]] || exit 0
+
+# Discard events overtaken by another policy decision or device replacement.
+blocked=$(usbguard list-devices --blocked) || exit 1
+current=0
+while IFS= read -r line; do
+  if [[ $line == "$USBGUARD_DEVICE_ID: $USBGUARD_DEVICE_RULE" ]]; then
+    current=1
+    break
+  fi
+done <<<"$blocked"
+(( current )) || exit 0
+
 temporary=$(mktemp "$requests/.request.XXXXXXXXXX")
 trap 'rm -f "$temporary"' EXIT
 

@@ -307,10 +307,35 @@ pass "USB authorization is the default for fresh and existing installations"
 
 malicious_rule='block id 07a6:8513 name "$(touch '"$scratch"'/injected)" hash "attacker" with-interface 02:06:00'
 export BLOCKED_DEVICE_RULE="$malicious_rule"
-USBGUARD_IPC_SIGNAL=Device.PresenceChanged \
+notification_count=$(grep -c '^notification' "$calls" || true)
+for presence in Insert Present; do
+  USBGUARD_IPC_SIGNAL=Device.PresenceChanged \
+    USBGUARD_DEVICE_EVENT="$presence" \
+    USBGUARD_DEVICE_TARGET=block \
+    USBGUARD_DEVICE_ID=17 \
+    USBGUARD_DEVICE_RULE="$malicious_rule" \
+    "$ROOT/bin/omarchy-usb-authorization-event"
+done
+USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
+  USBGUARD_DEVICE_TARGET_NEW=allow \
+  USBGUARD_DEVICE_ID=17 \
+  USBGUARD_DEVICE_RULE="${malicious_rule/#block/allow}" \
+  "$ROOT/bin/omarchy-usb-authorization-event"
+[[ $(grep -c '^notification' "$calls" || true) == "$notification_count" ]] ||
+  fail "a trusted device's transient blocked presence must not prompt"
+BLOCKED_DEVICE_PRESENT=0 \
+  USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
+  USBGUARD_DEVICE_TARGET_NEW=block \
+  USBGUARD_DEVICE_ID=17 \
+  USBGUARD_DEVICE_RULE="$malicious_rule" \
+  "$ROOT/bin/omarchy-usb-authorization-event"
+[[ $(grep -c '^notification' "$calls" || true) == "$notification_count" ]] ||
+  fail "a stale blocked event must not prompt after authorization or removal"
+pass "USB alerts use the final policy and discard stale events"
+USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
   USBGUARD_DEVICE_ID=17 \
   USBGUARD_DEVICE_EVENT=Insert \
-  USBGUARD_DEVICE_TARGET=block \
+  USBGUARD_DEVICE_TARGET_NEW=block \
   USBGUARD_DEVICE_RULE="$malicious_rule" \
   "$ROOT/bin/omarchy-usb-authorization-event"
 
@@ -326,15 +351,46 @@ grep -Eq "notification .*<omarchy-usb-authorization-review> <$token>$" "$calls" 
   fail "the notification action carries only an opaque request token"
 pass "blocked device metadata remains data across the desktop notification boundary"
 
+notification_count=$(grep -c '^notification' "$calls")
+USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event" &
+scan_pid=$!
+USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
+  USBGUARD_DEVICE_ID=17 \
+  USBGUARD_DEVICE_TARGET_NEW=block \
+  USBGUARD_DEVICE_RULE="$malicious_rule" \
+  "$ROOT/bin/omarchy-usb-authorization-event"
+wait "$scan_pid"
+[[ $(grep -c '^notification' "$calls") == "$notification_count" ]] ||
+  fail "overlapping scan and policy events must not duplicate pending prompts"
+pass "USB reconnect scans and policy events deduplicate pending requests"
+
 GUM_CHOICE='Allow once' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/review-once-output"
 grep -Fqx "usbguard <allow-device> <$malicious_rule>" "$calls" || fail "review can allow the exact device once"
 [[ ! -e $request ]] || fail "a completed review consumes its request"
 pass "USB review allows a still-matching device once"
 
-USBGUARD_IPC_SIGNAL=Device.PresenceChanged \
+# A daemon restart discards the temporary approval. The IPC reconnect must
+# recover the blocked device even when its startup policy events were missed.
+notification_count=$(grep -c '^notification' "$calls")
+USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event"
+[[ -f $request ]] || fail "reconnection recreates a consumed Allow once request"
+[[ $(grep -c '^notification' "$calls") == $((notification_count + 1)) ]] ||
+  fail "reconnection prompts again for a temporary approval lost on restart"
+GUM_CHOICE='Keep blocked' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >/dev/null
+USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
+  USBGUARD_DEVICE_ID=17 \
+  USBGUARD_DEVICE_TARGET_OLD=allow \
+  USBGUARD_DEVICE_TARGET_NEW=block \
+  USBGUARD_DEVICE_RULE="$malicious_rule" \
+  "$ROOT/bin/omarchy-usb-authorization-event"
+[[ -f $request ]] || fail "a later allow-to-block policy transition creates a request"
+GUM_CHOICE='Keep blocked' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >/dev/null
+pass "USB approval recovers after IPC reconnects and policy transitions"
+
+USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
   USBGUARD_DEVICE_ID=17 \
   USBGUARD_DEVICE_EVENT=Insert \
-  USBGUARD_DEVICE_TARGET=block \
+  USBGUARD_DEVICE_TARGET_NEW=block \
   USBGUARD_DEVICE_RULE="$malicious_rule" \
   "$ROOT/bin/omarchy-usb-authorization-event"
 request=$(find "$home/.local/state/omarchy/usb-authorization/requests" -maxdepth 1 -name 'request-*.json' -print -quit)
@@ -343,10 +399,10 @@ GUM_CHOICE='Always allow this device' "$ROOT/bin/omarchy-usb-authorization-revie
 grep -Fqx "usbguard <allow-device> <--permanent> <$malicious_rule>" "$calls" || fail "review can persist an exact-device rule"
 pass "USB review supports explicit persistent trust"
 
-USBGUARD_IPC_SIGNAL=Device.PresenceChanged \
+USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
   USBGUARD_DEVICE_ID=17 \
   USBGUARD_DEVICE_EVENT=Insert \
-  USBGUARD_DEVICE_TARGET=block \
+  USBGUARD_DEVICE_TARGET_NEW=block \
   USBGUARD_DEVICE_RULE="$malicious_rule" \
   "$ROOT/bin/omarchy-usb-authorization-event"
 request=$(find "$home/.local/state/omarchy/usb-authorization/requests" -maxdepth 1 -name 'request-*.json' -print -quit)
@@ -366,10 +422,10 @@ fi
 [[ ! -e $request ]] || fail "a reassigned-ID review request is discarded"
 pass "USB review revalidates identity after the approval dialog"
 
-USBGUARD_IPC_SIGNAL=Device.PresenceChanged \
+USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
   USBGUARD_DEVICE_ID=17 \
   USBGUARD_DEVICE_EVENT=Insert \
-  USBGUARD_DEVICE_TARGET=block \
+  USBGUARD_DEVICE_TARGET_NEW=block \
   USBGUARD_DEVICE_RULE="$malicious_rule" \
   "$ROOT/bin/omarchy-usb-authorization-event"
 request=$(find "$home/.local/state/omarchy/usb-authorization/requests" -maxdepth 1 -name 'request-*.json' -print -quit)
