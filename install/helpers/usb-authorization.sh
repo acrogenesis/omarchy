@@ -59,10 +59,18 @@ usb_authorization_require_secure_settings() {
 usb_authorization_generate_policy() {
   local policy="$1"
 
-  usbguard generate-policy >"$policy"
-  if [[ ! -s $policy ]] || ! grep -q '^allow ' "$policy"; then
-    echo "USBGuard did not generate a usable policy; nothing was enabled." >&2
+  if ! usbguard generate-policy >"$policy"; then
+    echo "USBGuard could not enumerate devices; nothing was enabled." >&2
     return 1
+  fi
+  if ! grep -q '^allow ' "$policy"; then
+    if grep -q '^[[:space:]]*[^#[:space:]]' "$policy"; then
+      echo "USBGuard did not generate a usable policy; nothing was enabled." >&2
+      return 1
+    fi
+    # A successful empty inventory is valid on machines without USB controllers.
+    # Keep the file nonempty so re-enabling preserves this default-deny policy.
+    echo '# No USB devices were present during enrollment.' >>"$policy"
   fi
 }
 

@@ -60,7 +60,10 @@ cat >"$stub_bin/usbguard" <<'STUB'
 case "$1" in
 generate-policy)
   echo 'usbguard <generate-policy>' >>"$CALLS"
-  echo 'allow id 1d6b:0002 name "Linux Foundation root hub" hash "root"'
+  [[ ${GENERATE_FAIL:-0} == 0 ]] || exit 1
+  if [[ ${GENERATE_EMPTY:-0} == 0 ]]; then
+    echo 'allow id 1d6b:0002 name "Linux Foundation root hub" hash "root"'
+  fi
   ;;
 list-devices)
   if [[ ${2:-} == "--blocked" ]]; then
@@ -167,6 +170,21 @@ generate_count=$(grep -c '^usbguard <generate-policy>$' "$calls")
 generate_count_after=$(grep -c '^usbguard <generate-policy>$' "$calls")
 (( generate_count_after == generate_count )) || fail "re-enabling preserves the existing trusted-device policy"
 pass "USB authorization setup preserves an existing policy"
+
+: >"$rules"
+GENERATE_EMPTY=1 "$ROOT/bin/omarchy-setup-security-usb-authorization" --yes >"$scratch/setup-empty-output"
+[[ -s $rules ]] || fail "empty USB inventory must persist an initialized policy"
+! grep -q '^allow ' "$rules" || fail "empty inventory must not add permissive rules"
+generate_count=$(grep -c '^usbguard <generate-policy>$' "$calls")
+"$ROOT/bin/omarchy-setup-security-usb-authorization" --yes >"$scratch/setup-empty-again-output"
+[[ $(grep -c '^usbguard <generate-policy>$' "$calls") == "$generate_count" ]] ||
+  fail "re-enabling an empty policy must not enroll newly attached devices"
+: >"$rules"
+if GENERATE_FAIL=1 "$ROOT/bin/omarchy-setup-security-usb-authorization" --yes >"$scratch/setup-failed-output" 2>&1; then
+  fail "enumeration failure must not be accepted as an empty USB inventory"
+fi
+[[ ! -s $rules ]] || fail "failed enumeration must not install a policy"
+pass "USB setup accepts an empty inventory while rejecting enumeration failure"
 
 : >"$calls"
 "$ROOT/bin/omarchy-setup-security-usb-authorization" --boot --yes >"$scratch/setup-boot-output"
@@ -349,6 +367,18 @@ grep -Fqx 'usbguard <add-user> <tester> <--devices=list,listen,modify> <--policy
 grep -Fqx 'systemctl <enable usbguard.service>' "$calls" ||
   fail "fresh installation enables USBGuard for the first boot"
 pass "USB authorization is the default for fresh and existing installations"
+
+: >"$rules"
+GENERATE_EMPTY=1 bash -euo pipefail -c 'source "$OMARCHY_INSTALL/config/usb-authorization.sh"' >"$scratch/install-empty-output"
+[[ -s $rules ]] || fail "fresh install accepts a successful empty USB inventory"
+! grep -q '^allow ' "$rules" || fail "empty fresh-install inventory stays default-deny"
+: >"$rules"
+: >"$calls"
+if GENERATE_FAIL=1 bash -euo pipefail -c 'source "$OMARCHY_INSTALL/config/usb-authorization.sh"' >"$scratch/install-enumeration-failed" 2>&1; then
+  fail "fresh install must reject a generator failure"
+fi
+! grep -Fq 'systemctl <enable usbguard.service>' "$calls" || fail "failed enumeration must not enable USBGuard"
+pass "fresh installation distinguishes no USB hardware from enumeration failure"
 
 malicious_rule='block id 07a6:8513 name "$(touch '"$scratch"'/injected)" hash "attacker" with-interface 02:06:00'
 export BLOCKED_DEVICE_RULE="$malicious_rule"
