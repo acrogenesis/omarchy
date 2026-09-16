@@ -60,16 +60,49 @@ if [[ $choice != "Keep blocked" ]]; then
   fi
 fi
 
+approval_failed() {
+  echo "Could not confirm USB approval. The request has been kept; try again." >&2
+  exit 1
+}
+
 case "$choice" in
-"Allow once")
+"Allow once" | "Always allow this device")
   # Target the complete identity rule instead of USBGuard's numeric ID. IDs can
   # be reassigned when the daemon restarts while the review dialog is open.
-  usbguard allow-device "$expected_rule"
-  echo "USB accessory allowed until it is disconnected."
-  ;;
-"Always allow this device")
-  usbguard allow-device --permanent "$expected_rule"
-  echo "USB accessory added to the trusted policy."
+  options=()
+  if [[ $choice == "Always allow this device" ]]; then
+    options+=(--permanent)
+  fi
+  usbguard allow-device "${options[@]}" "$expected_rule" || approval_failed
+
+  # Rule-based USBGuard commands swallow applyDevicePolicy exceptions and can
+  # return success without authorizing anything. Verify the exact device.
+  allowed_rule="allow ${expected_rule#block }"
+  allowed=$(usbguard list-devices --allowed) || approval_failed
+  grep -Fqx -- "$id: $allowed_rule" <<<"$allowed" || approval_failed
+
+  if [[ $choice == "Always allow this device" ]]; then
+    # Let USBGuard match policy rules: saved rules can omit the device's port.
+    # --show-devices indents the devices matching each policy rule.
+    policy=$(usbguard list-rules --show-devices) || approval_failed
+    policy_allows=0
+    matched=0
+    while IFS= read -r line; do
+      if [[ $line =~ ^[0-9]+:[[:space:]] ]]; then
+        policy_allows=0
+        if [[ $line =~ ^[0-9]+:[[:space:]]allow[[:space:]] ]]; then
+          policy_allows=1
+        fi
+      elif (( policy_allows )) && [[ $line == $'\t'"$id: $allowed_rule" ]]; then
+        matched=1
+        break
+      fi
+    done <<<"$policy"
+    (( matched )) || approval_failed
+    echo "USB accessory added to the trusted policy."
+  else
+    echo "USB accessory allowed until it is disconnected."
+  fi
   ;;
 "Keep blocked")
   echo "USB accessory remains blocked."

@@ -66,7 +66,13 @@ generate-policy)
   fi
   ;;
 list-devices)
-  if [[ ${2:-} == "--blocked" ]]; then
+  if [[ ${2:-} == "--allowed" ]]; then
+    [[ ${APPROVAL_QUERY_FAIL:-0} == 0 ]] || exit 1
+    if [[ -f $TEST_ALLOWED_RULE ]]; then
+      printf '17: %s\n' "$(<"$TEST_ALLOWED_RULE")"
+    fi
+  elif [[ ${2:-} == "--blocked" ]]; then
+    [[ ! -f $TEST_ALLOWED_RULE ]] || exit 0
     if [[ -n ${BLOCKED_DEVICES_FILE:-} ]]; then cat "$BLOCKED_DEVICES_FILE"; exit 0; fi
     if [[ ${BLOCKED_DEVICE_PRESENT:-1} == 1 ]]; then
       rule="${BLOCKED_DEVICE_RULE:?}"
@@ -80,10 +86,27 @@ list-devices)
     echo '5: allow id 0627:0001 name "QEMU USB Tablet" hash "tablet"'
   fi
   ;;
+list-rules)
+  [[ ${APPROVAL_POLICY_QUERY_FAIL:-0} == 0 ]] || exit 1
+  if [[ -f $TEST_SAVED_RULE ]]; then
+    printf '40: %s\n' "$(<"$TEST_SAVED_RULE")"
+    printf '\t17: %s\n' "$(<"$TEST_ALLOWED_RULE")"
+  fi
+  ;;
 *)
   printf 'usbguard' >>"$CALLS"
   printf ' <%s>' "$@" >>"$CALLS"
   printf '\n' >>"$CALLS"
+  if [[ $1 == "allow-device" && ${!#} == block* ]]; then
+    [[ ${APPROVAL_EXIT_FAIL:-0} == 0 ]] || exit 1
+    if [[ ${APPROVAL_SILENT_FAIL:-0} == 0 ]]; then
+      rule="${!#}"
+      printf '%s\n' "${APPROVAL_REPLACEMENT_RULE:-allow ${rule#block }}" >"$TEST_ALLOWED_RULE"
+      if [[ $2 == "--permanent" && ${APPROVAL_NO_POLICY:-0} == 0 ]]; then
+        cp "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
+      fi
+    fi
+  fi
   ;;
 esac
 STUB
@@ -148,6 +171,8 @@ export CALLS="$calls"
 export PATH="$stub_bin:$ROOT/bin:$PATH"
 export TEST_DAEMON_CONFIG="$daemon_config"
 export TEST_RULES="$rules"
+export TEST_ALLOWED_RULE="$scratch/allowed-rule"
+export TEST_SAVED_RULE="$scratch/saved-rule"
 
 if "$ROOT/bin/omarchy-usb-authorization-restore-default" >/dev/null 2>&1; then
   fail "the fixed-path USB authorization restore helper requires root"
@@ -486,6 +511,8 @@ grep -Fqx "usbguard <allow-device> <$malicious_rule>" "$calls" || fail "review c
 [[ ! -e $request ]] || fail "a completed review consumes its request"
 pass "USB review allows a still-matching device once"
 
+rm -f "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
+
 # A daemon restart discards the temporary approval. The IPC reconnect must
 # recover the blocked device even when its startup policy events were missed.
 notification_count=$(grep -c '^notification' "$calls")
@@ -515,6 +542,7 @@ token=$(basename "${request%.json}")
 GUM_CHOICE='Always allow this device' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/review-always-output"
 grep -Fqx "usbguard <allow-device> <--permanent> <$malicious_rule>" "$calls" || fail "review can persist an exact-device rule"
 pass "USB review supports explicit persistent trust"
+rm -f "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
 
 USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
   USBGUARD_DEVICE_ID=17 \
@@ -555,6 +583,32 @@ fi
   fail "a reused USBGuard id cannot authorize a different device"
 [[ ! -e $request ]] || fail "a stale review request is discarded"
 pass "USB review binds approval to the device snapshot"
+
+for choice in 'Allow once' 'Always allow this device'; do
+  for failure in APPROVAL_SILENT_FAIL APPROVAL_EXIT_FAIL APPROVAL_QUERY_FAIL APPROVAL_REPLACEMENT_RULE; do
+    rm -f "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
+    USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event"
+    value=1
+    [[ $failure != "APPROVAL_REPLACEMENT_RULE" ]] || value='allow id 9999:9999 hash "replacement"'
+    if env "$failure=$value" GUM_CHOICE="$choice" "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/review-failed" 2>&1; then
+      fail "$choice must reject $failure"
+    fi
+    [[ -f $request ]] || fail "unverified approval must retain the request"
+    ! grep -Eq 'USB accessory (allowed until|added to)' "$scratch/review-failed" || fail "failed approval must not report success"
+  done
+done
+for failure in APPROVAL_NO_POLICY APPROVAL_POLICY_QUERY_FAIL; do
+  rm -f "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
+  if env "$failure=1" GUM_CHOICE='Always allow this device' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/review-no-policy" 2>&1; then
+    fail "permanent approval must reject $failure"
+  fi
+  [[ -f $request ]] || fail "unverified permanent approval must retain the request"
+done
+rm -f "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
+GUM_CHOICE='Always allow this device' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/review-retry"
+[[ ! -e $request ]] || fail "a verified retry consumes the retained request"
+rm -f "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
+pass "USB approvals verify device and permanent policy before consuming requests"
 
 notification_count=$(grep -c '^notification' "$calls")
 printf '17: %s\n18: %s\n' "$malicious_rule" 'block id 1234:5678 name "Second blocked device" hash "second"' >"$scratch/two-blocked"
