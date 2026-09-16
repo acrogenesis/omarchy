@@ -49,11 +49,11 @@ usb_authorization_require_secure_setting() {
 usb_authorization_require_secure_settings() {
   local config="$1"
 
-  usb_authorization_require_secure_setting "$config" ImplicitPolicyTarget block
-  usb_authorization_require_secure_setting "$config" PresentDevicePolicy apply-policy
-  usb_authorization_require_secure_setting "$config" InsertedDevicePolicy apply-policy
-  usb_authorization_require_secure_setting "$config" AuthorizedDefault none
-  usb_authorization_require_secure_setting "$config" RestoreControllerDeviceState false
+  usb_authorization_require_secure_setting "$config" ImplicitPolicyTarget block || return 1
+  usb_authorization_require_secure_setting "$config" PresentDevicePolicy apply-policy || return 1
+  usb_authorization_require_secure_setting "$config" InsertedDevicePolicy apply-policy || return 1
+  usb_authorization_require_secure_setting "$config" AuthorizedDefault none || return 1
+  usb_authorization_require_secure_setting "$config" RestoreControllerDeviceState false || return 1
 }
 
 usb_authorization_generate_policy() {
@@ -83,6 +83,33 @@ usb_authorization_add_user() {
     --devices=list,listen,modify \
     --policy=list \
     --exceptions=listen
+}
+
+usb_authorization_install_policy() {
+  local rules="$1" policy status=0
+
+  policy=$(mktemp "${TMPDIR:-/tmp}/omarchy-usb-policy.XXXXXXXXXX") || return 1
+  if usb_authorization_generate_policy "$policy"; then
+    install -Dm600 -o root -g root "$policy" "$rules" || status=$?
+  else
+    status=1
+  fi
+  rm -f "$policy"
+  return "$status"
+}
+
+usb_authorization_provision_owner() {
+  local user="$1"
+  local rules="${2:-/etc/usbguard/rules.conf}"
+  local config="${3:-/etc/usbguard/usbguard-daemon.conf}"
+
+  usb_authorization_require_secure_settings "$config" || return 1
+  # Enroll the owner's hardware, replacing any policy inherited from the
+  # builder. Do this only after the interactive provisioning steps finish.
+  usb_authorization_install_policy "$rules" || return 1
+  usb_authorization_add_user "$user" || return 1
+  systemctl enable usbguard.service || return 1
+  systemctl restart usbguard.service
 }
 
 usb_authorization_trust_present_devices() {

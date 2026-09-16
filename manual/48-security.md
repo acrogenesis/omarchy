@@ -13,6 +13,8 @@ Omarchy takes security extremely seriously. This is meant to be an operating sys
 
 USB device authorization is enabled by default. Omarchy uses USBGuard to trust the devices connected during installation and block USB devices it has not seen before. When a device is blocked, click the persistent notification and choose whether to allow it once, always allow it, or keep it blocked.
 
+On a preinstalled machine that asks you to create your account at first boot, USB protection starts at the end of that setup. It trusts the devices connected then, so your keyboard works throughout account setup even if it differs from the installer's keyboard.
+
 You can turn the protection off from _Remove > Security > USB Device Authorization_. _Setup > Security > USB Device Authorization_ turns it back on with the existing trusted-device policy.
 
 Only approve hardware you recognize. A malicious USB device can forge the manufacturer, model, serial number, and device class shown during review. Permanent approval is a convenience for accessories you control, not proof of the device's identity.

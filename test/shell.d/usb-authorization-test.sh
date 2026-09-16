@@ -62,7 +62,7 @@ generate-policy)
   echo 'usbguard <generate-policy>' >>"$CALLS"
   [[ ${GENERATE_FAIL:-0} == 0 ]] || exit 1
   if [[ ${GENERATE_EMPTY:-0} == 0 ]]; then
-    echo 'allow id 1d6b:0002 name "Linux Foundation root hub" hash "root"'
+    printf '%s\n' "${GENERATED_RULE:-allow id 1d6b:0002 name \"Linux Foundation root hub\" hash \"root\"}"
   fi
   ;;
 list-devices)
@@ -357,10 +357,8 @@ grep -Fq 'config/usb-authorization.sh' "$ROOT/install/config/all.sh" ||
   fail "fresh installs configure the USB authorization policy"
 grep -Fq 'omarchy-usb-authorization.service' "$ROOT/install/user/first-run/enable-user-units.sh" ||
   fail "fresh installs enable the USB approval watcher"
-grep -Fq 'usb_authorization_add_user "$username"' "$ROOT/bin/omarchy-provision-owner" ||
-  fail "deferred provisioning grants the new owner approval access"
-grep -Fq 'systemctl try-restart usbguard.service' "$ROOT/bin/omarchy-provision-owner" ||
-  fail "deferred provisioning reloads the new owner ACL"
+grep -Fq 'usb_authorization_provision_owner "$username"' "$ROOT/bin/omarchy-provision-owner" ||
+  fail "deferred provisioning enrolls the owner before finishing"
 grep -Fqx 'omarchy-setup-security-usb-authorization --yes' "$ROOT/migrations/1789433473.sh" ||
   fail "existing installs enable USB authorization during migration"
 
@@ -390,6 +388,39 @@ if GENERATE_FAIL=1 bash -euo pipefail -c 'source "$OMARCHY_INSTALL/config/usb-au
 fi
 ! grep -Fq 'systemctl <enable usbguard.service>' "$calls" || fail "failed enumeration must not enable USBGuard"
 pass "fresh installation distinguishes no USB hardware from enumeration failure"
+
+: >"$rules"
+: >"$calls"
+OMARCHY_INSTALL_USER="" bash -euo pipefail -c 'source "$OMARCHY_INSTALL/config/usb-authorization.sh"' >"$scratch/install-deferred-output"
+[[ ! -s $rules ]] || fail "deferred installation must not enroll the builder's hardware"
+! grep -q '^usbguard' "$calls" || fail "deferred installation must not enumerate or grant owner ACLs"
+grep -Fqx 'systemctl <disable usbguard.service>' "$calls" || fail "deferred installation leaves enforcement disabled"
+! grep -Fq 'systemctl <enable usbguard.service>' "$calls" || fail "deferred installation must not enable enforcement"
+
+source "$ROOT/install/helpers/usb-authorization.sh"
+echo 'allow id 1234:0001 name "Builder keyboard" hash "builder"' >"$rules"
+owner_rule='allow id 1234:0002 name "Owner keyboard" hash "owner"'
+: >"$calls"
+GENERATED_RULE="$owner_rule" usb_authorization_provision_owner owner "$rules" "$daemon_config"
+[[ $(<"$rules") == "$owner_rule" ]] || fail "owner enrollment must replace inherited builder trust"
+grep -Fqx 'usbguard <add-user> <owner> <--devices=list,listen,modify> <--policy=list> <--exceptions=listen>' "$calls" ||
+  fail "owner provisioning grants approval access"
+[[ $(tail -2 "$calls") == $'systemctl <enable usbguard.service>\nsystemctl <restart usbguard.service>' ]] ||
+  fail "enforcement starts only after owner policy and ACL setup"
+
+: >"$calls"
+if GENERATE_FAIL=1 usb_authorization_provision_owner owner "$rules" "$daemon_config" >"$scratch/owner-failed" 2>&1; then
+  fail "owner enrollment must reject enumeration failure"
+fi
+[[ $(<"$rules") == "$owner_rule" ]] || fail "failed enrollment preserves the old policy"
+! grep -q '^systemctl' "$calls" || fail "failed owner enrollment must not enable enforcement"
+: >"$calls"
+sed 's/ImplicitPolicyTarget=block/ImplicitPolicyTarget=allow/' "$daemon_config" >"$scratch/insecure-daemon.conf"
+if usb_authorization_provision_owner owner "$rules" "$scratch/insecure-daemon.conf" >"$scratch/owner-insecure" 2>&1; then
+  fail "owner enrollment rejects insecure settings even when called in a conditional"
+fi
+[[ ! -s $calls ]] || fail "invalid settings must prevent all enrollment changes"
+pass "deferred installs enroll owner hardware before enabling enforcement"
 
 malicious_rule='block id 07a6:8513 name "$(touch '"$scratch"'/injected)" hash "attacker" with-interface 02:06:00'
 export BLOCKED_DEVICE_RULE="$malicious_rule"
