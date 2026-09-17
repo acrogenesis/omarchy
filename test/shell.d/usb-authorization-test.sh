@@ -51,7 +51,9 @@ STUB
 cat >"$stub_bin/systemctl" <<'STUB'
 #!/bin/bash
 printf 'systemctl <%s>\n' "$*" >>"$CALLS"
-if [[ $* == "is-enabled --quiet usbguard.service" ]]; then
+if [[ $* == "show usbguard.service --property=InvocationID --value" ]]; then
+  printf '%s\n' "${TEST_DAEMON_INVOCATION:-11111111111111111111111111111111}"
+elif [[ $* == "is-enabled --quiet usbguard.service" ]]; then
   exit 1
 fi
 STUB
@@ -97,6 +99,9 @@ list-rules)
   printf 'usbguard' >>"$CALLS"
   printf ' <%s>' "$@" >>"$CALLS"
   printf '\n' >>"$CALLS"
+  if [[ $1 == "watch" && -n ${TEST_WATCH_ID_FILE:-} ]]; then
+    printf '%s\n' "$OMARCHY_USB_AUTHORIZATION_WATCH_ID" >"$TEST_WATCH_ID_FILE"
+  fi
   if [[ $1 == "allow-device" && ${!#} == block* ]]; then
     [[ ${APPROVAL_EXIT_FAIL:-0} == 0 ]] || exit 1
     if [[ ${APPROVAL_SILENT_FAIL:-0} == 0 ]]; then
@@ -505,6 +510,63 @@ wait "$scan_pid"
 [[ $(grep -c '^notification' "$calls") == "$notification_count" ]] ||
   fail "overlapping scan and policy events must not duplicate pending prompts"
 pass "USB reconnect scans and policy events deduplicate pending requests"
+
+# Dismissing/canceling a notification leaves its request, even after the shell
+# discards the archived action. Reusing the ID after daemon restart must prompt.
+notification_count=$(grep -c '^notification' "$calls")
+export TEST_DAEMON_INVOCATION=22222222222222222222222222222222
+USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event" &
+scan_pid=$!
+USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
+  USBGUARD_DEVICE_ID=17 \
+  USBGUARD_DEVICE_TARGET_NEW=block \
+  USBGUARD_DEVICE_RULE="$malicious_rule" \
+  "$ROOT/bin/omarchy-usb-authorization-event"
+wait "$scan_pid"
+[[ $(grep -c '^notification' "$calls") == $((notification_count + 1)) ]] ||
+  fail "reused IDs must get exactly one new notification after daemon restart"
+[[ -f $request ]] || fail "the recovered notification must have a reviewable request"
+
+# Starting another watcher/session also expires old notification deduplication.
+notification_count=$(grep -c '^notification' "$calls")
+export OMARCHY_USB_AUTHORIZATION_WATCH_ID=new-session
+USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event"
+[[ $(grep -c '^notification' "$calls") == $((notification_count + 1)) ]] ||
+  fail "a new watcher must recover an orphaned approval action"
+USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event"
+[[ $(grep -c '^notification' "$calls") == $((notification_count + 1)) ]] ||
+  fail "same-generation scans must still deduplicate"
+
+# A removal that arrives late must not erase a new connection's request.
+USBGUARD_IPC_SIGNAL=Device.PresenceChanged USBGUARD_DEVICE_EVENT=Remove \
+  USBGUARD_DEVICE_ID=17 USBGUARD_DEVICE_RULE="$malicious_rule" \
+  "$ROOT/bin/omarchy-usb-authorization-event"
+[[ -f $request ]] || fail "delayed removal must preserve a currently blocked device's request"
+BLOCKED_DEVICE_PRESENT=0 \
+  USBGUARD_IPC_SIGNAL=Device.PresenceChanged USBGUARD_DEVICE_EVENT=Remove \
+  USBGUARD_DEVICE_ID=17 USBGUARD_DEVICE_RULE="${malicious_rule/#block/allow}" \
+  "$ROOT/bin/omarchy-usb-authorization-event"
+[[ ! -e $request ]] || fail "device removal must clean up its pending request"
+USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event"
+[[ $(grep -c '^notification' "$calls") == $((notification_count + 2)) ]] ||
+  fail "a reappeared device must receive a fresh notification"
+
+# Upgrade from requests written before generations existed, and remove stale
+# requests for devices no longer in the inventory.
+jq 'del(.generation)' "$request" >"$scratch/legacy-request"
+mv "$scratch/legacy-request" "$request"
+legacy_orphan="${request%/*}/request-$(printf '%064d' 0).json"
+printf '{"id":"99","rule":"block id 0000:0000"}\n' >"$legacy_orphan"
+USBGUARD_IPC_SIGNAL=IPC.Connected "$ROOT/bin/omarchy-usb-authorization-event"
+[[ $(grep -c '^notification' "$calls") == $((notification_count + 3)) ]] ||
+  fail "legacy request markers must not suppress notification recovery"
+[[ ! -e $legacy_orphan ]] || fail "reconnect must clean up old-generation orphan requests"
+
+TEST_WATCH_ID_FILE="$scratch/watch-one" "$ROOT/bin/omarchy-usb-authorization-watch"
+TEST_WATCH_ID_FILE="$scratch/watch-two" "$ROOT/bin/omarchy-usb-authorization-watch"
+[[ -s $scratch/watch-one && $(<"$scratch/watch-one") != "$(<"$scratch/watch-two")" ]] ||
+  fail "each watcher must export a fresh lifetime identifier"
+pass "USB prompts recover across daemon and session generations and device removal"
 
 GUM_CHOICE='Allow once' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/review-once-output"
 grep -Fqx "usbguard <allow-device> <$malicious_rule>" "$calls" || fail "review can allow the exact device once"
