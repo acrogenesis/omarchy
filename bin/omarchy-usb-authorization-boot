@@ -328,9 +328,11 @@ usb_authorization_rewrite_boot_cmdlines() {
   fi
 
   mv -f "$temporary" "$config"
-  if ! limine-enroll-config; then
+  if ! usb_authorization_enroll_config "$config" "${config%/*}"; then
     mv -f "$backup" "$config"
-    limine-enroll-config >/dev/null 2>&1 || true
+    if ! usb_authorization_secure_boot_enabled; then
+      limine-enroll-config >/dev/null 2>&1 || true
+    fi
     echo "Restored $config because its bootloader verification data could not be updated." >&2
     return 1
   fi
@@ -391,6 +393,109 @@ usb_authorization_verify_signature() {
   fi
 }
 
+# Read the same architecture and enrollment setting as the installed Limine tool.
+usb_authorization_limine_settings() (
+  source /usr/lib/limine/limine-common-functions
+  load_config || return 1
+  printf '%s %s\n' "$(limine_efi_arch | tr '[:upper:]' '[:lower:]')" "${ENABLE_ENROLL_LIMINE_CONFIG:-no}"
+)
+
+usb_authorization_verify_bootloader() (
+  local config="$1" esp="$2" architecture enrollment image check digest
+  read -r architecture enrollment < <(usb_authorization_limine_settings) || return 1
+  [[ -n $architecture ]] || return 1
+  image="$esp/EFI/limine/limine_$architecture.efi"
+  usb_authorization_verify_signature "$image" || return 1
+  check=$(mktemp) || return 1
+  trap 'rm -f "$check"' EXIT
+  cp "$image" "$check" || return 1
+  if [[ $enrollment == "yes" ]]; then
+    digest=$(b2sum "$config") || return 1
+    limine enroll-config "$check" "${digest%% *}" --quiet || return 1
+  else
+    limine enroll-config "$check" --reset --quiet || return 1
+  fi
+  # Enrollment edits fixed bytes in the executable. Reapplying the expected
+  # value must be a no-op, including when enrollment is explicitly disabled.
+  if ! cmp -s "$image" "$check"; then
+    echo "Limine's signed executable does not match the configured menu enrollment." >&2
+    return 1
+  fi
+)
+
+usb_authorization_enroll_config() {
+  limine-enroll-config || return 1
+  if usb_authorization_secure_boot_enabled; then
+    usb_authorization_verify_bootloader "$1" "$2" || return 1
+  fi
+}
+
+# Kernel rebuild hooks also reset and re-sign Limine. Checkpoint the complete
+# boot files, not just the menu: rebuilding can overwrite images it references.
+# The outer process holds the real boot lock; the private mount namespace gives
+# nested Limine tools their own lock inode so they cannot deadlock against it.
+usb_authorization_boot_transaction() (
+  local action="$1" state architecture enrollment index manifest changed=0 committed=0 restored=1
+  local machine_id="$(</etc/machine-id)"
+  local cache="${2:-/var/cache/boot/$machine_id}"
+  local -a paths=("$boot_path" "$cache" "$limine_defaults" "$drop_in")
+  exec 8>/run/lock/boot-partition.lock
+  flock --timeout 30 8 || return 1
+  read -r architecture enrollment < <(usb_authorization_limine_settings) || return 1
+  [[ -n $architecture ]] || return 1
+  usb_authorization_verify_signature "$boot_path/EFI/limine/limine_$architecture.efi" || return 1
+  state=$(mktemp -d /var/tmp/omarchy-usb-boot.XXXXXXXXXX) || return 1
+  trap '
+    if (( changed && ! committed )); then
+      echo "USB boot policy failed; restoring the previous boot files and settings." >&2
+      for ((index=0; index<${#paths[@]}; index++)); do
+        if [[ -d $state/$index && ! -L $state/$index ]]; then
+          mkdir -p "${paths[index]}" && cp -a "$state/$index/." "${paths[index]}/" || restored=0
+        elif [[ -e $state/$index || -L $state/$index ]]; then
+          cp -a --remove-destination "$state/$index" "${paths[index]}" || restored=0
+        else
+          rm -rf -- "${paths[index]}" || restored=0
+        fi
+      done
+      # New unreferenced images are harmless, but a newly created cached backup
+      # manifest must not reintroduce the failed policy on a later recovery.
+      for manifest in snapshots.json snapshots.json.old; do
+        [[ -e $state/0/$machine_id/limine_history/$manifest ]] ||
+          rm -f "$boot_path/$machine_id/limine_history/$manifest" || restored=0
+        [[ -e $state/1/lss/$manifest ]] || rm -f "$cache/lss/$manifest" || restored=0
+      done
+      sync -f "$boot_path" || restored=0
+    fi
+    if (( restored )); then
+      rm -rf "$state"
+    else
+      echo "Boot recovery was incomplete. Preserve and restore the checkpoint at $state before rebooting." >&2
+    fi
+  ' EXIT
+  trap 'exit 1' HUP INT TERM
+  for ((index=0; index<${#paths[@]}; index++)); do
+    if [[ -d ${paths[index]} ]]; then
+      cp -a "${paths[index]}/." "$state/$index" || return 1
+    elif [[ -e ${paths[index]} || -L ${paths[index]} ]]; then
+      cp -a "${paths[index]}" "$state/$index" || return 1
+    fi
+  done
+  : >"$state/lock"
+  changed=1
+  usb_authorization_run_transaction "$state" "$action" || return 1
+  usb_authorization_verify_bootloader "$limine_conf" "$boot_path" || return 1
+  sync -f "$boot_path" || return 1
+  committed=1
+)
+
+usb_authorization_run_transaction() {
+  unshare --mount --propagation private /bin/bash -c '
+    mount --bind "$1/lock" /run/lock/boot-partition.lock || exit 1
+    source "$2"
+    usb_authorization_main "$3"
+  ' bash "$1" "${BASH_SOURCE[0]}" "$2"
+}
+
 # Called with Limine's boot-partition lock held. Prepare signed copies of
 # conflicting historical UKIs before changing the selected boot policy.
 usb_authorization_reconcile_archived_images() (
@@ -409,7 +514,6 @@ usb_authorization_reconcile_archived_images() (
       for ((index=0; index<${#originals[@]}; index++)); do
         cp --preserve=mode,ownership "$staging/original.$index" "${originals[index]}" || true
       done
-      limine-enroll-config >/dev/null 2>&1 || true
     fi
     rm -rf "$staging"
   ' EXIT
@@ -544,7 +648,7 @@ usb_authorization_reconcile_archived_images() (
   for ((index=0; index<${#originals[@]}; index++)); do
     mv -f "$staging/updated.$index" "${originals[index]}" || return 1
   done
-  limine-enroll-config || return 1
+  usb_authorization_enroll_config "$config" "$esp" || return 1
   committed=1
 )
 
@@ -586,11 +690,11 @@ usb_authorization_sync_and_verify() (
   # Verify the regenerated menu, so synchronization cannot mask stale stored
   # command lines with a one-time edit to limine.conf.
   limine-snapper-sync --no-mutex --no-hooks || return 1
-  limine-enroll-config || return 1
+  usb_authorization_enroll_config "$config" "$esp" || return 1
   usb_authorization_verify_boot_entries "$expected" "$config" "$esp" "$machine_id"
 )
 
-main() {
+usb_authorization_main() {
   local had_drop_in=0 had_snapshot_setting=0 snapshot_status temporary
 
   if (( EUID != 0 )); then
@@ -677,6 +781,26 @@ main() {
   echo "Usage: omarchy-usb-authorization-boot <enable|disable>" >&2
   exit 2
   ;;
+  esac
+}
+
+main() {
+  if (( EUID != 0 )); then
+    echo "Error: omarchy-usb-authorization-boot must run as root" >&2
+    return 1
+  fi
+  case "${1:-}" in
+  enable|disable)
+    if usb_authorization_secure_boot_enabled; then
+      usb_authorization_boot_transaction "$1"
+    else
+      usb_authorization_main "$1"
+    fi
+    ;;
+  *)
+    echo "Usage: omarchy-usb-authorization-boot <enable|disable>" >&2
+    return 2
+    ;;
   esac
 }
 

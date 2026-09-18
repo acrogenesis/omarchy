@@ -29,6 +29,8 @@ sbattach() {
 omarchy-cmd-missing() { return 1; }
 limine-enroll-config() { [[ ${ENROLL_FAIL:-0} != 1 ]]; }
 usb_authorization_secure_boot_enabled() { [[ ${SECURE_BOOT:-1} == 1 ]]; }
+# Bootloader enrollment/rollback is exercised with real EFI binaries in its own suite.
+usb_authorization_verify_bootloader() { return 0; }
 
 fixture() {
   local embedded="$1" hash digest image_base
@@ -235,7 +237,7 @@ if [[ ${USB_TEST_MAIN:-0} == 1 ]]; then
       usb_authorization_enable_snapshot_setting "$limine_defaults"
     fi
     cp "$limine_defaults" "$esp/defaults.before"
-    if (export SIGN_FAIL=1; main "$action") >"$esp/main-failed" 2>&1; then
+    if (export SIGN_FAIL=1; usb_authorization_main "$action") >"$esp/main-failed" 2>&1; then
       fail "$action must stop if archive preparation fails"
     fi
     cmp "$limine_defaults" "$esp/defaults.before" || fail "$action failure must precede snapshot-setting changes"
@@ -244,7 +246,7 @@ if [[ ${USB_TEST_MAIN:-0} == 1 ]]; then
     else
       [[ $(<"$drop_in") == "$setting" ]] || fail "disable preflight failure must preserve the boot setting"
     fi
-    (main "$action")
+    (usb_authorization_main "$action")
     if [[ $action == enable ]]; then
       [[ $(<"$drop_in") == "$setting" ]] || fail "successful enable sets the boot policy"
     else

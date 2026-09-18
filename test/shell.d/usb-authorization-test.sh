@@ -295,6 +295,8 @@ CONF
 source "$ROOT/bin/omarchy-usb-authorization-boot"
 limine-mkinitcpio() { return 0; }
 limine-enroll-config() { return 0; }
+# Signed bootloader enrollment and rollback have a dedicated real-PE suite.
+usb_authorization_verify_bootloader() { return 0; }
 
 if usb_authorization_rebuild_and_verify enabled "$boot_conf" "$scratch" "$machine_id" enabled 2>/dev/null; then
   fail "boot authorization rejects Limine's false-success status when entries were not rebuilt"
