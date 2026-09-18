@@ -381,6 +381,188 @@ usb_authorization_rewrite_snapshot_manifest() {
   mv -f "$temporary" "$manifest"
 }
 
+usb_authorization_verify_signature() {
+  # sbctl verify can return zero for unsigned or unreadable files. Check its
+  # structured result, including the exact path, instead of just the exit code.
+  if ! sbctl verify --json "$1" | jq -e --arg file "$1" \
+    'length == 1 and .[0].file_name == $file and .[0].is_signed == 1' >/dev/null; then
+    echo "Cannot verify the Secure Boot signature of $1 using this machine's signing keys." >&2
+    return 1
+  fi
+}
+
+# Called with Limine's boot-partition lock held. Prepare signed copies of
+# conflicting historical UKIs before changing the selected boot policy.
+usb_authorization_reconcile_archived_images() (
+  local expected="$1" config="$2" esp="$3" machine_id="$4"
+  local cache="${5:-/var/cache/boot/$machine_id/lss/snapshots.json}"
+  local history="$esp/$machine_id/limine_history" staging manifest names name image
+  local cmdline hash_command old_digest new_digest old_hash new_hash replacement index=0
+  local published=0 committed=0 section layout image_base image_size alignment address
+  local -a manifests=() originals=()
+
+  usb_authorization_secure_boot_enabled || return 0
+  [[ -d $history ]] || return 0
+  staging=$(mktemp -d "$esp/.omarchy-usb-uki.XXXXXXXXXX") || return 1
+  trap '
+    if (( published && ! committed )); then
+      for ((index=0; index<${#originals[@]}; index++)); do
+        cp --preserve=mode,ownership "$staging/original.$index" "${originals[index]}" || true
+      done
+      limine-enroll-config >/dev/null 2>&1 || true
+    fi
+    rm -rf "$staging"
+  ' EXIT
+
+  for manifest in "$history/snapshots.json" "$history/snapshots.json.old" "$cache"; do
+    [[ -f $manifest ]] || continue
+    jq -e '.jsonFormatVersion == "1.3.0" and (.snapshotEntries | type == "array")' "$manifest" >/dev/null || return 1
+    manifests+=("$manifest")
+  done
+  (( ${#manifests[@]} )) || return 0
+  names=$(jq -sr '[.[] | .snapshotEntries[] | .. | objects | .imageDetails? // empty | .[] | .fileHashName] | unique[]' "${manifests[@]}") || return 1
+  printf '[]\n' >"$staging/replacements.json"
+
+  while IFS= read -r name; do
+    [[ -n $name ]] || continue
+    # Only image names, never arbitrary paths supplied by a manifest.
+    if [[ $name == */* || $name == "." || $name == ".." ]]; then
+      echo "Invalid archived kernel image name: $name" >&2
+      return 1
+    fi
+    image="$history/$name"
+    [[ -f $image && ! -L $image ]] || continue
+    : >"$staging/cmdline"
+    objcopy -O binary --only-section=.cmdline "$image" "$staging/cmdline" 2>/dev/null || continue
+    cmdline=$(tr '\0' '\n' <"$staging/cmdline")
+    [[ -n $cmdline ]] || continue
+    if usb_authorization_cmdline_has_parameter "$cmdline" "$kernel_parameter"; then
+      [[ $expected == "disabled" ]] || continue
+    else
+      [[ $expected == "enabled" ]] || continue
+    fi
+
+    # Multi-profile images and signed PCR policies need their original builder.
+    # Do not silently invalidate their additional boot/unlock guarantees.
+    for section in .profile .pcrsig; do
+      objcopy -O binary --only-section="$section" "$image" "$staging/section" || return 1
+      if [[ -s $staging/section ]]; then
+        echo "Rebuild archived image $image with its original signing policy before changing USB boot protection ($section)." >&2
+        return 1
+      fi
+    done
+    if [[ ! $name =~ ^(.+)_(sha1|sha256|b3|xxh)_([0-9a-f]+)$ ]]; then
+      echo "Cannot verify the content hash of archived image $image." >&2
+      return 1
+    fi
+    case "${BASH_REMATCH[2]}" in
+    sha1) hash_command=sha1sum ;;
+    sha256) hash_command=sha256sum ;;
+    b3) hash_command=b3sum ;;
+    xxh) hash_command=xxhsum ;;
+    esac
+    old_digest=${BASH_REMATCH[3]}
+    new_digest=$("$hash_command" "$image") || return 1
+    if [[ ${new_digest%% *} != "$old_digest" ]]; then
+      echo "Archived image hash mismatch: $image" >&2
+      return 1
+    fi
+    # Verify the old signature before signing a modified copy with this machine's key.
+    usb_authorization_verify_signature "$image" || return 1
+    cp "$image" "$staging/unsigned.efi" || return 1
+    sbattach --remove "$staging/unsigned.efi" || return 1
+    # Preserve the embedded boot arguments and change only our exact USB
+    # parameter. Do not turn a signed command line into an external override.
+    printf '%s' "$cmdline" | jq -Rrs --arg parameter "$kernel_parameter" --arg expected "$expected" '
+      [scan("[^[:space:]]+|[[:space:]]+") | select(. != $parameter)]
+      | join("") | sub("[[:space:]]+$"; "")
+      | if $expected == "enabled" then . + " " + $parameter else . end
+    ' >"$staging/new-cmdline" || return 1
+    printf '\0' >>"$staging/new-cmdline"
+    # objcopy --update-section retains PE VirtualSize and can truncate a longer
+    # command line. Add a fresh section after the existing virtual image instead.
+    layout=$(objdump -p "$staging/unsigned.efi" | awk '
+      $1 == "ImageBase" { base = $2 }
+      $1 == "SizeOfImage" { size = $2 }
+      $1 == "SectionAlignment" { alignment = $2 }
+      END {
+        if (base !~ /^[0-9a-fA-F]+$/ || size !~ /^[0-9a-fA-F]+$/ || alignment !~ /^[0-9a-fA-F]+$/) exit 1
+        print "0x" base, "0x" size, "0x" alignment
+      }
+    ') || return 1
+    read -r image_base image_size alignment <<<"$layout"
+    (( alignment > 0 )) || return 1
+    address=$((image_base + (image_size + alignment - 1) / alignment * alignment))
+    objcopy --remove-section=.cmdline "$staging/unsigned.efi" "$staging/without-cmdline.efi" || return 1
+    objcopy --add-section .cmdline="$staging/new-cmdline" \
+      --change-section-vma .cmdline="$address" \
+      --set-section-flags .cmdline=alloc,load,readonly,data,contents \
+      "$staging/without-cmdline.efi" "$staging/image.efi" || return 1
+    sbctl sign "$staging/image.efi" || return 1
+    usb_authorization_verify_signature "$staging/image.efi" || return 1
+    objcopy -O binary --only-section=.cmdline "$staging/image.efi" "$staging/cmdline" || return 1
+    cmp -s "$staging/cmdline" "$staging/new-cmdline" || return 1
+    new_digest=$("$hash_command" "$staging/image.efi") || return 1
+    replacement="${name%"$old_digest"}${new_digest%% *}"
+    old_hash=$(b2sum "$image") || return 1
+    new_hash=$(b2sum "$staging/image.efi") || return 1
+    # Publish copies first: every old reference remains usable until its manifest changes.
+    if [[ -e $history/$replacement || -L $history/$replacement ]]; then
+      [[ ! -L $history/$replacement ]] && cmp -s "$staging/image.efi" "$history/$replacement" || return 1
+    else
+      mv "$staging/image.efi" "$history/$replacement" || return 1
+    fi
+    jq --arg old "$name" --arg new "$replacement" \
+      --arg old_hash "${old_hash%% *}" --arg new_hash "${new_hash%% *}" \
+      '. + [{old: $old, new: $new, old_hash: $old_hash, new_hash: $new_hash}]' \
+      "$staging/replacements.json" >"$staging/next.json" || return 1
+    mv "$staging/next.json" "$staging/replacements.json" || return 1
+  done <<<"$names"
+  jq -e 'length > 0' "$staging/replacements.json" >/dev/null || return 0
+
+  originals=("$config" "${manifests[@]}")
+  for ((index=0; index<${#originals[@]}; index++)); do
+    cp --preserve=mode,ownership "${originals[index]}" "$staging/original.$index" || return 1
+    cp --preserve=mode,ownership "${originals[index]}" "$staging/updated.$index" || return 1
+    # Update cached menu lines, structured image metadata, restore paths and
+    # both hashes. The new file name remains a valid Limine content address.
+    if (( index == 0 )); then
+      jq -Rrs --slurpfile replacements "$staging/replacements.json" '
+        split("\n") | map(reduce $replacements[0][] as $r (. ;
+          if contains($r.old) then split($r.old) | join($r.new) | split($r.old_hash) | join($r.new_hash)
+          else . end)) | join("\n")
+      ' "$staging/original.$index" >"$staging/updated.$index" || return 1
+    else
+      jq --slurpfile replacements "$staging/replacements.json" '
+        walk(if type == "string" then
+          reduce $replacements[0][] as $r (. ; split($r.old) | join($r.new) | split($r.old_hash) | join($r.new_hash))
+        else . end)
+      ' "$staging/original.$index" >"$staging/updated.$index" || return 1
+    fi
+  done
+  published=1
+  for ((index=0; index<${#originals[@]}; index++)); do
+    mv -f "$staging/updated.$index" "${originals[index]}" || return 1
+  done
+  limine-enroll-config || return 1
+  committed=1
+)
+
+usb_authorization_prepare_archived_images() (
+  local expected="$1" config="$2" esp="$3" machine_id="${4:-$(</etc/machine-id)}"
+
+  usb_authorization_secure_boot_enabled || return 0
+  # Package hooks acquire the boot lock too; install this optional tool before
+  # taking it, never while rewriting archived images.
+  if omarchy-cmd-missing sbattach; then
+    omarchy-pkg-add sbsigntools || return 1
+  fi
+  exec 9>/run/lock/boot-partition.lock
+  flock --timeout 30 9 || return 1
+  limine-snapper-sync --no-mutex --no-hooks || return 1
+  usb_authorization_reconcile_archived_images "$expected" "$config" "$esp" "$machine_id"
+)
+
 usb_authorization_sync_and_verify() (
   local expected="$1" config="$2" esp="$3"
   local machine_id="${4:-$(</etc/machine-id)}" manifest
@@ -392,6 +574,7 @@ usb_authorization_sync_and_verify() (
 
   # Recover/upgrade the manifest first, including backups if necessary.
   limine-snapper-sync --no-mutex --no-hooks || return 1
+  usb_authorization_reconcile_archived_images "$expected" "$config" "$esp" "$machine_id" || return 1
   for manifest in \
     "$esp/$machine_id/limine_history/snapshots.json" \
     "$esp/$machine_id/limine_history/snapshots.json.old" \
@@ -433,6 +616,7 @@ main() {
     exit 1
   fi
 
+  usb_authorization_prepare_archived_images enabled "$limine_conf" "$boot_path" || exit 1
   usb_authorization_enable_snapshot_setting "$limine_defaults"
 
   if [[ ! -e $drop_in ]]; then
@@ -468,6 +652,10 @@ main() {
       exit 1
     fi
     had_drop_in=1
+  fi
+
+  usb_authorization_prepare_archived_images disabled "$limine_conf" "$boot_path" || exit 1
+  if (( had_drop_in )); then
     rm -f "$drop_in"
   fi
 

@@ -25,6 +25,8 @@ For machines whose disk unlock and recovery never depend on any USB devices, _Se
 
 Older snapshots created before USBGuard was installed and enabled keep all USB disabled even after startup, including keyboards, network adapters, and storage. Trusting the devices connected now does not make them available in those snapshots. Enable boot-time protection only if you can unlock and recover the machine without any USB devices. _Remove > Security > USB at Boot_ restores the normal early-boot behavior while keeping USBGuard active after startup.
 
+With Secure Boot enabled, changing USB boot protection may require access to your signing keys to update older snapshot boot images. If an image uses a custom measured-boot policy or multiple boot profiles, rebuild it with its original signing setup before retrying.
+
 ## Changing your passwords
 
 You have two passwords on an encrypted install: the one that unlocks the drive at boot, and the one you log in and `sudo` with. Both can be changed under _Update > Password_ in the Omarchy menu — _Drive Encryption_ for the first, _User_ for the second. Changing the drive password asks for the current one first, so have it handy.
