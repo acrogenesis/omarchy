@@ -17,7 +17,7 @@ import tempfile
 repo = Path(sys.argv[1])
 source = (repo / 'bin/omarchy-system-factory-reset').read_text()
 functions = []
-for name in ['install_provisioning_units', 'sanitize_factory_baseline', 'stage_full_reset']:
+for name in ['install_provisioning_units', 'scrub_factory_accounts', 'sanitize_factory_baseline', 'stage_full_reset']:
   match = re.search(r'^' + name + r'\(\) \{\n.*?^\}', source, re.M | re.S)
   assert match, name
   functions.append(match.group())
@@ -66,7 +66,11 @@ btrfs() {
     return 90
   fi
 }
-passwd() { :; }
+# Account cleanup has its own real-tool suite; keep this fixture focused on USB.
+usermod() {
+  [[ $1 == --root && ( $2 == "$TOP_MNT/$NEXT_NAME" || $2 == "$TOP_MNT/@factory" ) &&
+    $3 == --password && $4 == '!' && $5 == root ]]
+}
 systemd-id128() { echo new-machine-id; }
 encrypted_install() { return 1; }
 rebuild_next_boot() { :; }
