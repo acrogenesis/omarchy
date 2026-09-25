@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# omarchy:hidden=true
+# omarchy:summary=Check whether Thunderbolt firmware boot access is restricted
+
+exec /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-review.py" boot-enabled

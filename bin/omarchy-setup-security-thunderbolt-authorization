@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# omarchy:summary=Require approval for new Thunderbolt PCIe accessories
+# omarchy:args=[--quiet|status|recover]
+
+set -euo pipefail
+
+if [[ ${1:-} == "status" ]]; then
+  /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-review.py" status
+elif [[ ${1:-} == "recover" && $# == 1 ]]; then
+  sudo /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-setup.py" recover
+elif [[ $# == 0 || ( $# == 1 && $1 == "--quiet" ) ]]; then
+  if [[ ${1:-} != "--quiet" ]]; then
+    echo "First setup trusts connected accessories. Re-enabling preserves saved trust and does not trust newly connected devices."
+    gum confirm "Require approval for new Thunderbolt accessories?" || exit 0
+  fi
+  # System units, D-Bus permissions, and rules are shipped by omarchy-settings.
+  sudo install -Dm644 "$OMARCHY_PATH/default/polkit/org.omarchy.thunderbolt.policy" /usr/share/polkit-1/actions/org.omarchy.thunderbolt.policy
+  sudo systemctl daemon-reload
+  action=enable
+  if [[ ${1:-} == "--quiet" ]]; then
+    action=migrate
+  fi
+  sudo /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-setup.py" "$action"
+  systemctl --user daemon-reload
+  systemctl --user enable --now omarchy-thunderbolt-authorization.service
+  if [[ -f /etc/omarchy/thunderbolt-authorization.enabled ]]; then
+    /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-review.py" status
+  fi
+else
+  echo "Usage: omarchy-setup-security-thunderbolt-authorization [--quiet|status|recover]" >&2
+  exit 1
+fi

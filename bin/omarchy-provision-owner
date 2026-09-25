@@ -1034,6 +1034,9 @@ run_provisioning() {
     limine-update
   fi
 
+  log_step "enrolling the owner's Thunderbolt accessories"
+  /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-setup.py" owner
+
   log_step "cleaning up provisioning state"
   cleanup_oem_state
   log_step "first-boot setup complete"
