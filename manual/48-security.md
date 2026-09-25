@@ -48,3 +48,21 @@ Be clear-eyed about this one: while it's on, anything running as your user can d
 The public key for all ISO signatures and Omarchy repo package is `40DFB630FF42BCFFB047046CF0134EE680CAC571` ([verify at openpgp.org](https://keys.openpgp.org/search?q=pkgs%40omarchy.org)). The `omarchy/omarchy-keyring` package contains this as well and will be used to rollout any potential updates seamlessly.
 
 You can find the signature for any ISO release by adding .sig to the URL. Like https://iso.omarchy.org/omarchy-x.x.x.iso.sig.
+
+## Thunderbolt device authorization
+
+Omarchy requires approval before connecting new Thunderbolt and USB4 PCIe accessories on controllers that support authorization. Devices connected during initial setup are trusted. New devices show a persistent notification with **Allow once**, **Always allow this device**, and **Keep blocked**. Trusted devices reconnect automatically, including while the screen is locked. IOMMU memory protection stays enabled; it does not count as consent to load a device's driver.
+
+On controllers in secure mode, permanent approval also saves the accessory's authentication key. If a connected accessory has no saved key during initial setup, Omarchy defers Thunderbolt protection and keeps the previous Bolt behavior so your keyboard and storage remain usable. A **Finish Thunderbolt protection setup** notification explains how to continue: keep input available independently of Thunderbolt, safely disconnect the accessories, enable protection, then reconnect and approve each one. Losing a previously saved secure key requires a new explicit approval; Omarchy does not silently create a replacement key while restoring trusted devices.
+
+_Setup > Security > Thunderbolt_ enables protection. _Remove > Security > Thunderbolt_ restores the previous Bolt behavior, which may automatically approve new devices when IOMMU protection is available. Re-enabling keeps your saved trust list. Omarchy never disconnects active storage when changing these settings.
+
+Firmware can authorize PCIe accessories before Linux runs. A controller configured with security mode `none` bypasses software approval; select user authorization or secure authorization in its firmware settings. Omarchy reports these limitations instead of claiming that the controller is protected. Existing firmware boot allowlists can also authorize devices early. USB accessories attached through a dock require separate USB authorization.
+
+Approval does not repair a vulnerable driver. Device names and identifiers can be forged; secure connection keys are used where Bolt and the hardware support them.
+
+_Setup > Security > Thunderbolt Boot_ can clear and verify supported firmware boot allowlists. It captures connected accessories for authorization after Linux starts, prevents Bolt from repopulating those allowlists from automatic device policies, and retains the previous lists for _Remove > Security > Thunderbolt Boot_. This option requires every controller to be connected and to expose a boot allowlist in `user` or `secure` mode. Other hardware needs firmware settings instead; Omarchy cannot verify those settings automatically.
+
+Enable this only if you can unlock and recover without any Thunderbolt accessories. Even a trusted keyboard or disk may remain unavailable until the policy service starts. Older snapshots and other operating systems can restore their own firmware permissions. A failed change restores the previous settings when possible; an incomplete restoration retains recovery data. Reconnect the original controllers and run `omarchy setup security thunderbolt-boot recover` to retry that recovery.
+
+If enabling or removing device authorization fails and reports incomplete restoration, run `omarchy setup security thunderbolt-authorization recover` before trying again. This restores the configuration and service state saved before that change.

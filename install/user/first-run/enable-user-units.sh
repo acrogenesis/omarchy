@@ -20,6 +20,7 @@ systemctl --user enable --now \
   omarchy-migrate-notify.service \
   omarchy-fcitx5.service \
   omarchy-crash-watch.service \
-  omarchy-usb-authorization.service
+  omarchy-usb-authorization.service \
+  omarchy-thunderbolt-authorization.service
 
 omarchy-hook-install theme-set /usr/share/owe/10-owe-sync
