@@ -5,15 +5,16 @@ After=bolt.service polkit.service
 ConditionPathExists=/etc/omarchy/thunderbolt-authorization.enabled
 
 [Service]
-Type=dbus
-BusName=org.omarchy.Thunderbolt1
-ExecStart=/usr/bin/python3 /usr/share/omarchy/install/helpers/thunderbolt-authorization.py serve
+Type=simple
+ExecStart=/usr/bin/omarchy-thunderbolt-authorization-daemon
+RuntimeDirectory=omarchy-thunderbolt-authorization
+RuntimeDirectoryMode=0755
 Restart=on-failure
 RestartSec=2
 UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/omarchy/thunderbolt-authorization
+ReadWritePaths=/var/lib/omarchy/thunderbolt-authorization /run/lock
 ProtectHome=yes
 PrivateTmp=yes
 ProtectKernelTunables=yes

@@ -3,4 +3,7 @@
 # omarchy:hidden=true
 # omarchy:summary=Handle Thunderbolt device approval watch
 
-exec /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-review.py" watch "$@"
+set -euo pipefail
+source "$OMARCHY_PATH/install/helpers/thunderbolt-policy.sh"
+source "$OMARCHY_PATH/install/helpers/thunderbolt-review.sh"
+tb_watch

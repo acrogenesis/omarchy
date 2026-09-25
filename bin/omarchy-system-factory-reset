@@ -321,7 +321,7 @@ sanitize_factory_baseline() {
   local factory="$1"
   btrfs property set -ts "$factory" ro false
   if [[ -d $factory/var/lib/omarchy/thunderbolt-authorization || -f $factory/etc/omarchy/thunderbolt-authorization.enabled ]]; then
-    if ! /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-setup.py" reset-root "$factory"; then
+    if ! /usr/bin/omarchy-thunderbolt-authorization-admin reset-root "$factory"; then
       btrfs property set -ts "$factory" ro true
       fail "could not reset Thunderbolt authorization in the factory baseline"
     fi
@@ -369,7 +369,7 @@ stage_full_reset() {
   # Leave the new owner's input available before interactive enrollment. Clear
   # inherited accessory identities in both roots; never change the live daemon.
   if [[ -d $next/var/lib/omarchy/thunderbolt-authorization || -f $next/etc/omarchy/thunderbolt-authorization.enabled ]]; then
-    /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-setup.py" reset-root "$next" ||
+    /usr/bin/omarchy-thunderbolt-authorization-admin reset-root "$next" ||
       fail "could not reset Thunderbolt authorization in the staged root"
   fi
 

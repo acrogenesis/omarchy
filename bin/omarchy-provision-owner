@@ -1035,7 +1035,7 @@ run_provisioning() {
   fi
 
   log_step "enrolling the owner's Thunderbolt accessories"
-  /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-setup.py" owner
+  /usr/bin/omarchy-thunderbolt-authorization-admin owner
 
   log_step "cleaning up provisioning state"
   cleanup_oem_state

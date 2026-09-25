@@ -5,6 +5,6 @@ install -Dm644 "$OMARCHY_PATH/default/polkit/org.omarchy.thunderbolt.policy" /us
 # The builder's accessories must not become the new owner's trust policy.
 # Keep ordinary Bolt behavior until interactive owner setup has finished.
 if [[ -n ${OMARCHY_INSTALL_USER:-} ]]; then
-  /usr/bin/python3 "$OMARCHY_PATH/install/helpers/thunderbolt-setup.py" prepare
+  /usr/bin/omarchy-thunderbolt-authorization-admin prepare
   systemctl enable omarchy-thunderbolt-authorization.service
 fi
