@@ -60,18 +60,21 @@ fi
 # fails, the command stops here and leaves the complete policy enabled.
 sudo omarchy-usb-authorization-boot disable
 
+if omarchy-pkg-present usbguard; then
+  # Keep the watcher and its IPC access until blocking has actually stopped.
+  # In particular, a failed stop must not strand a running daemon without UI.
+  sudo systemctl disable --now usbguard.service
+  if systemctl is-active --quiet usbguard.service || systemctl is-enabled --quiet usbguard.service; then
+    echo "USBGuard is still active or enabled; approval prompts have been preserved." >&2
+    exit 1
+  fi
+  sudo omarchy-usb-authorization-restore-default
+  sudo usbguard remove-user "$USER"
+fi
+
 systemctl --user disable --now omarchy-usb-authorization.service 2>/dev/null || true
 rm -f "$unit"
 systemctl --user daemon-reload
-
-if omarchy-pkg-present usbguard; then
-  sudo usbguard remove-user "$USER" 2>/dev/null || true
-fi
-
-if omarchy-pkg-present usbguard; then
-  sudo systemctl disable --now usbguard.service 2>/dev/null || true
-  sudo omarchy-usb-authorization-restore-default
-fi
 
 if [[ -d $state_dir/requests ]]; then
   find "$state_dir/requests" -mindepth 1 -maxdepth 1 -type f -delete

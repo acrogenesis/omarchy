@@ -1,5 +1,7 @@
 echo "Configure USB device authorization"
 
+install -Dm644 "$OMARCHY_PATH/default/polkit/org.omarchy.usb.policy" /usr/share/polkit-1/actions/org.omarchy.usb.policy
+
 # A deferred install has only the builder's peripherals attached. The owner
 # needs working input before there is an account or a session for approvals.
 if [[ -z ${OMARCHY_INSTALL_USER:-} ]]; then

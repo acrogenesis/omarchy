@@ -23,6 +23,7 @@ PresentDevicePolicy=apply-policy
 InsertedDevicePolicy=apply-policy
 AuthorizedDefault=none
 RestoreControllerDeviceState=false
+RuleFile=/etc/usbguard/rules.conf
 CONF
 
 cat >"$stub_bin/omarchy-pkg-missing" <<'STUB'
@@ -43,6 +44,7 @@ printf 'pkg-drop <%s>\n' "$*" >>"$CALLS"
 STUB
 cat >"$stub_bin/install" <<'STUB'
 #!/bin/bash
+if [[ ${!#} == /usr/share/polkit-1/actions/org.omarchy.usb.policy ]]; then exit 0; fi
 if [[ $1 == -Dm600 && $2 == -o && $3 == root && $4 == -g && $5 == root ]]; then
   exec /usr/bin/install -Dm600 "$6" "$7"
 fi
@@ -53,6 +55,17 @@ cat >"$stub_bin/systemctl" <<'STUB'
 printf 'systemctl <%s>\n' "$*" >>"$CALLS"
 if [[ $* == "show usbguard.service --property=InvocationID --value" ]]; then
   printf '%s\n' "${TEST_DAEMON_INVOCATION:-11111111111111111111111111111111}"
+elif [[ $* == "--user show-environment" ]]; then
+  echo "OMARCHY_PATH=${TEST_SESSION_ROOT:-$OMARCHY_PATH}"
+elif [[ $* == "--user restart omarchy-usb-authorization.service" ]]; then
+  [[ ${TEST_WATCHER_FAIL:-0} == 0 ]]
+elif [[ $* == "restart usbguard.service" ]]; then
+  touch "$TEST_GUARD_ACTIVE"
+elif [[ $* == "disable --now usbguard.service" ]]; then
+  [[ ${TEST_STOP_FAIL:-0} == 0 ]] || exit 1
+  [[ ${TEST_STOP_LIES:-0} == 1 ]] || rm -f "$TEST_GUARD_ACTIVE"
+elif [[ $* == "is-active --quiet usbguard.service" ]]; then
+  [[ -f $TEST_GUARD_ACTIVE ]]
 elif [[ $* == "is-enabled --quiet usbguard.service" ]]; then
   exit 1
 fi
@@ -100,11 +113,22 @@ list-devices)
     echo '5: allow id 0627:0001 name "QEMU USB Tablet" hash "tablet"'
   fi
   ;;
+append-rule)
+  printf 'usbguard <append-rule> <%s>\n' "$2" >>"$CALLS"
+  [[ ${APPROVAL_EXIT_FAIL:-0} == 0 ]] || exit 1
+  if [[ ${APPROVAL_NO_POLICY:-0} == 0 ]]; then printf '%s\n' "$2" >"$TEST_SAVED_RULE"; fi
+  echo 40
+  ;;
 list-rules)
-  [[ ${APPROVAL_POLICY_QUERY_FAIL:-0} == 0 ]] || exit 1
+  if [[ -f $TEST_ALLOWED_RULE && ${APPROVAL_POLICY_QUERY_FAIL:-0} == 1 ]]; then exit 1; fi
+  if [[ -n ${TEST_POLICY_LIST:-} ]]; then cat "$TEST_POLICY_LIST"; fi
   if [[ -f $TEST_SAVED_RULE ]]; then
     printf '40: %s\n' "$(<"$TEST_SAVED_RULE")"
-    printf '\t17: %s\n' "$(<"$TEST_ALLOWED_RULE")"
+    if [[ -f $TEST_ALLOWED_RULE ]]; then
+      printf '\t17: %s\n' "$(<"$TEST_ALLOWED_RULE")"
+    elif [[ -n ${BLOCKED_DEVICE_RULE:-} ]]; then
+      printf '\t17: %s\n' "$BLOCKED_DEVICE_RULE"
+    fi
   fi
   ;;
 *)
@@ -140,6 +164,11 @@ elif [[ $1 == test && $2 == -s && $3 == /etc/usbguard/rules.conf ]]; then
   exec /usr/bin/test -s "$TEST_RULES"
 elif [[ $1 == install && $2 == -Dm600 && $3 == -o && $4 == root && $5 == -g && $6 == root && $8 == /etc/usbguard/rules.conf ]]; then
   exec /usr/bin/install -Dm600 "$7" "$TEST_RULES"
+elif [[ $1 == install && ${!#} == /usr/share/polkit-1/actions/org.omarchy.usb.policy ]]; then
+  exit 0
+elif [[ $1 == /usr/bin/omarchy-usb-authorization-approve ]]; then
+  shift
+  exec "$USB_APPROVE_FIXTURE" "$@"
 elif [[ $1 == omarchy-usb-authorization-restore-default ]]; then
   echo 1 >"$TEST_SYSFS/usb1/authorized_default"
   echo 1 >"$TEST_SYSFS/1-2/authorized"
@@ -165,7 +194,13 @@ choose)
   fi
   printf '%s\n' "${GUM_CHOICE:-Keep blocked}"
   ;;
-confirm) exit 0 ;;
+confirm)
+  if [[ ${GUM_REQUIRE_STDIN:-0} == 1 ]]; then
+    read -r consent
+    [[ $consent == yes ]] || exit 1
+  fi
+  [[ ${GUM_DECLINE:-0} == 0 ]]
+  ;;
 esac
 STUB
 cat >"$stub_bin/omarchy-notification-send" <<'STUB'
@@ -185,6 +220,16 @@ if [[ -n ${NOTIFICATION_READY_FILE:-} ]]; then
   [[ -e $NOTIFICATION_READY_FILE ]]
 fi
 STUB
+cat >"$stub_bin/pkexec" <<'STUB'
+#!/bin/bash
+[[ $1 == /usr/bin/omarchy-usb-authorization-approve ]] || exit 1
+shift
+exec "$USB_APPROVE_FIXTURE" "$@"
+STUB
+cat >"$stub_bin/usbguard-rule-parser" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
 chmod +x "$stub_bin"/*
 
 export HOME="$home"
@@ -196,6 +241,26 @@ export TEST_DAEMON_CONFIG="$daemon_config"
 export TEST_RULES="$rules"
 export TEST_ALLOWED_RULE="$scratch/allowed-rule"
 export TEST_SAVED_RULE="$scratch/saved-rule"
+export TEST_GUARD_ACTIVE="$scratch/guard-active"
+export USB_APPROVE_FIXTURE="$scratch/approve"
+export USB_POLICY_FIXTURE="$scratch/policy.sh"
+sed "s|/etc/usbguard/rules.conf|$TEST_SAVED_RULE|g" "$ROOT/install/helpers/usb-authorization-policy.sh" >"$USB_POLICY_FIXTURE"
+cat >"$USB_APPROVE_FIXTURE" <<'STUB'
+#!/bin/bash
+set -euo pipefail
+source "$USB_POLICY_FIXTURE"
+# Boot inventory uses the same helper; permanent behavior is exercised below.
+if [[ $1 == 4 || $1 == 5 ]]; then
+  printf 'boot-approve <%s> <%s>\n' "$1" "$2" >>"$CALLS"
+  exit 0
+fi
+usb_authorization_permanent "$@"
+STUB
+chmod +x "$USB_APPROVE_FIXTURE"
+sed -e "s|/usr/bin/omarchy-usb-authorization-approve|$USB_APPROVE_FIXTURE|g" \
+  -e "s|/usr/share/omarchy/install/helpers/usb-authorization-policy.sh|$USB_POLICY_FIXTURE|g" \
+  "$ROOT/bin/omarchy-setup-security-usb-authorization" >"$scratch/setup"
+chmod +x "$scratch/setup"
 
 if "$ROOT/bin/omarchy-usb-authorization-restore-default" >/dev/null 2>&1; then
   fail "the fixed-path USB authorization restore helper requires root"
@@ -210,46 +275,76 @@ fi
   fail "user-facing USB authorization commands do not elevate caller-selected paths"
 pass "USB authorization keeps privileged paths fixed"
 
-"$ROOT/bin/omarchy-setup-security-usb-authorization" --yes >"$scratch/setup-output"
+"$scratch/setup" --yes >"$scratch/setup-output"
 
-grep -qx 'allow id 1d6b:0002 name "Linux Foundation root hub" hash "root"' "$rules" ||
+grep -qx 'allow id 1d6b:0002 name "Linux Foundation root hub" hash "root" label "omarchy-usb-authorization-v1"' "$rules" ||
   fail "USB authorization setup trusts devices present during enrollment"
 [[ $(stat -c %a "$rules") == 600 ]] || fail "USB authorization policy is root-private"
 grep -Fqx 'usbguard <add-user> <tester> <--devices=list,listen,modify> <--policy=list> <--exceptions=listen>' "$calls" ||
   fail "USB authorization grants only the IPC access needed by the approval flow"
 grep -Fqx 'systemctl <restart usbguard.service>' "$calls" ||
   fail "USB authorization reloads its user ACL before the watcher starts"
-[[ -L $home/.config/systemd/user/omarchy-usb-authorization.service ]] ||
+[[ -f $home/.config/systemd/user/omarchy-usb-authorization.service && ! -L $home/.config/systemd/user/omarchy-usb-authorization.service ]] ||
   fail "USB authorization installs the graphical-session watcher"
 grep -Fqx 'pkg-add <usbguard>' "$calls" || fail "USB authorization ensures USBGuard is installed"
 pass "USB authorization enrolls present devices before enabling default-deny"
 
 generate_count=$(grep -c '^usbguard <generate-policy>$' "$calls")
-"$ROOT/bin/omarchy-setup-security-usb-authorization" --yes >"$scratch/setup-existing-output"
+"$scratch/setup" --yes >"$scratch/setup-existing-output"
 generate_count_after=$(grep -c '^usbguard <generate-policy>$' "$calls")
 (( generate_count_after == generate_count )) || fail "re-enabling preserves the existing trusted-device policy"
 pass "USB authorization setup preserves an existing policy"
 
+# Failures before the watcher is ready must never start enforcement. A copied
+# unit also repairs the dangling checkout link reported on the affected host.
+unit="$home/.config/systemd/user/omarchy-usb-authorization.service"
+rm -f "$unit"
+ln -s "$scratch/deleted-checkout/service" "$unit"
+"$scratch/setup" --yes >/dev/null
+[[ -f $unit && ! -L $unit ]] || fail "setup repairs a dangling watcher unit"
+for failure in missing-unit missing-helper session-mismatch watcher-start; do
+  rm -f "$TEST_GUARD_ACTIVE"
+  : >"$calls"
+  cp "$scratch/setup" "$scratch/failing-setup"
+  options=()
+  case "$failure" in
+  missing-unit) sed -i "s|^unit_source=.*|unit_source=$scratch/missing-unit|" "$scratch/failing-setup" ;;
+  missing-helper) sed -i "s|$USB_POLICY_FIXTURE|$scratch/missing-helper|g" "$scratch/failing-setup" ;;
+  session-mismatch) options+=(TEST_SESSION_ROOT=/missing-runtime) ;;
+  watcher-start) options+=(TEST_WATCHER_FAIL=1) ;;
+  esac
+  if env "${options[@]}" "$scratch/failing-setup" --yes >"$scratch/$failure.log" 2>&1; then
+    fail "setup must reject $failure"
+  fi
+  [[ ! -e $TEST_GUARD_ACTIVE ]] || fail "$failure starts blocking without a watcher"
+  ! grep -Eq 'systemctl <(enable|restart) usbguard.service>' "$calls" || fail "$failure enables enforcement"
+done
+"$scratch/setup" --yes >/dev/null
+watch_line=$(grep -n '^systemctl <--user restart omarchy-usb-authorization.service>' "$calls" | tail -1 | cut -d: -f1)
+guard_line=$(grep -n '^systemctl <restart usbguard.service>' "$calls" | tail -1 | cut -d: -f1)
+(( watch_line < guard_line )) || fail "watcher must start before enforcement"
+pass "USB setup repairs dangling units and refuses enforcement without a working watcher"
+
 : >"$rules"
-GENERATE_EMPTY=1 "$ROOT/bin/omarchy-setup-security-usb-authorization" --yes >"$scratch/setup-empty-output"
+GENERATE_EMPTY=1 "$scratch/setup" --yes >"$scratch/setup-empty-output"
 [[ -s $rules ]] || fail "empty USB inventory must persist an initialized policy"
 ! grep -q '^allow ' "$rules" || fail "empty inventory must not add permissive rules"
 generate_count=$(grep -c '^usbguard <generate-policy>$' "$calls")
-"$ROOT/bin/omarchy-setup-security-usb-authorization" --yes >"$scratch/setup-empty-again-output"
+"$scratch/setup" --yes >"$scratch/setup-empty-again-output"
 [[ $(grep -c '^usbguard <generate-policy>$' "$calls") == "$generate_count" ]] ||
   fail "re-enabling an empty policy must not enroll newly attached devices"
 : >"$rules"
-if GENERATE_FAIL=1 "$ROOT/bin/omarchy-setup-security-usb-authorization" --yes >"$scratch/setup-failed-output" 2>&1; then
+if GENERATE_FAIL=1 "$scratch/setup" --yes >"$scratch/setup-failed-output" 2>&1; then
   fail "enumeration failure must not be accepted as an empty USB inventory"
 fi
 [[ ! -s $rules ]] || fail "failed enumeration must not install a policy"
 pass "USB setup accepts an empty inventory while rejecting enumeration failure"
 
 : >"$calls"
-"$ROOT/bin/omarchy-setup-security-usb-authorization" --boot --yes >"$scratch/setup-boot-output"
-grep -Fqx 'usbguard <allow-device> <--permanent> <4>' "$calls" ||
+"$scratch/setup" --boot --yes >"$scratch/setup-boot-output"
+grep -Fq 'boot-approve <4>' "$calls" ||
   fail "boot authorization trusts the connected root controller"
-grep -Fqx 'usbguard <allow-device> <--permanent> <5>' "$calls" ||
+grep -Fq 'boot-approve <5>' "$calls" ||
   fail "boot authorization trusts the connected USB devices"
 grep -Fqx 'sudo <omarchy-usb-authorization-boot> <enable>' "$calls" ||
   fail "boot authorization uses the fixed-path boot-image helper"
@@ -419,7 +514,7 @@ export OMARCHY_INSTALL_USER=tester
 export OMARCHY_USB_AUTHORIZATION_RULES_FILE="$rules"
 export OMARCHY_USB_AUTHORIZATION_DAEMON_CONFIG="$daemon_config"
 bash -euo pipefail -c 'source "$OMARCHY_INSTALL/config/usb-authorization.sh"' >"$scratch/install-output"
-grep -qx 'allow id 1d6b:0002 name "Linux Foundation root hub" hash "root"' "$rules" ||
+grep -qx 'allow id 1d6b:0002 name "Linux Foundation root hub" hash "root" label "omarchy-usb-authorization-v1"' "$rules" ||
   fail "fresh installation enrolls devices present during installation"
 grep -Fqx 'usbguard <add-user> <tester> <--devices=list,listen,modify> <--policy=list> <--exceptions=listen>' "$calls" ||
   fail "fresh installation grants the owner narrowly scoped approval access"
@@ -452,7 +547,7 @@ echo 'allow id 1234:0001 name "Builder keyboard" hash "builder"' >"$rules"
 owner_rule='allow id 1234:0002 name "Owner keyboard" hash "owner"'
 : >"$calls"
 GENERATED_RULE="$owner_rule" usb_authorization_provision_owner owner "$rules" "$daemon_config"
-[[ $(<"$rules") == "$owner_rule" ]] || fail "owner enrollment must replace inherited builder trust"
+[[ $(<"$rules") == "$owner_rule"' label "omarchy-usb-authorization-v1"' ]] || fail "owner enrollment must replace inherited builder trust"
 grep -Fqx 'usbguard <add-user> <owner> <--devices=list,listen,modify> <--policy=list> <--exceptions=listen>' "$calls" ||
   fail "owner provisioning grants approval access"
 [[ $(tail -2 "$calls") == $'systemctl <enable usbguard.service>\nsystemctl <restart usbguard.service>' ]] ||
@@ -462,7 +557,7 @@ grep -Fqx 'usbguard <add-user> <owner> <--devices=list,listen,modify> <--policy=
 if GENERATE_FAIL=1 usb_authorization_provision_owner owner "$rules" "$daemon_config" >"$scratch/owner-failed" 2>&1; then
   fail "owner enrollment must reject enumeration failure"
 fi
-[[ $(<"$rules") == "$owner_rule" ]] || fail "failed enrollment preserves the old policy"
+[[ $(<"$rules") == "$owner_rule"' label "omarchy-usb-authorization-v1"' ]] || fail "failed enrollment preserves the old policy"
 ! grep -q '^systemctl' "$calls" || fail "failed owner enrollment must not enable enforcement"
 : >"$calls"
 sed 's/ImplicitPolicyTarget=block/ImplicitPolicyTarget=allow/' "$daemon_config" >"$scratch/insecure-daemon.conf"
@@ -622,9 +717,36 @@ USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
 request=$(find "$home/.local/state/omarchy/usb-authorization/requests" -maxdepth 1 -name 'request-*.json' -print -quit)
 token=$(basename "${request%.json}")
 GUM_CHOICE='Always allow this device' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/review-always-output"
-grep -Fqx "usbguard <allow-device> <--permanent> <$malicious_rule>" "$calls" || fail "review can persist an exact-device rule"
+grep -Fq 'usbguard <append-rule> <allow ' "$calls" || fail "review can persist a portable device rule"
+append_count=$(grep -c '^usbguard <append-rule>' "$calls")
+"$USB_APPROVE_FIXTURE" 17 "allow ${malicious_rule#block }"
+[[ $(grep -c '^usbguard <append-rule>' "$calls") == "$append_count" ]] || fail "confirmed permanent retry must preserve rule ordering without duplicate rules"
 pass "USB review supports explicit persistent trust"
 rm -f "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
+
+# Unmarked rules might be intentional manual restrictions. Review is opt-in,
+# never accepted through --yes, and only the selected live identity is added.
+legacy_rule='allow id 046d:c53a name "Receiver" hash "receiver" parent-hash "hub-a" via-port "1-2"'
+printf '%s\n' "$legacy_rule" >"$TEST_ALLOWED_RULE"
+printf '12: %s\n\t17: %s\n' "$legacy_rule" "$legacy_rule" >"$scratch/legacy-policy"
+cp "$scratch/legacy-policy" "$scratch/legacy-before"
+if "$scratch/setup" --review-existing --yes >/dev/null 2>&1; then fail "legacy migration requires individual consent"; fi
+TEST_POLICY_LIST="$scratch/legacy-policy" GUM_DECLINE=1 "$scratch/setup" --review-existing >/dev/null
+[[ ! -e $TEST_SAVED_RULE ]] || fail "declining migration adds portable trust"
+printf 'yes\nyes\nyes\n' | TEST_POLICY_LIST="$scratch/legacy-policy" GUM_REQUIRE_STDIN=1 "$scratch/setup" --review-existing >/dev/null
+[[ $(<"$TEST_SAVED_RULE") == 'allow id 046d:c53a name "Receiver" hash "receiver" label "omarchy-usb-authorization-v1"' ]] || fail "legacy review saves only identity constraints"
+cmp -s "$scratch/legacy-policy" "$scratch/legacy-before" || fail "legacy review rewrites existing manual rules"
+rm -f "$TEST_ALLOWED_RULE" "$TEST_SAVED_RULE"
+
+printf '12: block id 07a6:8513\n\t17: %s\n' "$malicious_rule" >"$scratch/deny-policy"
+if TEST_POLICY_LIST="$scratch/deny-policy" "$USB_APPROVE_FIXTURE" 17 "$malicious_rule" >/dev/null 2>&1; then fail "permanent approval must respect earlier manual denial"; fi
+[[ ! -e $TEST_SAVED_RULE && ! -e $TEST_ALLOWED_RULE ]] || fail "manual denial changed policy or authorization"
+printf '%s\n' "allow ${malicious_rule#block }" >"$TEST_ALLOWED_RULE"
+if TEST_POLICY_LIST="$scratch/deny-policy" "$USB_APPROVE_FIXTURE" 17 "allow ${malicious_rule#block }" >/dev/null 2>&1; then fail "temporary allow cannot hide an earlier manual denial"; fi
+rm -f "$TEST_ALLOWED_RULE"
+printf '12: block\n' >"$scratch/deny-all-policy"
+if TEST_POLICY_LIST="$scratch/deny-all-policy" "$USB_APPROVE_FIXTURE" 17 "$malicious_rule" >/dev/null 2>&1; then fail "unconditional manual denial must be preserved"; fi
+pass "USB legacy review requires consent and preserves manual policy"
 
 USBGUARD_IPC_SIGNAL=Device.PolicyApplied \
   USBGUARD_DEVICE_ID=17 \
@@ -724,11 +846,12 @@ if APPROVAL_NO_POLICY=1 GUM_CHOICE='Always allow this device' "$ROOT/bin/omarchy
   fail "permanent approval requires saved policy"
 fi
 allow_count=$(grep -c '^usbguard <allow-device>' "$calls")
-if GUM_CHOICE='Allow once' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/missing-policy-retry" 2>&1; then
+if APPROVAL_NO_POLICY=1 GUM_CHOICE='Allow once' "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/missing-policy-retry" 2>&1; then
   fail "retry cannot downgrade permanent approval when policy is missing"
 fi
 [[ -f $request && $(jq -r .approval "$request") == 'Always allow this device' ]] || fail "missing policy retains original permanent intent"
 [[ $(grep -c '^usbguard <allow-device>' "$calls") == "$allow_count" ]] || fail "retry must not repeat authorization on an allowed device"
+printf '%s\n' "allow ${malicious_rule#block }" >"$TEST_ALLOWED_RULE"
 for failure in BLOCKED_QUERY_FAIL APPROVAL_QUERY_FAIL; do
   if env "$failure=1" "$ROOT/bin/omarchy-usb-authorization-review" "$token" >"$scratch/query-retry" 2>&1; then
     fail "retry must fail when inventory cannot be read"
@@ -803,6 +926,18 @@ echo 0 >"$sysfs/usb1/authorized_default"
 echo 0 >"$sysfs/1-2/authorized"
 export TEST_SYSFS="$sysfs"
 
+for failure in TEST_STOP_FAIL TEST_STOP_LIES; do
+  touch "$TEST_GUARD_ACTIVE"
+  : >"$calls"
+  if env "$failure=1" "$ROOT/bin/omarchy-remove-security-usb-authorization" --yes >"$scratch/$failure.log" 2>&1; then
+    fail "removal must reject $failure"
+  fi
+  [[ -f $unit ]] || fail "failed daemon stop removes watcher"
+  ! grep -q '^usbguard <remove-user>' "$calls" || fail "failed daemon stop revokes watcher access"
+  ! grep -q '^systemctl <--user disable' "$calls" || fail "failed daemon stop disables watcher"
+done
+pass "USB removal preserves approval prompts if stopping enforcement fails"
+
 "$ROOT/bin/omarchy-remove-security-usb-authorization" --yes >"$scratch/remove-output"
 
 [[ $(<"$sysfs/usb1/authorized_default") == 1 ]] || fail "removal restores root-hub default authorization"
@@ -817,3 +952,16 @@ grep -Fqx 'sudo <omarchy-usb-authorization-boot> <disable>' "$calls" ||
 [[ ! -e $home/.config/systemd/user/omarchy-usb-authorization.service ]] ||
   fail "removal deletes the graphical-session watcher"
 pass "USB authorization removal restores the original default-allow behavior"
+
+cat >"$stub_bin/omarchy-setup-security-usb-authorization" <<'STUB'
+#!/bin/bash
+printf 'migrate-setup <%s>\n' "$*" >>"$CALLS"
+STUB
+chmod +x "$stub_bin/omarchy-setup-security-usb-authorization"
+: >"$calls"
+bash -euo pipefail "$ROOT/migrations/1790608617.sh" >/dev/null
+! grep -q '^migrate-setup' "$calls" || fail "migration overrides USB opt-out"
+touch "$TEST_GUARD_ACTIVE"
+bash -euo pipefail "$ROOT/migrations/1790608617.sh" >/dev/null
+grep -Fqx 'migrate-setup <--yes>' "$calls" || fail "migration repairs an active daemon without a watcher"
+pass "USB migration repairs enabled protection and preserves opt-out"

@@ -8,7 +8,6 @@ ConditionEnvironment=WAYLAND_DISPLAY
 
 [Service]
 Type=simple
-ExecCondition=/usr/bin/systemctl is-active --quiet usbguard.service
 ExecStart=/usr/bin/bash -lc 'exec "$OMARCHY_PATH/bin/omarchy-usb-authorization-watch"'
 Restart=always
 RestartSec=2

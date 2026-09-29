@@ -1,3 +1,5 @@
+source "${BASH_SOURCE[0]%/*}/usb-authorization-policy.sh"
+
 usb_authorization_config_value() {
   local config="$1" key="$2"
   local awk_command=(awk)
@@ -54,15 +56,24 @@ usb_authorization_require_secure_settings() {
   usb_authorization_require_secure_setting "$config" InsertedDevicePolicy apply-policy || return 1
   usb_authorization_require_secure_setting "$config" AuthorizedDefault none || return 1
   usb_authorization_require_secure_setting "$config" RestoreControllerDeviceState false || return 1
+  usb_authorization_require_secure_setting "$config" RuleFile /etc/usbguard/rules.conf || return 1
 }
 
 usb_authorization_generate_policy() {
-  local policy="$1"
+  local policy="$1" generated line
 
-  if ! usbguard generate-policy >"$policy"; then
+  if ! generated=$(usbguard generate-policy); then
     echo "USBGuard could not enumerate devices; nothing was enabled." >&2
     return 1
   fi
+  : >"$policy"
+  while IFS= read -r line; do
+    if [[ $line == allow\ * ]]; then
+      usb_authorization_portable_rule "$line" >>"$policy" || return 1
+    elif [[ -n $line ]]; then
+      printf '%s\n' "$line" >>"$policy"
+    fi
+  done <<<"$generated"
   if ! grep -q '^allow ' "$policy"; then
     if grep -q '^[[:space:]]*[^#[:space:]]' "$policy"; then
       echo "USBGuard did not generate a usable policy; nothing was enabled." >&2
@@ -72,6 +83,7 @@ usb_authorization_generate_policy() {
     # Keep the file nonempty so re-enabling preserves this default-deny policy.
     echo '# No USB devices were present during enrollment.' >>"$policy"
   fi
+  usbguard-rule-parser -f "$policy" >/dev/null
 }
 
 usb_authorization_add_user() {
@@ -113,16 +125,16 @@ usb_authorization_provision_owner() {
 }
 
 usb_authorization_trust_present_devices() {
-  local line id
+  local line id devices
   local count=0
-  local -a devices
+  devices=$(usbguard list-devices) || return 1
+  local -a inventory
+  mapfile -t inventory <<<"$devices"
 
-  mapfile -t devices < <(usbguard list-devices)
-
-  for line in "${devices[@]}"; do
+  for line in "${inventory[@]}"; do
     if [[ $line =~ ^([0-9]+):[[:space:]] ]]; then
       id="${BASH_REMATCH[1]}"
-      usbguard allow-device --permanent "$id"
+      sudo /usr/bin/omarchy-usb-authorization-approve "$id" "${line#*: }" || return 1
       (( ++count ))
     fi
   done
