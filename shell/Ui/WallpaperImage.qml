@@ -21,6 +21,11 @@ Item {
   // Lock parity: decode at the view's physical pixel size instead of the
   // image's natural size.
   property bool useSourceSizeCap: false
+  // A desktop caller supplies its screen/native bound. Wait for the header
+  // probe before loading so the first decode never allocates the full image.
+  property bool constrainDecode: false
+  property size decodeSize: Qt.size(0, 0)
+  readonly property bool decodeReady: !constrainDecode || (decodeSize.width > 0 && decodeSize.height > 0)
 
   property alias asynchronous: image.asynchronous
   property alias cache: image.cache
@@ -63,7 +68,7 @@ Item {
 
     Image {
       anchors.fill: parent
-      source: root.blurBackdropActive ? Util.fileUrl(root.path) + (root.sourceVersion > 0 ? "?v=" + root.sourceVersion : "") : ""
+      source: root.blurBackdropActive && root.decodeReady ? Util.fileUrl(root.path) + (root.sourceVersion > 0 ? "?v=" + root.sourceVersion : "") : ""
       sourceSize.width: root.useSourceSizeCap ? image.physWidth : 0
       sourceSize.height: root.useSourceSizeCap ? image.physHeight : 0
       fillMode: Image.PreserveAspectCrop
@@ -80,8 +85,8 @@ Item {
     readonly property bool coverReady: root.manualCrop && status === Image.Ready && implicitWidth > 0 && implicitHeight > 0
     readonly property real coverScale: coverReady ? Math.max(root.width / implicitWidth, root.height / implicitHeight) : 1
 
-    readonly property int physWidth: Math.round(root.width * Screen.devicePixelRatio)
-    readonly property int physHeight: Math.round(root.height * Screen.devicePixelRatio)
+    readonly property int physWidth: root.constrainDecode ? root.decodeSize.width : Math.round(root.width * Screen.devicePixelRatio)
+    readonly property int physHeight: root.constrainDecode ? root.decodeSize.height : Math.round(root.height * Screen.devicePixelRatio)
     // center and tile paint 1:1 like the uncapped desktop, so the cap never
     // applies to them; capping would scale a large image down to fit.
     readonly property bool capActive: root.useSourceSizeCap && root.fill !== "center" && root.fill !== "tile"
@@ -97,7 +102,7 @@ Item {
         naturalAspect = implicitWidth / implicitHeight
     }
 
-    source: root.path ? Util.fileUrl(root.path) + (root.sourceVersion > 0 ? "?v=" + root.sourceVersion : "") : ""
+    source: root.path && root.decodeReady ? Util.fileUrl(root.path) + (root.sourceVersion > 0 ? "?v=" + root.sourceVersion : "") : ""
     fillMode: {
       if (root.manualCrop) return Image.Stretch
       if (root.fill === "fit") return Image.PreserveAspectFit
