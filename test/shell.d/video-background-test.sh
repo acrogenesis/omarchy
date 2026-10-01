@@ -91,7 +91,7 @@ assert(
   'the desktop no longer carries the shell video pause policy'
 )
 assert(
-  barTextColor.includes('magick "$sample_path[0]"'),
+  barTextColor.includes('cover=("$sample_path[0]"') && barTextColor.includes('magick "${composition[@]}"'),
   'bar colour sampling reads one resolved frame instead of decoding a whole video'
 )
 assert(
