@@ -25,8 +25,9 @@ function blockAfter(source, marker, description) {
 }
 
 assert(
-  /theme=\$\(omarchy-theme-switcher\); \[\[ -n \$theme \]\] && omarchy-theme-set \\"\$theme\\" >\/dev\/null 2>&1 &/.test(backgroundQml),
-  'background theme switcher starts theme application asynchronously after selection'
+  /function openThemeSwitcher\(\) \{[\s\S]*if \(!root\.shell \|\| !root\.shell\.summon\("omarchy\.image-picker", payload\)\)\s*Util\.execArgv\(\["omarchy-shell", "shell", "summon", "omarchy\.image-picker", payload\]\)/.test(backgroundQml) &&
+    !backgroundQml.includes('omarchy-theme-switcher'),
+  'background opens the in-shell theme picker instead of spawning the switcher script'
 )
 
 assert(
@@ -82,7 +83,7 @@ assert(
     incomingFrameBlock.startsWith('id: incomingFrame') &&
     !/\bImage\s*\{/.test(backgroundQml) &&
     /^\s*WallpaperImage\s*\{\s*$/m.test(mediaQml),
-  'still backgrounds render responsively through the video-capable media wrapper'
+  'still backgrounds render responsively through the shared still media wrapper'
 )
 
 // Per-panel incoming source lock: pixels/meta commit exactly once per
@@ -96,7 +97,7 @@ assert(
 )
 
 assert(
-  /path:\s*panel\.incomingPath\b/.test(incomingFrameBlock) &&
+  /framePath:\s*panel\.incomingPath \|\| root\.preparedBackground/.test(incomingFrameBlock) &&
     /fill:\s*panel\.incomingFill\b/.test(incomingFrameBlock) &&
     /backdrop:\s*panel\.incomingBackdrop\b/.test(incomingFrameBlock),
   'incoming pixels and meta come from the per-panel lock, not live resolver bindings'
@@ -111,7 +112,7 @@ assert(
 )
 
 assert(
-  /usedFallback\s*\?\s*root\.incomingBackground\s*:\s*resolvedPath/.test(incomingResolver),
+  /usedFallback \|\| resolvedPath === canonicalPath \? root\.incomingBackground : resolvedPath/.test(incomingResolver),
   'a failed incoming resolve falls back to the handed-down snapshot pixels'
 )
 
@@ -159,7 +160,7 @@ const settledBlock = blockAfter(backgroundQml, 'function baseSettled', 'baseSett
 assert(
   /displayedResolver\.ready/.test(settledBlock) &&
     /lastDisplayedCanonical\s*!==\s*root\.displayedBackground/.test(settledBlock) &&
-    /base\.status\s*!==\s*Image\.Loading/.test(settledBlock),
+    /base\.status === Image\.Ready \|\| base\.status === Image\.Error/.test(settledBlock),
   'a panel settles only once its own resolve published for the final canonical and the decode is done'
 )
 
@@ -260,7 +261,7 @@ const blurActive = wallpaperQml.match(/blurBackdropActive: (.*)/)[1]
 const backdropSource = wallpaperQml.match(/source: (.*)/)[1]
 for (const fill of ['crop', 'fit', 'center', 'tile']) {
   for (const backdrop of ['solid', 'edge', 'blur']) {
-    const surface = { fill, backdrop, path: '/art.png', sourceVersion: 0 }
+    const surface = { fill, backdrop, path: '/art.png', sourceVersion: 0, decodeReady: true }
     const scope = vm.createContext({ ...surface, root: surface, Util: { fileUrl: p => 'file://' + p } })
     surface.blurBackdropActive = vm.runInContext(blurActive, scope)
     assertEqual(vm.runInContext(backdropSource, scope) !== '', fill !== 'crop' && backdrop === 'blur',
@@ -271,14 +272,15 @@ assert(/sourceSize.width:\s*root.useSourceSizeCap \? image.physWidth : 0/.test(w
   /sourceSize.height:\s*root.useSourceSizeCap \? image.physHeight : 0/.test(wallpaperQml),
   'active lock blur backdrops also cap their decode to the physical screen')
 assert(!backgroundQml.includes('id: oldResolver') && !backgroundQml.includes('id: oldFrame') &&
-  /path:\s*panel.lastDisplayedPath/.test(baseBlock) && /imageCache:\s*true/.test(baseBlock),
+  /path:\s*panel.lastDisplayedPath/.test(baseBlock) && /cached:\s*true/.test(baseBlock),
   'outgoing transitions retain the decoded panel variant without loading the canonical snapshot')
 
 const outgoing = vm.createContext({
   currentBackground: '/old/art.svg', displayedBackground: '/old/art.svg',
-  displayedVersion: 3, backgroundVersion: 3,
+  displayedVersion: 3, backgroundVersion: 3, preparedBackground: '', lastTransitionPath: '',
   isVideo: () => false,
-  revealAnimation: { stop() {} }
+  revealAnimation: { stop() {} },
+  preparedBackgroundTimer: { stop() {} }, requestNativeSize() {}
 })
 vm.runInContext(blockAfter(backgroundQml, 'function transitionBackground(', 'transition function exists') + '\n}', outgoing)
 outgoing.transitionBackground('/snapshots/canonical.svg', '/snapshots/new.png', '/new/art.svg', false, true)
@@ -287,7 +289,93 @@ assertEqual(outgoing.displayedVersion, 3, 'arming a theme transition never reque
 
 const lockQml = fs.readFileSync(path.join(root, 'shell/plugins/lock/LockView.qml'), 'utf8')
 assert(
-  /backdrop:\s*backgroundResolver\.backdrop/.test(lockQml),
+  /backdrop:\s*root\.resolution\.backdrop/.test(lockQml),
   'lock screen renders the same resolved backdrop as the desktop'
 )
+const themeSet = fs.readFileSync(path.join(root, 'bin/omarchy-theme-set'), 'utf8')
+
+// The next background decodes while the theme stages, rather than after the
+// transition arrives: WebP decodes take as long at screen size as at native.
+assert(
+  /function prepare\(path: string\): void \{\s*root\.prepareBackground\(path\)/.test(backgroundQml) &&
+    backgroundQml.includes('readonly property string framePath: panel.incomingPath || root.preparedBackground'),
+  'background decodes a prepared theme background in the hidden incoming frame'
+)
+assert(
+  /path === lastTransitionPath/.test(backgroundQml) &&
+    /id: preparedBackgroundTimer[\s\S]*?onTriggered: root\.preparedBackground = ""/.test(backgroundQml),
+  'background ignores a late prepare and drops an unclaimed one'
+)
+assert(
+  themeSet.indexOf('shell_ipc background prepare') !== -1 &&
+    themeSet.indexOf('shell_ipc background prepare') < themeSet.indexOf('\nomarchy-theme-set-templates\n'),
+  'theme set hands the shell its next background before rendering templates'
+)
+assert(
+  themeSet.includes('shell_ipc background prepare "$PREPARED_BACKGROUND_SNAPSHOT" 9>&- &'),
+  'theme set sends the prepare without holding the theme lock or waiting on it'
+)
+
+// The wallpaper is decoded at the screen's physical size, never at the size
+// it was shipped at, unless it is smaller than the screen: then it is decoded
+// at its own size instead of being scaled up to cover the screen.
+assert(
+  backgroundQml.includes('readonly property bool sized: width > 0 && height > 0') &&
+    backgroundQml.includes('readonly property int decodeWidth: sized ? Math.ceil(width * screen.devicePixelRatio) : 0') &&
+    backgroundQml.includes('readonly property int decodeHeight: sized ? Math.ceil(height * screen.devicePixelRatio) : 0'),
+  'background derives its decode size from the screen in physical pixels'
+)
+assert(
+  backgroundQml.includes('["magick", "identify", "-ping", "-format", "%w %h", sizeProbe.path]') &&
+    backgroundQml.includes('if (native.width > 0 && (native.width < decodeWidth || native.height < decodeHeight)) return Qt.size(native.width, native.height)'),
+  'background reads the wallpaper header and never decodes larger than the native size'
+)
+assert(
+  /constrainDecode: true\s*decodeSize: panel\.decodeSize\(panel\.lastDisplayedPath\)/.test(baseBlock) &&
+    /constrainDecode: true\s*decodeSize: panel\.decodeSize\(framePath\)/.test(incomingFrameBlock) &&
+    wallpaperQml.includes('root.path && root.decodeReady ? Util.fileUrl'),
+  'both wallpaper layers wait for the screen and native sizes before decoding'
+)
+assert(
+  /function requestNativeSize\(path\) \{\s*if \(!path \|\| isVideo\(path\)/.test(backgroundQml) &&
+    /function prepareBackground[\s\S]*?requestNativeSize\(path\)/.test(backgroundQml),
+  'background never probes videos and probes a prepared frame ahead of its transition'
+)
+
+const decode = vm.createContext({
+  sized: true, decodeWidth: 3840, decodeHeight: 2160,
+  root: { nativeSizes: { '/small.png': { width: 640, height: 480 }, '/large.png': { width: 7680, height: 4320 } } },
+  Qt: { size: (width, height) => ({width, height}) }
+})
+vm.runInContext(blockAfter(backgroundQml, 'function decodeSize', 'decode size function exists') + '\n}', decode)
+assertEqual(decode.decodeSize('/small.png').width, 640, 'a small wallpaper keeps its native decode size')
+assertEqual(decode.decodeSize('/large.png').width, 3840, 'a large wallpaper decodes only at the screen size')
+assertEqual(decode.decodeSize('/pending.png').width, 0, 'an unprobed wallpaper waits instead of decoding at full size')
+decode.sized = false
+assertEqual(decode.decodeSize('/large.png').width, 0, 'an unsized panel waits before decoding')
+
+const locked = vm.createContext({
+  incomingLockedVersion: -1,
+  root: { backgroundVersion: 9, requestNativeSize() {} },
+  incomingFallbackTimer: { stop() {} },
+  starts: 0
+})
+vm.runInContext('function maybeStartReveal() { starts += 1 }\n' + lockBlock + '\n}', locked)
+locked.lockIncoming('/prepared.png', 'fit', 'blur', '#123456', 0.6, 0.4)
+assertEqual(locked.starts, 1, 'a frame decoded during prepare starts the reveal when its metadata locks')
+locked.lockIncoming('/late.png', 'crop', 'solid', '#ffffff', 0.5, 0.5)
+assertEqual(locked.incomingPath, '/prepared.png', 'a late resolution cannot replace a locked transition source')
+assertEqual(locked.starts, 1, 'a locked transition is only started once')
+
+const settling = vm.createContext({
+  root: { displayedBackground: '/final.png' },
+  displayedResolver: { ready: true }, lastDisplayedCanonical: '/final.png',
+  base: { status: 0 }, Image: { Null: 0, Loading: 1, Ready: 2, Error: 3 }
+})
+vm.runInContext(settledBlock + '\n}', settling)
+assertEqual(settling.baseSettled(), false, 'a final frame awaiting its header keeps the incoming layer visible')
+settling.base.status = settling.Image.Loading
+assertEqual(settling.baseSettled(), false, 'a decoding final frame keeps the incoming layer visible')
+settling.base.status = settling.Image.Ready
+assertEqual(settling.baseSettled(), true, 'a decoded final frame can release its incoming layer')
 JS

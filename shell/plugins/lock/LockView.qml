@@ -7,10 +7,13 @@ Item {
   id: root
 
   property string backgroundPath: ""
+  property string videoPosterPath: ""
   property int backgroundVersion: 0
   // Screen this view covers (the lock surface's or the preview window's), so
   // the background resolves against the real output dimensions.
   property var viewScreen: null
+  property var preparedBackground: null
+  readonly property var resolution: preparedBackground || backgroundResolver
   property bool fingerprintConfigured: false
   property bool authenticatingPassword: false
   property string failureMessage: ""
@@ -45,6 +48,9 @@ Item {
   readonly property var inputBorderSpec: errorState
     ? Border.surfaceSpec("lock", "border-error", Color.lock.borderError, root.outlineThickness, "border-alpha")
     : Border.surfaceSpec("lock", "border-active", Color.lock.borderActive, root.outlineThickness, "border-alpha")
+
+  readonly property bool video: Util.isVideoPath(root.backgroundPath)
+  readonly property bool feedActive: root.video && root.loadBackground && !root.displaysBlank && !root.powerSaverActive
 
   signal submitPassword(string password)
   signal passwordTextEdited(string password)
@@ -91,24 +97,26 @@ Item {
 
     BackgroundResolver {
       id: backgroundResolver
-      canonicalPath: root.loadBackground ? root.backgroundPath : ""
+      canonicalPath: root.preparedBackground ? "" : (root.video ? root.videoPosterPath : root.backgroundPath)
+      refreshToken: root.backgroundVersion
       screenWidth: root.viewScreen ? root.viewScreen.width : Math.round(root.width)
       screenHeight: root.viewScreen ? root.viewScreen.height : Math.round(root.height)
     }
 
     BackgroundMedia {
       id: wallpaper
+      objectName: "lockWallpaper"
       anchors.fill: parent
-      path: root.loadBackground && backgroundResolver.ready ? backgroundResolver.resolvedPath : ""
+      path: root.loadBackground && root.resolution.ready ? root.resolution.resolvedPath : ""
       version: root.backgroundVersion
-      fill: backgroundResolver.fill
-      backdrop: backgroundResolver.backdrop
-      fillColor: backgroundResolver.fillColor
-      focalX: backgroundResolver.focalX
-      focalY: backgroundResolver.focalY
-      imageUseSourceSizeCap: true
-      imageCache: false
-      playbackEnabled: root.loadBackground && !root.displaysBlank && !root.powerSaverActive
+      fill: root.resolution.fill
+      backdrop: root.resolution.backdrop
+      fillColor: root.resolution.fillColor
+      focalX: root.resolution.focalX
+      focalY: root.resolution.focalY
+      cached: true
+      constrainDecode: true
+      decodeSize: Qt.size(Math.round(width * Screen.devicePixelRatio), Math.round(height * Screen.devicePixelRatio))
       // The blur MultiEffect needs a texture provider; a composed Item only
       // becomes one through a layer.
       layer.enabled: !video
@@ -116,8 +124,7 @@ Item {
 
     MultiEffect {
       anchors.fill: wallpaper
-      source: wallpaper.video ? null : wallpaper
-      visible: !wallpaper.video
+      source: wallpaper
       autoPaddingEnabled: false
       blurEnabled: root.loadBackground && wallpaper.ready
       blur: 1.0
@@ -126,11 +133,22 @@ Item {
       contrast: -0.08
     }
 
-    // Qt's video output cannot be sampled by MultiEffect on every renderer.
+    // The cached poster stays behind the feed when policy pauses playback,
+    // the module is unavailable, or a new connection has not received a frame.
+    Loader {
+      id: feedLoader
+      objectName: "lockFeedLoader"
+      anchors.fill: parent
+      active: root.feedActive
+      source: "LockFeedSurface.qml"
+      visible: status === Loader.Ready
+    }
+
+    // The feed item cannot be sampled by MultiEffect on every renderer.
     // Keep video wallpapers visible and darken them slightly for legibility.
     Rectangle {
-      anchors.fill: wallpaper
-      visible: wallpaper.video
+      anchors.fill: feedLoader
+      visible: root.video
       color: "#22000000"
     }
 

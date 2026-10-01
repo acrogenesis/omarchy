@@ -4,6 +4,7 @@ import Quickshell.Io
 import Quickshell.Services.Pam
 import Quickshell.Wayland
 import qs.Commons
+import qs.Ui
 
 Item {
   id: root
@@ -28,7 +29,11 @@ Item {
   property string failureMessage: ""
   property int failedAttempts: 0
   property string backgroundPath: ""
+  property string videoPosterPath: ""
   property int backgroundVersion: 0
+  // The wallpaper file's mtime and size. The lock caches its wallpaper by
+  // version, so a file overwritten in place must bump the version too.
+  property string backgroundSignature: ""
   property string lastEvent: "init"
   property string lastEventAt: ""
   property bool displaysBlank: false
@@ -111,6 +116,16 @@ Item {
 
   function refreshBackground() {
     if (!readlinkProc.running) readlinkProc.running = true
+  }
+
+  function refreshPoster() {
+    if (!root.videoBackground) {
+      root.videoPosterPath = ""
+      return
+    }
+    if (posterProc.running) return
+    posterProc.sourcePath = root.backgroundPath
+    posterProc.running = true
   }
 
   function refreshFingerprintStatus() {
@@ -307,7 +322,9 @@ Item {
         id: lockView
         anchors.fill: parent
         viewScreen: lockSurface.screen
+        preparedBackground: root.preloadedBackground(lockSurface.screen)
         backgroundPath: root.backgroundPath
+        videoPosterPath: root.videoPosterPath
         backgroundVersion: root.backgroundVersion
         fingerprintConfigured: root.fingerprintConfigured
         authenticatingPassword: root.authenticatingPassword
@@ -340,7 +357,9 @@ Item {
     LockView {
       anchors.fill: parent
       viewScreen: previewWindow.screen
+      preparedBackground: root.preloadedBackground(previewWindow.screen)
       backgroundPath: root.backgroundPath
+      videoPosterPath: root.videoPosterPath
       backgroundVersion: root.backgroundVersion
       fingerprintConfigured: root.fingerprintConfigured
       authenticatingPassword: false
@@ -396,6 +415,57 @@ Item {
     }
   }
 
+  // Resolve and decode each screen's actual variant before locking. The lock
+  // view consumes this same resolution and cached URL/size/fill, so neither
+  // metadata resolution nor a cold image decode holds up its first frame.
+  readonly property string lockWallpaperPath: videoBackground ? videoPosterPath : backgroundPath
+
+  function preloadedBackground(screen) {
+    if (!screen) return null
+    const preloads = preloadVariants.instances
+    for (let i = 0; i < preloads.length; i++) {
+      if (preloads[i].modelData.name === screen.name) return preloads[i].resolution
+    }
+    return null
+  }
+
+  Variants {
+    id: preloadVariants
+    model: Quickshell.screens
+
+    Item {
+      id: preload
+      required property var modelData
+      property alias resolution: preloadResolver
+      visible: false
+      width: modelData.width
+      height: modelData.height
+
+      BackgroundResolver {
+        id: preloadResolver
+        canonicalPath: root.lockWallpaperPath
+        screenWidth: preload.modelData.width
+        screenHeight: preload.modelData.height
+        devicePixelRatio: preload.modelData.devicePixelRatio
+        refreshToken: root.backgroundVersion
+      }
+
+      BackgroundMedia {
+        anchors.fill: parent
+        path: preloadResolver.ready ? preloadResolver.resolvedPath : ""
+        version: root.backgroundVersion
+        fill: preloadResolver.fill
+        backdrop: preloadResolver.backdrop
+        fillColor: preloadResolver.fillColor
+        focalX: preloadResolver.focalX
+        focalY: preloadResolver.focalY
+        cached: true
+        constrainDecode: true
+        decodeSize: Qt.size(Math.round(preload.width * preload.modelData.devicePixelRatio), Math.round(preload.height * preload.modelData.devicePixelRatio))
+      }
+    }
+  }
+
   Timer {
     id: fingerprintRetryTimer
     interval: 250
@@ -405,15 +475,37 @@ Item {
 
   Process {
     id: readlinkProc
-    command: ["readlink", "-f", root.currentBackgroundLink]
+    command: ["bash", "-c", "path=$(readlink -f -- \"$1\") && printf '%s\\n%s\\n' \"$path\" \"$(stat -Lc %Y:%s -- \"$path\" 2>/dev/null)\"", "_", root.currentBackgroundLink]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var next = String(text || "").trim()
+        var lines = String(text || "").split("\n")
+        var next = String(lines[0] || "").trim()
+        var signature = String(lines[1] || "").trim()
         if (next !== root.backgroundPath) {
+          root.videoPosterPath = ""
           root.backgroundPath = next
+          root.backgroundSignature = signature
+          root.backgroundVersion += 1
+        } else if (signature !== root.backgroundSignature) {
+          root.backgroundSignature = signature
           root.backgroundVersion += 1
         }
+        root.refreshPoster()
+      }
+    }
+  }
+
+  Process {
+    id: posterProc
+    property string sourcePath: ""
+    command: ["bash", Quickshell.env("OMARCHY_PATH") + "/shell/plugins/lock/poster.sh", sourcePath]
+    stdout: StdioCollector { id: posterOutput; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (sourcePath !== root.backgroundPath) {
+        root.refreshPoster()
+      } else {
+        root.videoPosterPath = exitCode === 0 ? String(posterOutput.text || "").trim() : ""
       }
     }
   }
@@ -579,7 +671,7 @@ Item {
     checkStrandedLock()
   }
 
-  IpcHandler {
+  ShellIpc {
     target: "lock"
 
     function lock(): string {
