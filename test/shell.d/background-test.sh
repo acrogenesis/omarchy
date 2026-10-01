@@ -86,9 +86,8 @@ assert(
   'still backgrounds render responsively through the shared still media wrapper'
 )
 
-// Per-panel incoming source lock: pixels/meta commit exactly once per
-// transition, from the resolver when it lands in time or from the snapshot
-// after the fallback timer, and never swap mid-reveal.
+// Per-panel incoming source lock: pixels and incoming metadata commit once
+// per transition and remain fixed for the whole reveal.
 const lockBlock = blockAfter(backgroundQml, 'function lockIncoming', 'incoming lock function exists')
 assert(
   /if\s*\(incomingLockedVersion\s*===\s*root\.backgroundVersion\)\s*return/.test(lockBlock) &&
@@ -116,17 +115,15 @@ assert(
   'a failed incoming resolve falls back to the handed-down snapshot pixels'
 )
 
-const fallbackTimer = blockAfter(backgroundQml, 'id: incomingFallbackTimer', 'incoming fallback timer exists')
 assert(
-  /interval:\s*250\b/.test(fallbackTimer) &&
-    /lockIncoming\(root\.incomingBackground,\s*panel\.lastDisplayedFill/.test(fallbackTimer),
-  'a slow incoming resolve times out to the snapshot with the panel cached displayed meta'
+  !backgroundQml.includes('incomingFallbackTimer') &&
+    /lockIncoming\([\s\S]*fill, backdrop, fillColor, focalX, focalY/.test(incomingResolver),
+  'a slow resolve retains the outgoing image until incoming metadata is available'
 )
 
 assert(
-  /incomingFallbackTimer\.restart\(\)/.test(backgroundQml) &&
-    /incomingLockedVersion\s*=\s*-1/.test(backgroundQml),
-  'arming a transition resets the per-panel lock and starts the snapshot timeout'
+  /incomingLockedVersion\s*=\s*-1/.test(backgroundQml),
+  'arming a transition resets the per-panel lock'
 )
 
 // Join tolerance: a panel whose incoming frame lands mid-animation still
@@ -261,7 +258,7 @@ const blurActive = wallpaperQml.match(/blurBackdropActive: (.*)/)[1]
 const backdropSource = wallpaperQml.match(/source: (.*)/)[1]
 for (const fill of ['crop', 'fit', 'center', 'tile']) {
   for (const backdrop of ['solid', 'edge', 'blur']) {
-    const surface = { fill, backdrop, path: '/art.png', sourceVersion: 0, decodeReady: true }
+    const surface = { fill, backdrop, path: '/art.png', renderPath: '/art.png', sourceVersion: 0, decodeReady: true }
     const scope = vm.createContext({ ...surface, root: surface, Util: { fileUrl: p => 'file://' + p } })
     surface.blurBackdropActive = vm.runInContext(blurActive, scope)
     assertEqual(vm.runInContext(backdropSource, scope) !== '', fill !== 'crop' && backdrop === 'blur',
@@ -333,7 +330,7 @@ assert(
 assert(
   /constrainDecode: true\s*decodeSize: panel\.decodeSize\(panel\.lastDisplayedPath\)/.test(baseBlock) &&
     /constrainDecode: true\s*decodeSize: panel\.decodeSize\(framePath\)/.test(incomingFrameBlock) &&
-    wallpaperQml.includes('root.path && root.decodeReady ? Util.fileUrl'),
+    wallpaperQml.includes('root.renderPath && root.decodeReady ? Util.fileUrl'),
   'both wallpaper layers wait for the screen and native sizes before decoding'
 )
 assert(
@@ -378,4 +375,10 @@ settling.base.status = settling.Image.Loading
 assertEqual(settling.baseSettled(), false, 'a decoding final frame keeps the incoming layer visible')
 settling.base.status = settling.Image.Ready
 assertEqual(settling.baseSettled(), true, 'a decoded final frame can release its incoming layer')
+const renderPathExpression = wallpaperQml.match(/renderPath: (.*)/)[1]
+for (const filename of ['/prepare.svg', '/FAILED.SVG']) {
+  assertEqual(vm.runInNewContext(renderPathExpression, {path: filename}), '', 'raw SVG cannot enter Qt image loading: ' + filename)
+}
+assertEqual(vm.runInNewContext(renderPathExpression, {path: '/cache/render.png'}), '/cache/render.png', 'bounded SVG raster enters Qt image loading')
+
 JS

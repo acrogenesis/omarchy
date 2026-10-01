@@ -421,6 +421,22 @@ RESOLVED="$SELECTED"
 if [[ -n $SCREEN && ${SELECTED,,} == *.svg ]]; then
   if rasterized=$(rasterize_svg "$SELECTED") && [[ -n $rasterized ]]; then
     RESOLVED="$rasterized"
+  else
+    # Never hand a failed SVG to Qt: that would bypass the bounded renderer.
+    # Keep the incoming metadata and show its solid fallback until a later
+    # resolve can render the asset successfully.
+    fallback_dir="$HOME/.cache/omarchy/background-renders"
+    mkdir -p "$fallback_dir" || exit 1
+    RESOLVED="$fallback_dir/fallback-${FILL_COLOR:1}.png"
+    if [[ ! -f $RESOLVED ]]; then
+      fallback_tmp=$(mktemp "$fallback_dir/.fallback-XXXXXX.png") || exit 1
+      if magick -size 1x1 "xc:$FILL_COLOR" "$fallback_tmp" 2>/dev/null; then
+        mv -- "$fallback_tmp" "$RESOLVED" || exit 1
+      else
+        rm -f -- "$fallback_tmp"
+        exit 1
+      fi
+    fi
   fi
 fi
 

@@ -3,9 +3,9 @@ import Quickshell.Io
 import qs.Commons
 
 // Non-visual helper: resolves a background's per-screen variant and render
-// metadata through omarchy-theme-bg-resolve. Every failure path publishes the
-// canonical path with today's defaults (crop, centered, theme background), so
-// a missing resolver or malformed output can never blank a wallpaper layer.
+// metadata through omarchy-theme-bg-resolve. Failed raster resolutions retain
+// the historical canonical fallback. Raw SVGs are never decoded by Qt: only
+// the resolver can safely supply their bounded per-screen raster.
 Item {
   id: root
 
@@ -84,7 +84,7 @@ Item {
 
   function publishFallback(seq) {
     if (seq !== requestSeq) return
-    resolvedPath = canonicalPath
+    resolvedPath = /\.svg$/i.test(canonicalPath) ? "" : canonicalPath
     fill = "crop"
     backdrop = "solid"
     fillColor = Color.background

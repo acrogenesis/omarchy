@@ -353,10 +353,9 @@ Item {
       property real lastDisplayedFocalX: 0.5
       property real lastDisplayedFocalY: 0.5
 
-      // Incoming source lock: each panel commits its incoming pixels/meta
-      // exactly once per backgroundVersion — from its own resolver when it
-      // lands in time, from the handed-down snapshot when
-      // incomingFallbackTimer fires first — and never swaps them mid-reveal.
+      // Commit incoming pixels with their own metadata once per transition.
+      // Keep the outgoing layer while resolving instead of revealing a new
+      // image using the previous wallpaper's fill and focal settings.
       property int incomingLockedVersion: -1
       property string incomingPath: ""
       property string incomingFill: "crop"
@@ -368,7 +367,6 @@ Item {
       function lockIncoming(path, fillMode, backdropMode, tint, fx, fy) {
         if (incomingLockedVersion === root.backgroundVersion) return
         incomingLockedVersion = root.backgroundVersion
-        incomingFallbackTimer.stop()
         root.requestNativeSize(path)
         incomingPath = path
         incomingFill = fillMode
@@ -399,20 +397,6 @@ Item {
           if (panel.incomingLockedVersion !== root.backgroundVersion || incomingFrame.status !== Image.Ready) return
           root.startReveal(panel)
         })
-      }
-
-      // The snapshot fallback bound: a panel whose incoming resolve has not
-      // published this long after the transition armed paints the
-      // handed-down snapshot with its cached displayed meta, so one slow
-      // panel never blocks or misses the shared reveal.
-      Timer {
-        id: incomingFallbackTimer
-        interval: 250
-        repeat: false
-        onTriggered: {
-          if (root.incomingBackground === "") return
-          panel.lockIncoming(root.incomingBackground, panel.lastDisplayedFill, panel.lastDisplayedBackdrop, panel.lastDisplayedFillColor, panel.lastDisplayedFocalX, panel.lastDisplayedFocalY)
-        }
       }
 
       WlrLayershell.namespace: "omarchy-background"
@@ -498,10 +482,9 @@ Item {
         WallpaperImage {
           id: incomingFrame
           anchors.fill: parent
-          // The panel's locked incoming source: the resolver's answer when
-          // it landed within incomingFallbackTimer's window, the handed-down
-          // snapshot otherwise. Locking keeps the pixel source settled for
-          // the whole reveal — a mid-reveal swap would blink the layer.
+          // Lock the resolved pixels and metadata for the whole reveal.
+          // Canonical raster snapshots retain the predecoded preparation;
+          // variants and SVG rasters come from the per-screen resolver.
           readonly property string framePath: panel.incomingPath || root.preparedBackground
           path: framePath
           useSourceSizeCap: true
@@ -552,10 +535,8 @@ Item {
         target: root
         function onIncomingBackgroundChanged() {
           panel.maskReady = false
-          incomingFallbackTimer.stop()
-          panel.incomingLockedVersion = -1
+            panel.incomingLockedVersion = -1
           panel.incomingPath = ""
-          if (root.incomingBackground !== "") incomingFallbackTimer.restart()
           panel.maybeStartReveal()
         }
       }

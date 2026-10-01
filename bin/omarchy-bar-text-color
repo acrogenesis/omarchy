@@ -11,9 +11,14 @@ text_color=${3:-}
 background_color=${4:-}
 background_path=""
 screen_size=""
+scale="1"
 
 shift 4 2>/dev/null || true
 while (($# > 0)); do
+  if [[ $1 == "--background" || $1 == "--screen" || $1 == "--scale" ]] && (( $# < 2 )); then
+    printf '%s\n' "$text_color"
+    exit 0
+  fi
   case "$1" in
   --background)
     background_path=${2:-}
@@ -21,6 +26,10 @@ while (($# > 0)); do
     ;;
   --screen)
     screen_size=${2:-}
+    shift 2
+    ;;
+  --scale)
+    scale=${2:-}
     shift 2
     ;;
   *)
@@ -72,15 +81,14 @@ valid_hex "$text_color" || fallback
 valid_hex "$background_color" || fallback
 [[ $position =~ ^(top|bottom|left|right)$ ]] || fallback
 [[ $bar_size =~ ^[0-9]+$ ]] || fallback
-omarchy-cmd-present magick || fallback
+[[ $scale =~ ^[0-9]+([.][0-9]+)?$ ]] || fallback
+awk -v scale="$scale" 'BEGIN { exit !(scale > 0 && scale <= 10) }' || fallback
 
 if [[ -z $screen_size ]]; then
-  if omarchy-cmd-present hyprctl && omarchy-cmd-present jq; then
-    # hyprctl reports the raw mode resolution; an odd transform (90/270 degree
-    # rotation) swaps the logical axes the shell renders with, so swap here too.
-    screen_size=$(hyprctl monitors -j 2>/dev/null |
-      jq -r '.[0] | if ((.transform // 0) % 2) == 1 then "\(.height)x\(.width)" else "\(.width)x\(.height)" end' 2>/dev/null || true)
-  fi
+  # hyprctl reports the raw mode resolution; an odd transform (90/270 degree
+  # rotation) swaps the logical axes the shell renders with, so swap here too.
+  screen_size=$(hyprctl monitors -j 2>/dev/null |
+    jq -r '.[0] | if ((.transform // 0) % 2) == 1 then "\(.height)x\(.width)" else "\(.width)x\(.height)" end' 2>/dev/null || true)
 fi
 [[ $screen_size =~ ^([0-9]+)x([0-9]+)$ ]] || fallback
 
@@ -92,6 +100,9 @@ screen_height=${BASH_REMATCH[2]}
 # pixels match what the shell actually paints on this screen.
 sample_path=""
 fill="crop"
+backdrop="solid"
+focal_x="0.5"
+focal_y="0.5"
 fill_color="$background_color"
 resolver_args=(--screen "${screen_width}x${screen_height}" --fields)
 [[ -n $background_path ]] && resolver_args+=(--canonical "$background_path")
@@ -108,6 +119,18 @@ if resolved=$(omarchy-theme-bg-resolve "${resolver_args[@]}" 2>/dev/null); then
     fill_color)
       valid_hex "$value" && fill_color="$value"
       ;;
+    backdrop)
+      [[ $value == "blur" ]] && backdrop="$value"
+      ;;
+    focal_x | focal_y)
+      if [[ $value =~ ^(0([.][0-9]+)?|1([.]0+)?)$ ]]; then
+        if [[ $key == "focal_x" ]]; then
+          focal_x="$value"
+        else
+          focal_y="$value"
+        fi
+      fi
+      ;;
     esac
   done <<<"$resolved"
 fi
@@ -117,9 +140,12 @@ if [[ ! -f $sample_path ]]; then
   if [[ -z $background_path ]]; then
     background_path=$(readlink -f "$HOME/.local/state/omarchy/current/background" 2>/dev/null || true)
   fi
-  [[ -f $background_path ]] || fallback
+  [[ -f $background_path && ${background_path,,} != *.svg ]] || fallback
   sample_path="$background_path"
   fill="crop"
+  backdrop="solid"
+  focal_x="0.5"
+  focal_y="0.5"
 fi
 
 # Video wallpapers always use an aspect crop in BackgroundMedia. Sample their
@@ -150,41 +176,38 @@ esac
 screen="${screen_width}x${screen_height}"
 sample_format='%[fx:int(255*r)],%[fx:int(255*g)],%[fx:int(255*b)]'
 
+# Compose the same viewport as WallpaperImage before extracting the bar strip.
+# Crop offsets are fractions of the cover overflow, matching its focal bindings.
+cover=("$sample_path[0]" -auto-orient -resize "${screen}^"
+  -gravity NorthWest -crop "${screen}+%[fx:max(0,round((w-$screen_width)*$focal_x))]+%[fx:max(0,round((h-$screen_height)*$focal_y))]" +repage)
+composition=()
+if [[ $fill != "crop" ]]; then
+  composition=(-size "$screen" "xc:$fill_color")
+  if [[ $backdrop == "blur" ]]; then
+    # Qt uses a subdued cover copy over the solid tint. Approximate its blur
+    # for contrast sampling; retain the same 35% opacity and full geometry.
+    composition+=(\( "${cover[@]}" -blur 0x40 -alpha set -channel A -evaluate multiply 0.35 +channel \) -compose Over -composite)
+  fi
+fi
+
+native_percent=$(awk -v scale="$scale" 'BEGIN { printf "%.6f%%", scale * 100 }')
 case "$fill" in
 fit)
-  pixel=$(magick -size "$screen" "xc:$fill_color" \
-    \( "$sample_path[0]" -auto-orient -resize "$screen" \) \
-    -gravity center -composite \
-    -gravity NorthWest -crop "$crop" +repage \
-    -resize '1x1!' -format "$sample_format" info:- 2>/dev/null || true)
+  composition+=(\( "$sample_path[0]" -auto-orient -resize "$screen" \) -gravity center -compose Over -composite)
   ;;
 center)
-  pixel=$(magick -size "$screen" "xc:$fill_color" \
-    \( "$sample_path[0]" -auto-orient \) \
-    -gravity center -composite \
-    -gravity NorthWest -crop "$crop" +repage \
-    -resize '1x1!' -format "$sample_format" info:- 2>/dev/null || true)
+  composition+=(\( "$sample_path[0]" -auto-orient -resize "$native_percent" \) -gravity center -compose Over -composite)
   ;;
 tile)
-  # The shell paints a fill_color rectangle under tiled images too, so a tile
-  # with transparency must be composited over it before sampling.
-  pixel=$(magick -size "$screen" "xc:$fill_color" \
-    \( -size "$screen" "tile:$sample_path[0]" \) \
-    -composite \
-    -gravity NorthWest -crop "$crop" +repage \
-    -resize '1x1!' -format "$sample_format" info:- 2>/dev/null || true)
+  # Resize the source tile to physical pixels before tiling on HiDPI screens.
+  composition+=(\( "$sample_path[0]" -auto-orient -resize "$native_percent" -write mpr:tile +delete -size "$screen" tile:mpr:tile \) -compose Over -composite)
   ;;
 *)
-  # crop: cover-resize and center like the shell's PreserveAspectCrop. A
-  # non-center focal shifts the crop window slightly; the averaged bar strip
-  # barely moves, so sampling stays centered.
-  pixel=$(magick "$sample_path[0]" -auto-orient \
-    -resize "${screen}^" \
-    -gravity center -extent "$screen" \
-    -gravity NorthWest -crop "$crop" +repage \
-    -resize '1x1!' -format "$sample_format" info:- 2>/dev/null || true)
+  composition=("${cover[@]}")
   ;;
 esac
+pixel=$(magick "${composition[@]}" -gravity NorthWest -crop "$crop" +repage \
+  -resize '1x1!' -format "$sample_format" info:- 2>/dev/null || true)
 [[ $pixel =~ ^([0-9]+),([0-9]+),([0-9]+)$ ]] || fallback
 
 sample=$(printf '#%02x%02x%02x' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")

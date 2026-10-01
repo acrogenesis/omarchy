@@ -443,3 +443,17 @@ json=$(resolve --canonical "$nl_name")
 jq -e '.path | endswith("/9-linebreak.png")' <<<"$json" >/dev/null || fail "JSON output stays parseable with a control character in the path" "$json"
 
 pass "control characters never corrupt the output framing"
+
+# A failed or killed renderer must never publish its original SVG. Keep the
+# declared fallback pixels and metadata, with no incomplete cache entries.
+mkdir -p "$test_tmp/stubs"
+for code in 1 124 137; do
+  printf '#!/bin/bash\nexit %s\n' "$code" >"$test_tmp/stubs/rsvg-convert"
+  chmod +x "$test_tmp/stubs/rsvg-convert"
+  cp "$backgrounds/5-responsive.svg" "$backgrounds/failed-$code.svg"
+  output=$(HOME="$home" PATH="$test_tmp/stubs:$ROOT/bin:$PATH" bash "$ROOT/bin/omarchy-theme-bg-resolve" --screen 200x100 --fields --canonical "$backgrounds/failed-$code.svg")
+  rendered=$(fields_value path "$output")
+  [[ $rendered == *.png && $(magick identify -format '%wx%h' "$rendered") == "1x1" ]] || fail "renderer exit $code yields bounded fallback pixels" "$output"
+  [[ -z $(find "$home/.cache/omarchy/background-renders" -name '.render-*' -o -name '.responsive-*') ]] || fail "failed render removes intermediate files"
+done
+pass "failed and killed SVG renderers yield a safe solid raster"

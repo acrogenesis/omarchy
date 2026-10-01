@@ -10,6 +10,9 @@ Item {
   id: root
 
   property string path: ""
+  // SVGs reach this surface only as bounded resolver rasters. In particular,
+  // do not decode a raw prepare snapshot or an SVG after resolver failure.
+  readonly property string renderPath: /\.svg$/i.test(path) ? "" : path
   property string fill: "crop"
   property string backdrop: "solid"
   property color fillColor: Color.background
@@ -33,7 +36,7 @@ Item {
   property alias mipmap: image.mipmap
   readonly property alias status: image.status
 
-  readonly property bool blurBackdropActive: fill !== "crop" && backdrop === "blur" && path !== ""
+  readonly property bool blurBackdropActive: fill !== "crop" && backdrop === "blur" && renderPath !== ""
 
   readonly property bool centeredFocal: Math.abs(focalX - 0.5) < 0.001 && Math.abs(focalY - 0.5) < 0.001
   // PreserveAspectCrop always crops around the center, so a non-center focal
@@ -46,7 +49,7 @@ Item {
   Rectangle {
     anchors.fill: parent
     color: root.fillColor
-    visible: root.fill !== "crop"
+    visible: root.fill !== "crop" || root.renderPath === ""
   }
 
   // A blur backdrop keeps the full foreground composition visible while a
@@ -68,7 +71,7 @@ Item {
 
     Image {
       anchors.fill: parent
-      source: root.blurBackdropActive && root.decodeReady ? Util.fileUrl(root.path) + (root.sourceVersion > 0 ? "?v=" + root.sourceVersion : "") : ""
+      source: root.blurBackdropActive && root.decodeReady ? Util.fileUrl(root.renderPath) + (root.sourceVersion > 0 ? "?v=" + root.sourceVersion : "") : ""
       sourceSize.width: root.useSourceSizeCap ? image.physWidth : 0
       sourceSize.height: root.useSourceSizeCap ? image.physHeight : 0
       fillMode: Image.PreserveAspectCrop
@@ -102,7 +105,7 @@ Item {
         naturalAspect = implicitWidth / implicitHeight
     }
 
-    source: root.path && root.decodeReady ? Util.fileUrl(root.path) + (root.sourceVersion > 0 ? "?v=" + root.sourceVersion : "") : ""
+    source: root.renderPath && root.decodeReady ? Util.fileUrl(root.renderPath) + (root.sourceVersion > 0 ? "?v=" + root.sourceVersion : "") : ""
     fillMode: {
       if (root.manualCrop) return Image.Stretch
       if (root.fill === "fit") return Image.PreserveAspectFit

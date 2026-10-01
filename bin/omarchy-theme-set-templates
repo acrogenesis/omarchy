@@ -334,7 +334,7 @@ render_templates() {
   # Background templates render beside their images in the staged copy. A
   # shipped output wins, and a symlinked directory must never be written to.
   for tpl in "${background_templates[@]}"; do
-    if [[ ! -f ${tpl%.tpl} ]]; then
+    if [[ ! -f ${tpl%.tpl} && ! -L ${tpl%.tpl} ]]; then
       pairs+=("$tpl" "${tpl%.tpl}")
     fi
   done
