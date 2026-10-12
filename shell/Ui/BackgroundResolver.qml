@@ -11,6 +11,7 @@ Item {
   id: root
 
   property string canonicalPath: ""
+  property bool canonicalOnly: false
   property int screenWidth: 0
   property int screenHeight: 0
   property real devicePixelRatio: Screen.devicePixelRatio
@@ -42,7 +43,8 @@ Item {
 
   visible: false
 
-  onCanonicalPathChanged: requestResolve()
+  onCanonicalPathChanged: { canonicalOnly = false; requestResolve() }
+  onCanonicalOnlyChanged: requestResolve()
   onScreenWidthChanged: requestResolve()
   onScreenHeightChanged: requestResolve()
   onDevicePixelRatioChanged: requestResolve()
@@ -76,10 +78,11 @@ Item {
     }
     resolveProc.seq = requestSeq
     resolveProc.command = [
-      "omarchy-theme-bg-resolve",
+      "timeout", "--kill-after=2", "45", "omarchy-theme-bg-resolve",
       "--screen", Math.round(screenWidth * devicePixelRatio) + "x" + Math.round(screenHeight * devicePixelRatio),
       "--canonical", canonicalPath
     ]
+    if (canonicalOnly) resolveProc.command = resolveProc.command.concat(["--canonical-only"])
     resolveProc.running = true
   }
 
