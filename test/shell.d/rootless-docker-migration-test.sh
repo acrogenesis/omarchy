@@ -1386,6 +1386,7 @@ def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image
                     key, value = args[index + 1].split("=", 1)
                     labels[key] = value
             current_target = {"Id": "b" * 64, "Image": image_id,
+                              "HostConfig": {"RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}},
                               "Config": {"Labels": labels, "Image": (
                                   image_id if preexisting_image else transfer_tag)},
                               "State": {"Status": "created", "Running": False,
@@ -1395,6 +1396,12 @@ def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image
             current_target = None
         elif args[:2] == (migration.TARGET, "start"):
             current_target["State"]["Running"] = True
+        elif args[:2] == (migration.TARGET, "update"):
+            assert args[2:] == ("--restart=no", "b" * 64)
+            current_target["HostConfig"]["RestartPolicy"] = {"Name": "no", "MaximumRetryCount": 0}
+        elif args[:2] == (migration.TARGET, "stop"):
+            assert args[-1] == "b" * 64
+            current_target["State"]["Running"] = False
 
     migration.inspect = fake_inspect
     migration.run = fake_run
@@ -1448,6 +1455,11 @@ def exercise_failed_transfer(after_start, mutate_source=False, preexisting_image
         else:
             raise AssertionError("failed transfer was reported as complete")
         intent_retained = migration.intent_path(source["Id"]).exists()
+    if after_start and not completed_cleanup_failure and not completion_signal_window:
+        assert current_target is not None and not current_target["State"]["Running"]
+        assert current_target["HostConfig"]["RestartPolicy"]["Name"] == "no"
+        assert (migration.TARGET, "update", "--restart=no", "b" * 64) in calls
+        assert (migration.TARGET, "stop", "-t", "300", "b" * 64) in calls
     migration.release_transfer_image = original_release_transfer_image
     return calls, current_source, pipes, intent_retained
 

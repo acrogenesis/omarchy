@@ -283,6 +283,21 @@ if [[ -n $windows_id ]]; then
 else
   windows_arg="-"
 fi
+quiesced_recovery_pending=1
+recover_quiesced_on_failure() {
+  local status=$?
+  trap - EXIT
+  if (( status != 0 && quiesced_recovery_pending == 1 )); then
+    # The restart itself may fail. Try to make the source API available before
+    # restoring only workloads whose journals exclude any destination start.
+    sudo /usr/bin/systemctl start docker.service >/dev/null 2>&1 || true
+    if ! /usr/bin/python3 "$migrator" --restore-quiesced-all "$windows_arg" "${container_names[@]}"; then
+      echo "Some rootful workloads could not be restored; their recovery journals were retained." >&2
+    fi
+  fi
+  exit "$status"
+}
+trap recover_quiesced_on_failure EXIT
 /usr/bin/python3 "$migrator" --quiesce-all "$windows_arg" "${container_names[@]}"
 
 # All source restart policies and lifecycle intent are durable before this
@@ -308,6 +323,7 @@ fi
 
 if (( ${#container_names[@]} )); then
   /usr/bin/python3 "$migrator" --check "${container_names[@]}"
+  quiesced_recovery_pending=0
   /usr/bin/python3 "$migrator" "${container_names[@]}"
   /usr/bin/python3 "$migrator" --check-completed "${container_names[@]}"
 fi

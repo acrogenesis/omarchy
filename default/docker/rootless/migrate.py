@@ -1878,6 +1878,29 @@ def verify_resumable_migration(container, target, intent):
     return planned, state
 
 
+def stop_unverified_destination(container, intent):
+    """Retain both stores while fencing only the journal-owned destination."""
+    destination = intent.get("destination") or {}
+    identity = destination.get("id", "")
+    if not re.fullmatch(r"[a-f0-9]{64}", identity):
+        raise RuntimeError("the unverified destination identity is not journaled")
+    target = inspect(TARGET, "container", identity)
+    if target.get("Id") != identity or not target_owned(container, target, intent):
+        raise RuntimeError("unverified destination ownership changed; it was left untouched")
+    failures = []
+    for command in ((TARGET, "update", "--restart=no", identity),
+                    (TARGET, "stop", "-t", str(configured_stop_timeout(container)), identity)):
+        try:
+            run(*command)
+        except Exception as error:
+            failures.append(error)
+    target = inspect(TARGET, "container", identity)
+    if (failures or target.get("Id") != identity or not target_owned(container, target, intent) or
+            target["State"]["Running"] or
+            (target["HostConfig"].get("RestartPolicy") or {}).get("Name") != "no"):
+        raise RuntimeError("unverified destination could not be fenced; inspect both engines")
+
+
 def resume_verified_migration(container, target, intent):
     name = container["Name"].lstrip("/")
     planned, state = verify_resumable_migration(container, target, intent)
@@ -1890,34 +1913,42 @@ def resume_verified_migration(container, target, intent):
             (source_after["HostConfig"].get("RestartPolicy") or {}).get("Name") != "no"):
         raise RuntimeError(f"{name}: rootful source changed during resumed finalization")
 
-    if intent["target_running"] and not target["State"]["Running"]:
-        intent["start_attempted"] = True
-        persist_migration_intent(source_after, intent)
-        run(TARGET, "start", name)
-    target = inspect(TARGET, "container", name)
-    if bool(target["State"]["Running"]) != intent["target_running"]:
-        raise RuntimeError(f"{name}: resumed destination lifecycle differs from the source")
-    expected_volumes = {destination_volume(planned, mount) for mount in planned.get("Mounts", [])}
-    event_window = intent.get("volume_event")
-    if expected_volumes and event_window is None:
-        raise RuntimeError(f"{name}: interrupted destination volume event history is missing")
-    if event_window is not None:
-        verify_volume_event_window(planned, intent, event_window, expected_volumes,
-                                   target["Id"] if intent["target_running"] else None)
-    verified_target = verify_runtime(planned, intent["target_ownership"], intent["source_nofile"])
     completion_published = False
     try:
-        record_completion(source_after, state, intent["target_running"], verified_target)
-        completion_published = True
+        if intent["target_running"] and not target["State"]["Running"]:
+            intent["start_attempted"] = True
+            persist_migration_intent(source_after, intent)
+            run(TARGET, "start", name)
+        target = inspect(TARGET, "container", name)
+        if bool(target["State"]["Running"]) != intent["target_running"]:
+            raise RuntimeError(f"{name}: resumed destination lifecycle differs from the source")
+        expected_volumes = {destination_volume(planned, mount) for mount in planned.get("Mounts", [])}
+        event_window = intent.get("volume_event")
+        if expected_volumes and event_window is None:
+            raise RuntimeError(f"{name}: interrupted destination volume event history is missing")
         if event_window is not None:
-            remove_volume_event_marker(planned, intent)
-        intent = release_transfer_image(source_after, intent)
-        clear_migration_intent(container["Id"])
+            verify_volume_event_window(planned, intent, event_window, expected_volumes,
+                                       target["Id"] if intent["target_running"] else None)
+        verified_target = verify_runtime(planned, intent["target_ownership"], intent["source_nofile"])
+        try:
+            record_completion(source_after, state, intent["target_running"], verified_target)
+            completion_published = True
+            if event_window is not None:
+                remove_volume_event_marker(planned, intent)
+            intent = release_transfer_image(source_after, intent)
+            clear_migration_intent(container["Id"])
+        except BaseException:
+            if completion_published:
+                print(f"{name}: migration completed; transfer-image journal cleanup remains pending", file=sys.stderr)
+            raise
+        print(f"{name}: completed the interrupted rootless Docker migration")
     except BaseException:
-        if completion_published:
-            print(f"{name}: migration completed; transfer-image journal cleanup remains pending", file=sys.stderr)
+        if not completion_published and not completion_path(container["Id"]).exists() and intent["start_attempted"]:
+            try:
+                stop_unverified_destination(planned, intent)
+            except Exception as error:
+                print(f"{name}: {error}", file=sys.stderr)
         raise
-    print(f"{name}: completed the interrupted rootless Docker migration")
 
 
 def migrate(container, source_nofile):
@@ -2245,6 +2276,10 @@ def migrate(container, source_nofile):
             print(f"{name}: migration completed; transfer-image journal cleanup remains pending", file=sys.stderr)
             raise
         if start_attempted:
+            try:
+                stop_unverified_destination(planned, intent)
+            except Exception as error:
+                print(f"{name}: {error}", file=sys.stderr)
             print(f"{name}: destination start was attempted; both copies were retained for recovery. "
                   "Inspect rootless Docker before resuming the rootful copy or retrying migration.", file=sys.stderr)
             raise
@@ -2349,6 +2384,26 @@ def main():
         validate_source_daemon(daemon_security(SOURCE))
         validate_target_policy()
         cleanup_nofile_probe()
+        return
+    if sys.argv[1:2] == ["--restore-quiesced-all"]:
+        if len(sys.argv) < 3:
+            raise ValueError("Expected a Windows identity placeholder before container names")
+        validate_source_daemon(daemon_security(SOURCE))
+        windows_identity = sys.argv[2]
+        members = [(name, validate) for name in sys.argv[3:]]
+        if windows_identity != "-":
+            members.append((windows_identity, validate_windows_exception))
+        failures = []
+        for name, validator in reversed(members):
+            try:
+                current = inspect(SOURCE, "container", name)
+                intent = migration_intent(current)
+                if intent is not None and not intent["start_attempted"] and not completion_path(current["Id"]).exists():
+                    restore_source(current["Id"], validator)
+            except Exception as error:
+                failures.append(f"{name}: {error}")
+        if failures:
+            raise RuntimeError("\n".join(failures))
         return
     quiesce_all_mode = sys.argv[1:2] == ["--quiesce-all"]
     if quiesce_all_mode:
