@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Effects
 import qs.Commons
+import qs.Commons as Commons
 
 // Wallpaper surface shared by the background and lock plugins. Renders one
 // image with the fill mode, fill color, and crop focal point published by
@@ -15,7 +16,7 @@ Item {
   readonly property string renderPath: /\.svg$/i.test(path) ? "" : path
   property string fill: "crop"
   property string backdrop: "solid"
-  property color fillColor: Color.background
+  property color fillColor: Commons.Color.background
   property real focalX: 0.5
   property real focalY: 0.5
   // Lock cache-busting: appended as ?v= when > 0 so Image reloads a changed

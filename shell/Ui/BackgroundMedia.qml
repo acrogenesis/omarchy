@@ -20,6 +20,8 @@ Item {
   readonly property var current: imageLoader.item
   readonly property bool ready: current ? current.ready : false
   readonly property int status: current ? current.status : Image.Null
+  // The file behind path could not be loaded, as when it was deleted.
+  readonly property bool failed: current ? current.failed : false
   readonly property bool video: Util.isVideoPath(path)
   readonly property url imageUrl: path && !video ? Util.fileUrl(path) + (version ? "?v=" + version : "") : ""
 
@@ -35,6 +37,7 @@ Item {
 
     WallpaperImage {
       readonly property bool ready: status === Image.Ready
+      readonly property bool failed: status === Image.Error
       path: root.path
       fill: root.fill
       backdrop: root.backdrop

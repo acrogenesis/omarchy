@@ -5,15 +5,18 @@ import QtQuick
 import QtQuick.Effects
 import QtQuick.Shapes
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 
 Item {
   id: root
 
   property var shell: null
+  property bool suspended: false
   readonly property string home: Quickshell.env("HOME")
   readonly property string stateHome: home + "/.local/state"
   readonly property string currentBackgroundLink: stateHome + "/omarchy/current/background"
+  readonly property string currentThemeBackgrounds: stateHome + "/omarchy/current/theme/backgrounds"
 
   property string currentBackground: ""
   property string displayedBackground: ""
@@ -47,6 +50,14 @@ Item {
   property string pendingColorsRaw: ""
   property string pendingShellRaw: ""
   property real revealProgress: 1
+  readonly property bool ready: {
+    if (isVideo(displayedBackground)) return true
+    if (panelVariants.instances.length === 0) return false
+    for (var panel of panelVariants.instances) {
+      if (!panel.backgroundReady) return false
+    }
+    return true
+  }
 
   function isVideo(path) {
     return Util.isVideoPath(path)
@@ -60,8 +71,38 @@ Item {
     if (!readlinkProc.running) readlinkProc.running = true
   }
 
+  // The desktop must never be left without a wallpaper. A path that stops
+  // loading, say one that ran through a theme since replaced, is resolved
+  // again from the background link, which a theme switch always repoints.
+  // Only a different path is taken, so a file that is there but unreadable
+  // cannot loop. Resolving runs out of process, so a background chosen in the
+  // meantime wins over what it finds; if that one fails too, it is resolved
+  // in turn once the running lookup is done.
+  property string failedBackground: ""
+  property int recoverVersion: -1
+
+  function recoverBackground(failedPath) {
+    if (!failedPath || failedPath !== displayedBackground) return
+    failedBackground = failedPath
+    if (recoverProc.running) return
+    recoverVersion = backgroundVersion
+    recoverProc.running = true
+  }
+
+  function finishRecovery(path) {
+    path = String(path || "").trim()
+    var failedPath = failedBackground
+    failedBackground = ""
+    if (recoverVersion !== backgroundVersion) {
+      recoverBackground(failedPath)
+      return
+    }
+    if (!path || path === failedPath) return
+    setBackground(path, true)
+  }
+
   function setBackground(path, instant) {
-    transitionBackground("", path, path, instant, false)
+    transitionBackground("", path, path, instant, instant)
   }
 
   function transitionBackground(fromPath, path, finalPath, instant, force) {
@@ -78,6 +119,7 @@ Item {
     requestNativeSize(finalPath)
     currentBackground = finalPath
     backgroundVersion += 1
+    failedBackground = ""
     revealStartedVersion = -1
 
     revealAnimation.stop()
@@ -112,10 +154,10 @@ Item {
     // pending; the latest theme payload should still apply.
     if (pendingThemeVersion < 0) return
     pendingThemeFallbackTimer.stop()
-    Color.loadColors(pendingColorsRaw)
-    // Color.loadShell also refreshes Style so the type scale flips with the
+    Commons.Color.loadColors(pendingColorsRaw)
+    // Commons.Color.loadShell also refreshes Style so the type scale flips with the
     // background reveal instead of waiting for a separate reload path.
-    Color.loadShell(pendingShellRaw)
+    Commons.Color.loadShell(pendingShellRaw)
     Style.scheduleRefresh()
     pendingThemeVersion = -1
     pendingColorsRaw = ""
@@ -238,6 +280,21 @@ Item {
     }
   }
 
+  // The link's target when it exists, or else the theme's first background,
+  // so a link left dangling still finds a wallpaper.
+  Process {
+    id: recoverProc
+    command: [
+      "bash", "-c",
+      'target=$(readlink -f "$1"); if [[ -e $target ]]; then echo "$target"; else ' +
+      'find "$2" -maxdepth 1 -type f \\( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" \\) | sort | head -n 1; fi',
+      "resolve", root.currentBackgroundLink, root.currentThemeBackgrounds
+    ]
+    stdout: StdioCollector {
+      onStreamFinished: root.finishRecovery(text)
+    }
+  }
+
   ShellIpc {
     target: "background"
 
@@ -251,6 +308,10 @@ Item {
 
     function setInstant(path: string): void {
       root.setBackground(path, true)
+    }
+
+    function setSuspended(value: string): void {
+      root.suspended = value === "true"
     }
 
     function transition(fromPath: string, path: string): void {
@@ -288,8 +349,8 @@ Item {
     property: "revealProgress"
     from: 0
     to: 1
-    duration: Style.duration(420)
-    easing.type: Easing.InOutCubic
+    duration: Style.duration(840)
+    easing.type: Easing.OutCubic
     onFinished: {
       if (root.incomingBackground) {
         const finalPath = root.currentBackground || root.incomingBackground
@@ -313,7 +374,7 @@ Item {
       required property var modelData
 
       screen: modelData
-      visible: !remapGuard.remapping
+      visible: !remapGuard.remapping && !root.suspended
       anchors { top: true; bottom: true; left: true; right: true }
 
       ScreenMoveRemap {
@@ -327,6 +388,23 @@ Item {
       // wallpaper costs nothing to keep enabled. OWE manages video layers.
       updatesEnabled: true
 
+      property int readyFrames: 0
+      readonly property bool backgroundReady: base.ready && readyFrames >= 2
+
+      FrameAnimation {
+        running: base.ready && panel.readyFrames < 2
+        onTriggered: panel.readyFrames += 1
+      }
+
+      // Decode the wallpaper at the size this screen can show, not the size
+      // it was shipped at. With PreserveAspectCrop Qt takes sourceSize as the
+      // area to cover, so this is the smallest decode that still fills the
+      // screen. Stock wallpapers go up to 10456x3455 (144 MB as RGBA); a
+      // 1080p laptop paid all of that for the 8 MB it can display, and paid
+      // it up to three times over during a transition. The images wait for
+      // the window's size and the wallpaper's native size so nothing is ever
+      // decoded at native size first, and a wallpaper smaller than the screen
+      // is decoded at its own size rather than scaled up to cover the screen.
       readonly property bool sized: width > 0 && height > 0
       readonly property int decodeWidth: sized ? Math.ceil(width * screen.devicePixelRatio) : 0
       readonly property int decodeHeight: sized ? Math.ceil(height * screen.devicePixelRatio) : 0
@@ -349,7 +427,7 @@ Item {
       property int lastDisplayedVersion: 0
       property string lastDisplayedFill: "crop"
       property string lastDisplayedBackdrop: "solid"
-      property color lastDisplayedFillColor: Color.background
+      property color lastDisplayedFillColor: Commons.Color.background
       property real lastDisplayedFocalX: 0.5
       property real lastDisplayedFocalY: 0.5
 
@@ -360,7 +438,7 @@ Item {
       property string incomingPath: ""
       property string incomingFill: "crop"
       property string incomingBackdrop: "solid"
-      property color incomingFillColor: Color.background
+      property color incomingFillColor: Commons.Color.background
       property real incomingFocalX: 0.5
       property real incomingFocalY: 0.5
 
@@ -463,7 +541,11 @@ Item {
         cached: true
         constrainDecode: true
         decodeSize: panel.decodeSize(panel.lastDisplayedPath)
-        onStatusChanged: root.maybeFinishTransition()
+        onFailedChanged: if (failed) root.recoverBackground(root.displayedBackground)
+        onStatusChanged: {
+          panel.readyFrames = 0
+          root.maybeFinishTransition()
+        }
       }
 
       Item {

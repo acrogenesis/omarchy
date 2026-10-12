@@ -51,7 +51,7 @@ for name in existing missing; do
 done
 printf '<svg>{{ accent }}</svg>\n' >"$next/backgrounds/new.svg.tpl"
 
-HOME="$home" OMARCHY_PATH="$ROOT" PATH="$ROOT/bin:$PATH" "$ROOT/bin/omarchy-theme-set-templates"
+HOME="$home" XDG_STATE_HOME="$home/.local/state" OMARCHY_PATH="$ROOT" PATH="$ROOT/bin:$PATH" "$ROOT/bin/omarchy-theme-set-templates"
 
 # Expected values were produced by the sed-based renderer this replaced, so
 # every theme keeps rendering byte for byte the same.

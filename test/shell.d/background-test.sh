@@ -147,7 +147,7 @@ assert(
 )
 
 assert(
-  /onStatusChanged:\s*root\.maybeFinishTransition\(\)/.test(baseBlock) &&
+  /onStatusChanged:[\s\S]*?root\.maybeFinishTransition\(\)/.test(baseBlock) &&
     /root\.maybeFinishTransition\(\)/.test(displayedResolver) &&
     !/root\.incomingBackground\s*=\s*""/.test(baseBlock),
   'no single panel base clears the shared sources on its own'
@@ -234,7 +234,7 @@ assert(
 // resolver arguments, including fractional scale and a scale-only change.
 const vm = require('vm')
 const context = vm.createContext({
-  Color: { background: 'fallback' },
+  Commons: { Color: { background: 'fallback' } },
   Qt: { rgba: (...channels) => channels },
   canonicalPath: '/theme/art.svg', screenWidth: 1920, screenHeight: 1080,
   devicePixelRatio: 2, requestSeq: 1, resolveProc: {}, resolvePending: false
@@ -381,4 +381,8 @@ for (const filename of ['/prepare.svg', '/FAILED.SVG']) {
 }
 assertEqual(vm.runInNewContext(renderPathExpression, {path: '/cache/render.png'}), '/cache/render.png', 'bounded SVG raster enters Qt image loading')
 
+assert(
+  /id: revealAnimation[\s\S]*?duration: Style\.duration\(840\)/.test(backgroundQml),
+  'background reveal takes 840ms'
+)
 JS
