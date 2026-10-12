@@ -25,6 +25,10 @@ def statements(source):
                 continue
             if source.startswith(quote, index):
                 index += len(quote)
+                if len(quote) == 3:
+                    # TOML permits one or two literal quotes before this delimiter.
+                    while index < len(source) and source[index] == quote[0]:
+                        index += 1
                 quote = None
                 continue
         elif char == "#":
@@ -51,6 +55,26 @@ def key_path(document):
         key, document = next(iter(document.items()))
         result.append(key)
     return tuple(result)
+
+
+def assignment_path(statement):
+    """Read just the key, so a dotted assignment cannot look like an inline table."""
+    index = 0
+    quote = None
+    while index < len(statement):
+        char = statement[index]
+        if quote:
+            if quote == '"' and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char == "=":
+            return key_path(tomllib.loads(statement[:index] + "= 0"))
+        index += 1
+    raise ValueError("assignment has no value")
 
 
 def header_path(document):
@@ -109,11 +133,11 @@ def activate(path, table, theme):
             if context == (table,):
                 insertion = end
         elif parsed:
-            keys = key_path(parsed)
+            keys = assignment_path(statement)
             if context + keys == (table, "theme"):
                 prefix = "theme" if context else f"{table}.theme"
                 replacement = (start, end, f"{prefix} = {inline(theme)}\n")
-            elif not context and tuple(parsed) == (table,) and isinstance(parsed[table], dict):
+            elif not context and keys == (table,) and isinstance(parsed[table], dict):
                 # An inline table cannot be extended by a dotted assignment.
                 replacement = (start, end, f"{inline(table)} = {inline(section)}\n")
     if replacement:

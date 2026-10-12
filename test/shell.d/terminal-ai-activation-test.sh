@@ -28,12 +28,21 @@ with tempfile.TemporaryDirectory() as temporary:
             expected[table]['theme'] = theme
             assert parsed == expected, (header, config.read_text())
             assert '# preserved' in config.read_text()
-        for source in [f'"{table}"."theme" = "old"\nmodel = "kept"\n', f'{table} = {{ theme = "old", other = 7 }}\n', f'[{table}]\nother = 7', f'[{table}]\ntheme = """old\nmultiline"""\n', f'[{table}.nested]\nkept = true\n']:
+        for source in [f'"{table}"."theme" = "old"\nmodel = "kept"\n', f'{table} = {{ theme = "old", other = 7 }}\n', f'[{table}]\nother = 7', f'[{table}]\ntheme = """old\nmultiline"""\n', f'[{table}.nested]\nkept = true\n', f'{table}.theme = "old"\n{table}.notifications = false\n', f'{table}.notifications = false\n{table}.nested.kept = true\n', f'"{table}"."theme" = "old"\n"{table}"."equals=key" = true\n']:
             config.write_text(source)
             subprocess.run([str(root / 'bin' / ('omarchy-theme-set-' + app)), '--activate'], env=env, check=True)
             expected = tomllib.loads(source)
             expected[table]['theme'] = theme
             assert tomllib.loads(config.read_text()) == expected, (source, config.read_text())
+        for quote in ['"', "'"]:
+            for trailing in [1, 2]:
+                delimiter = quote * 3
+                source = f'developer_instructions = {delimiter}Say {quote}hello{delimiter}{quote * trailing}\n[{table}]\ntheme = "old"\n'
+                config.write_text(source)
+                expected = tomllib.loads(source)
+                expected[table]['theme'] = theme
+                subprocess.run([str(root / 'bin' / ('omarchy-theme-set-' + app)), '--activate'], env=env, check=True)
+                assert tomllib.loads(config.read_text()) == expected, (source, config.read_text())
         config.write_text('invalid = [\n')
         before = config.read_bytes()
         result = subprocess.run([str(root / 'bin' / ('omarchy-theme-set-' + app)), '--activate'], env=env, capture_output=True)
