@@ -4,6 +4,14 @@ set -euo pipefail
 
 source "$(dirname "$0")/base-test.sh"
 
+if (( EUID != 0 )); then
+  if unshare --user --map-root-user true 2>/dev/null; then
+    exec unshare --user --map-root-user bash "$0"
+  fi
+  skip "no unprivileged user namespace; skipping removal checkpoint ownership"
+  exit 0
+fi
+
 shipped_migration="$ROOT/migrations/1791769486.sh"
 [[ -f $shipped_migration ]] || fail "the device authorization removal migration exists"
 
@@ -25,12 +33,20 @@ mkdir -p "$test_dir/bin"
 cat >"$test_dir/bin/sudo" <<'STUB'
 #!/bin/bash
 printf 'sudo %s\n' "$*" >>"$CALLS"
+if [[ ${PUBLISH_FAIL:-0} == 1 && $1 == "mv" && ${!#} == "$FAKE_ROOT/var/lib/omarchy/usb-authorization-removal/daemon.conf" ]]; then exit 73; fi
 exec "$@"
 STUB
 
 cat >"$test_dir/bin/systemctl" <<'STUB'
 #!/bin/bash
 printf 'systemctl %s\n' "$*" >>"$CALLS"
+if [[ $* == "restart usbguard.service" ]]; then
+  config=$FAKE_ROOT/var/lib/omarchy/usb-authorization-removal
+  [[ $(<"$config/rules.conf") == "allow" ]] || exit 1
+  grep -qx 'PresentDevicePolicy=apply-policy' "$config/daemon.conf" || exit 1
+  grep -Fq "$config/daemon.conf" "$FAKE_ROOT/etc/systemd/system/usbguard.service.d/omarchy-removal.conf" || exit 1
+  echo 1 | tee "$FAKE_ROOT"/sys/bus/usb/devices/{usb1,usb2}/authorized_default "$FAKE_ROOT"/sys/bus/usb/devices/1-1/authorized >/dev/null
+fi
 STUB
 
 # Bolt: devices/<uid>/<Property> and domains/<uid>/BootACL hold JSON values.
@@ -133,7 +149,7 @@ reset_machine() {
   rm -rf "$root" "$home"
   mkdir -p "$root"/{etc/default,var/log,var/lib/omarchy,run,packages,usr/share/polkit-1/actions} \
     "$root/sys/bus/usb/devices"/{usb1,usb2,1-1} "$root/bolt/devices"/{$dock,$other} "$root/bolt/domains/$domain" \
-    "$home/.config/systemd/user/graphical-session.target.wants" "$home/.local/state/omarchy"
+    "$home/.config/systemd/user/graphical-session.target.wants" "$home/.config/systemd/user/graphical-session.target.requires" "$home/.local/state/omarchy"
   echo 'KERNEL_CMDLINE[default]+="quiet"' >"$root/etc/default/limine"
   echo enabled >"$root/bolt/authmode"
   echo '"auto"' >"$root/bolt/devices/$dock/Policy"
@@ -160,6 +176,7 @@ enable_feature() {
   touch "$root/usr/share/polkit-1/actions"/org.omarchy.{usb,thunderbolt}.policy
   touch "$home/.config/systemd/user/omarchy-usb-authorization.service"
   ln -s ../omarchy-usb-authorization.service "$home/.config/systemd/user/graphical-session.target.wants/omarchy-usb-authorization.service"
+  ln -s ../omarchy-usb-authorization.service "$home/.config/systemd/user/graphical-session.target.requires/omarchy-usb-authorization.service"
   ln -s /usr/lib/systemd/user/omarchy-thunderbolt-authorization.service "$home/.config/systemd/user/graphical-session.target.wants/omarchy-thunderbolt-authorization.service"
   ln -s /etc/systemd/system/omarchy-thunderbolt-authorization.service "$root/etc/systemd/system/multi-user.target.wants/omarchy-thunderbolt-authorization.service"
   touch "$root/etc/omarchy/thunderbolt-authorization.enabled"
@@ -182,7 +199,7 @@ enable_usb_at_boot() {
 
 run_migration() {
   : >"$CALLS"
-  HOME="$home" USER=tester PATH="$test_dir/bin:$PATH" bash -euo pipefail "$migration" >"$test_dir/output" 2>&1
+  HOME="$home" USER="${migration_user:-tester}" PATH="$test_dir/bin:$PATH" bash -euo pipefail "$migration" >"$test_dir/output" 2>&1
 }
 
 value() { tr -d '\n' <"$root/bolt/$1"; }
@@ -297,6 +314,7 @@ reset_machine
 enable_feature
 BOLT_READ_FAILS=1 run_migration && fail "migration succeeds although Bolt could not be read"
 [[ -f $root/var/lib/omarchy/thunderbolt-authorization/policy.json ]] || fail "a failed Bolt read discards the saved settings"
+[[ $(<"$root/sys/bus/usb/devices/1-1/authorized") == 1 ]] || fail "failed Bolt restoration must not strand USB devices without approval"
 run_migration || fail "migration does not finish once Bolt can be read" "$(cat "$test_dir/output")"
 [[ $(value devices/$dock/Policy) == '"auto"' ]] || fail "the retry does not hand back the dock"
 pass "a failed Bolt read keeps the saved settings and retries"
@@ -309,18 +327,57 @@ enable_usb_at_boot
 MKINITCPIO=fail run_migration && fail "migration succeeds although the boot rebuild failed"
 [[ -e $root/packages/usbguard && -e $root/var/lib/omarchy/usb-authorization-boot.removing ]] ||
   fail "a failed rebuild removes USBGuard or forgets to retry"
+[[ $(<"$root/sys/bus/usb/devices/1-1/authorized") == 1 ]] || fail "failed cleanup must leave connected USB usable without approval tools"
+[[ $(<"$root/etc/usbguard/rules.conf") == 'allow id 1d6b:0002' ]] || fail "recovery must preserve the original policy"
+grep -Fqx 'systemctl enable usbguard.service' "$CALLS" || fail "permissive recovery must survive reboot with a restrictive boot image"
+PATH="$test_dir/bin:$PATH" systemctl restart usbguard.service || fail "reboot must be able to reuse the persisted permissive config"
+[[ ! -L $home/.config/systemd/user/graphical-session.target.requires/omarchy-usb-authorization.service ]] || fail "removed watchers must not retain dangling requires links"
+cp "$root/var/lib/omarchy/usb-authorization-removal/daemon.conf" "$test_dir/recovery-config"
+PUBLISH_FAIL=1 run_migration && fail "failed config publication must leave migration pending"
+cmp "$test_dir/recovery-config" "$root/var/lib/omarchy/usb-authorization-removal/daemon.conf" || fail "failed publication must preserve the previous boot recovery config"
 MKINITCPIO=stale run_migration && fail "migration trusts a rebuild that left the parameter" "$(cat "$test_dir/output")"
 [[ -e $root/packages/usbguard ]] || fail "migration removes USBGuard while a boot entry still denies USB"
 grep -q 'limine-mkinitcpio' "$CALLS" || fail "a retry skips the rebuild once the settings are gone"
 MKINITCPIO=ok run_migration || fail "migration fails once the rebuild succeeds" "$(cat "$test_dir/output")"
 [[ ! -e $root/packages/usbguard && ! -e $root/var/lib/omarchy/usb-authorization-boot.removing ]] ||
   fail "migration does not finish after a successful rebuild"
+[[ ! -e $root/etc/systemd/system/usbguard.service.d/omarchy-removal.conf &&
+   ! -e $root/var/lib/omarchy/usb-authorization-removal ]] || fail "successful cleanup must remove its temporary policy override"
 grep -q 'usbcore' "$root/etc/default/limine" && fail "migration leaves the snapshot parameter in /etc/default/limine"
 pass "USB at Boot is removed only once the rebuilt entries are verified"
 
+# A different user's migration must finish the machine-wide recovery even
+# though their home and USBGuard IPC grant contain no legacy ownership evidence.
+reset_machine
+enable_feature
+enable_usb_at_boot
+MKINITCPIO=fail run_migration && fail "initial boot cleanup must fail"
+rm -f "$home/.local/state/omarchy/usb-authorization/policy-generated-by-omarchy"
+migration_user=second run_migration || fail "another user cannot complete the removal checkpoint" "$(cat "$test_dir/output")"
+[[ ! -e $root/packages/usbguard && ! -e $root/var/lib/omarchy/usb-authorization-removal &&
+   ! -e $root/etc/systemd/system/usbguard.service.d/omarchy-removal.conf &&
+   ! -e $root/var/lib/omarchy/usb-authorization-boot.removing ]] || fail "another user's cleanup left permissive USBGuard behind"
+grep -Fqx 'systemctl disable --now usbguard.service' "$CALLS" || fail "recovery left the vendor service enabled before default lock setup"
+pass "another user completes removal recovery without a legacy marker or IPC grant"
+
+for checkpoint in shared linked; do
+  reset_machine
+  touch "$root/packages/usbguard"
+  if [[ $checkpoint == "shared" ]]; then
+    mkdir -m755 "$root/var/lib/omarchy/usb-authorization-removal"
+  else
+    mkdir -m700 "$root/var/lib/omarchy/unrelated"
+    ln -s unrelated "$root/var/lib/omarchy/usb-authorization-removal"
+  fi
+  run_migration || fail "migration fails beside an independent USBGuard with a $checkpoint recovery path"
+  [[ -e $root/packages/usbguard ]] || fail "$checkpoint recovery path claimed an independent USBGuard"
+  ! grep -q '^sudo' "$CALLS" || fail "$checkpoint recovery path triggered privileged cleanup"
+done
+pass "shared or linked recovery directories cannot claim independent USBGuard ownership"
+
 # A boot partition mounted somewhere other than /boot, named by ESP_PATH.
 reset_machine
-rm -rf "$root/boot"
+rm -rf "${root:?}/boot"
 echo "ESP_PATH=\"$root/efi\"" >>"$root/etc/default/limine"
 enable_feature
 enable_usb_at_boot
@@ -339,3 +396,14 @@ sed -i 's/ usbcore.authorized_default=0$//' "$root/boot/limine.conf"
 MKINITCPIO=stale run_migration && fail "migration trusts Limine's command line over the signed image's"
 MKINITCPIO=ok run_migration || fail "migration fails under Secure Boot after a clean rebuild" "$(cat "$test_dir/output")"
 pass "Secure Boot images are checked for the parameter too"
+
+for mode in enabled disabled; do
+  reset_machine
+  enable_feature
+  mkdir -m700 "$root/var/lib/omarchy/usb-authorization-removal"
+  touch "$root/etc/omarchy/usb-lock.$mode"
+  run_migration || fail "another user's legacy cleanup must preserve the new USB policy"
+  [[ -e $root/packages/usbguard && -e $root/etc/omarchy/usb-lock.$mode ]] || fail "legacy cleanup removed the new daemon or mode"
+  ! grep -q 'restart usbguard.service\|omarchy-pkg-drop usbguard\|disable --now usbguard.service' "$CALLS" || fail "legacy marker overrode current USB policy ownership"
+done
+pass "another user's stale legacy marker cannot remove the new lock policy or opt-out"

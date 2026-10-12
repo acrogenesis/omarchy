@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# omarchy:summary=Configure USB and Thunderbolt protection while locked and unlocked
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+echo "USB and Thunderbolt protection while locked is on by default. Boot input works normally."
+echo "Unlocking automatically allows devices plugged in while locked, in either mode."
+echo "A malicious device left connected can therefore attack when you unlock."
+echo "Keep an existing keyboard available: a new keyboard cannot unlock the screen."
+echo
+choice=$(gum choose --header "USB and Thunderbolt protection" \
+  "While locked (default)" "Also require approval while unlocked") || exit 0
+case "$choice" in
+  "While locked (default)") mode=locked ;;
+  "Also require approval while unlocked") mode=approval ;;
+  *) exit 0 ;;
+esac
+omarchy-shell lock status >/dev/null
+omarchy-pkg-add usbguard
+sudo install -Dm644 "$OMARCHY_PATH/default/polkit/org.omarchy.usb-lock.policy" /usr/share/polkit-1/actions/org.omarchy.usb-lock.policy
+# Start the packaged watcher before enabling the approval mode. A missing UI
+# must not leave USBGuard denying new devices without a way to review them.
+systemctl --user daemon-reload
+systemctl --user enable --now omarchy-usb-lock-watch.service omarchy-thunderbolt-lock-watch.path omarchy-thunderbolt-lock-notify.service
+systemctl --user is-active --quiet omarchy-usb-lock-watch.service
+sudo /usr/bin/omarchy-usb-lock-admin "$mode"
+# Installation may have outlived the unlocked session. Invalidate the shell's
+# earlier "off" acknowledgement and wait for its current policy to take effect.
+[[ $(omarchy-shell lock refreshUsbPolicy) == "ok" ]]
+for (( attempt=0; attempt<40; attempt++ )); do
+  if omarchy-shell lock status | jq -e '.usbPolicyApplied == true' >/dev/null; then
+    if [[ -e /etc/omarchy/thunderbolt-lock.enabled ]]; then
+      echo "USB and Thunderbolt protection is enabled ($mode)."
+    else
+      echo "USB protection is enabled ($mode). Your independently managed Bolt policy was preserved."
+    fi
+    exit 0
+  fi
+  sleep 0.2
+done
+echo "Device protection is enabled, but the current policy was not confirmed. Check omarchy-usb-lock.service and omarchy-thunderbolt-lock.service." >&2
+exit 1

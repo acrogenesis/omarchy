@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# omarchy:summary=Stop blocking unfamiliar USB and Thunderbolt devices while locked
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+gum confirm "Disable USB and Thunderbolt protection?" || exit 0
+sudo /usr/bin/omarchy-usb-lock-admin disable
+omarchy-shell -q lock refreshUsbPolicy >/dev/null 2>&1 || true
+omarchy-notification-dismiss "USB accessory blocked" || true
+omarchy-notification-dismiss "Thunderbolt accessory blocked" || true
+omarchy-notification-dismiss "Thunderbolt protection" || true
+echo "USB and Thunderbolt protection is disabled."
