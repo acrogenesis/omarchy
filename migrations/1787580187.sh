@@ -10,6 +10,6 @@ fi
 # lazydocker directly; it now needs the wrapper that prompts for daemon access
 # (or runs directly under sudoless Docker). Refresh just that file.
 dest="$HOME/.local/share/applications/Docker.desktop"
-if [[ -f $dest && -f $OMARCHY_PATH/applications/Docker.desktop ]]; then
-  cp "$OMARCHY_PATH/applications/Docker.desktop" "$dest"
+if [[ -f $dest && -f $OMARCHY_PATH/default/applications/Docker.desktop ]]; then
+  cp "$OMARCHY_PATH/default/applications/Docker.desktop" "$dest"
 fi
