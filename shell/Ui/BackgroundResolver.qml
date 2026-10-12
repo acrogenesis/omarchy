@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 
 // Non-visual helper: resolves a background's per-screen variant and render
 // metadata through omarchy-theme-bg-resolve. Failed raster resolutions retain
@@ -22,7 +23,7 @@ Item {
   property string resolvedPath: ""
   property string fill: "crop"
   property string backdrop: "solid"
-  property color fillColor: Color.background
+  property color fillColor: Commons.Color.background
   property real focalX: 0.5
   property real focalY: 0.5
   // True once the current inputs have a published resolution (a fallback
@@ -87,7 +88,7 @@ Item {
     resolvedPath = /\.svg$/i.test(canonicalPath) ? "" : canonicalPath
     fill = "crop"
     backdrop = "solid"
-    fillColor = Color.background
+    fillColor = Commons.Color.background
     focalX = 0.5
     focalY = 0.5
     usedFallback = true
@@ -97,7 +98,7 @@ Item {
 
   function parseFillColor(value) {
     const hex = String(value)
-    if (!/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/.test(hex)) return Color.background
+    if (!/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/.test(hex)) return Commons.Color.background
     // Metadata follows CSS RGBA; QML eight-digit strings use ARGB instead.
     return Qt.rgba(parseInt(hex.slice(1, 3), 16) / 255,
       parseInt(hex.slice(3, 5), 16) / 255,
