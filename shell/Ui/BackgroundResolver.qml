@@ -12,6 +12,7 @@ Item {
 
   property string canonicalPath: ""
   property bool canonicalOnly: false
+  property bool metadataOnly: false
   property int screenWidth: 0
   property int screenHeight: 0
   property real devicePixelRatio: Screen.devicePixelRatio
@@ -43,13 +44,19 @@ Item {
 
   visible: false
 
-  onCanonicalPathChanged: { canonicalOnly = false; requestResolve() }
+  onCanonicalPathChanged: resetChoice()
   onCanonicalOnlyChanged: requestResolve()
-  onScreenWidthChanged: requestResolve()
-  onScreenHeightChanged: requestResolve()
-  onDevicePixelRatioChanged: requestResolve()
-  onRefreshTokenChanged: requestResolve()
+  onMetadataOnlyChanged: requestResolve()
+  onScreenWidthChanged: resetChoice()
+  onScreenHeightChanged: resetChoice()
+  onDevicePixelRatioChanged: resetChoice()
+  onRefreshTokenChanged: resetChoice()
   Component.onCompleted: requestResolve()
+
+  function resetChoice() {
+    if (canonicalOnly) canonicalOnly = false
+    else requestResolve()
+  }
 
   function requestResolve() {
     requestSeq += 1
@@ -83,6 +90,7 @@ Item {
       "--canonical", canonicalPath
     ]
     if (canonicalOnly) resolveProc.command = resolveProc.command.concat(["--canonical-only"])
+    if (metadataOnly) resolveProc.command = resolveProc.command.concat(["--metadata-only"])
     resolveProc.running = true
   }
 

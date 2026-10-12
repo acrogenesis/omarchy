@@ -180,6 +180,10 @@ Item {
   }
 
   function finishTransitionWithoutReveal() {
+    const panels = panelVariants.instances
+    for (let i = 0; i < panels.length; i++) {
+      if (!panels[i].incomingAbandoned) return
+    }
     revealAnimation.stop()
     displayedBackground = currentBackground || displayedBackground
     displayedVersion += 1
@@ -201,7 +205,7 @@ Item {
     if (!finishingTransition) return
     const panels = panelVariants.instances
     for (let i = 0; i < panels.length; i++) {
-      if (!panels[i].baseSettled()) return
+      if (!panels[i].incomingAbandoned && !panels[i].baseSettled()) return
     }
     incomingBackground = ""
     oldBackground = ""
@@ -449,6 +453,7 @@ Item {
       // image using the previous wallpaper's fill and focal settings.
       property int incomingLockedVersion: -1
       property bool incomingFallbackTried: false
+      property bool incomingAbandoned: false
       property string incomingPath: ""
       property string incomingFill: "crop"
       property string incomingBackdrop: "solid"
@@ -457,7 +462,7 @@ Item {
       property real incomingFocalY: 0.5
 
       function lockIncoming(path, fillMode, backdropMode, tint, fx, fy) {
-        if (incomingLockedVersion === root.backgroundVersion) return
+        if (incomingAbandoned || incomingLockedVersion === root.backgroundVersion) return
         incomingLockedVersion = root.backgroundVersion
         root.requestNativeSize(path)
         incomingPath = path
@@ -483,22 +488,29 @@ Item {
       }
 
       function tryIncomingFallback() {
-        if (!root.incomingBackground || maskReady) return
+        if (!root.incomingBackground || maskReady || incomingAbandoned) return
         if (incomingFallbackTried) {
-          // No drawable snapshot: release the transition bookkeeping while
-          // the displayed resolver keeps the previous decoded pixels alive.
+          // Abandon only this panel and let its base resolve independently.
+          // Other panels retain their incoming pixels until their bases settle.
+          incomingAbandoned = true
+          incomingPath = ""
           root.finishTransitionWithoutReveal()
+          root.maybeFinishTransition()
           return
         }
         incomingFallbackTried = true
         incomingLockedVersion = -1
-        lockIncoming(root.incomingBackground,
-          incomingResolver.ready ? incomingResolver.fill : lastDisplayedFill,
-          incomingResolver.ready ? incomingResolver.backdrop : lastDisplayedBackdrop,
-          incomingResolver.ready ? incomingResolver.fillColor : lastDisplayedFillColor,
-          incomingResolver.ready ? incomingResolver.focalX : lastDisplayedFocalX,
-          incomingResolver.ready ? incomingResolver.focalY : lastDisplayedFocalY)
+        lockSnapshotFallback()
         incomingFallbackTimer.restart()
+      }
+
+      function lockSnapshotFallback() {
+        // Metadata can be read without waiting for variant probing, cold SVG
+        // rasterization or edge sampling. Never frame new pixels with old meta.
+        if (!incomingFallbackTried || incomingAbandoned || !snapshotResolver.ready || snapshotResolver.usedFallback) return
+        lockIncoming(root.incomingBackground, snapshotResolver.fill,
+          snapshotResolver.backdrop, snapshotResolver.fillColor,
+          snapshotResolver.focalX, snapshotResolver.focalY)
       }
 
       Timer {
@@ -534,16 +546,16 @@ Item {
 
       BackgroundResolver {
         id: displayedResolver
-        canonicalPath: root.displayedBackground
+        canonicalPath: panel.incomingAbandoned ? root.currentBackground : root.displayedBackground
         screenWidth: panel.modelData.width
         screenHeight: panel.modelData.height
-        refreshToken: root.displayedVersion
+        refreshToken: panel.incomingAbandoned ? root.backgroundVersion : root.displayedVersion
         onResolveVersionChanged: {
           if (ready && resolvedPath !== "") {
             root.requestNativeSize(resolvedPath)
             panel.lastDisplayedCanonical = canonicalPath
             panel.lastDisplayedPath = resolvedPath
-            panel.lastDisplayedVersion = root.displayedVersion
+            panel.lastDisplayedVersion = refreshToken
             panel.lastDisplayedFill = fill
             panel.lastDisplayedBackdrop = backdrop
             panel.lastDisplayedFillColor = fillColor
@@ -552,6 +564,16 @@ Item {
           }
           root.maybeFinishTransition()
         }
+      }
+
+      BackgroundResolver {
+        id: snapshotResolver
+        canonicalPath: root.incomingBackground !== "" ? root.currentBackground : ""
+        screenWidth: panel.modelData.width
+        screenHeight: panel.modelData.height
+        refreshToken: root.backgroundVersion
+        metadataOnly: true
+        onResolveVersionChanged: panel.lockSnapshotFallback()
       }
 
       // A theme switch hands transitionBackground a snapshot copy for pixels
@@ -669,6 +691,7 @@ Item {
           panel.maskReady = false
           panel.incomingLockedVersion = -1
           panel.incomingFallbackTried = false
+          panel.incomingAbandoned = false
           panel.incomingPath = ""
           if (root.incomingBackground) incomingFallbackTimer.restart()
           else incomingFallbackTimer.stop()
