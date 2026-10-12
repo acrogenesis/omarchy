@@ -39,15 +39,15 @@ assert(
 )
 
 assert(
-  (backgroundQml.match(/BackgroundResolver\s*\{/g) || []).length === 2,
-  'each background panel resolves displayed and incoming layers with its own resolvers'
+  (backgroundQml.match(/BackgroundResolver\s*\{/g) || []).length === 3,
+  'each panel resolves displayed and incoming pixels plus fast snapshot metadata'
 )
 
 const displayedResolver = blockAfter(backgroundQml, 'id: displayedResolver', 'displayed resolver block exists')
 const incomingResolver = blockAfter(backgroundQml, 'id: incomingResolver', 'incoming resolver block exists')
 
 assert(
-  /canonicalPath:\s*root\.displayedBackground\b/.test(displayedResolver),
+  /canonicalPath:\s*panel\.incomingAbandoned\s*\?\s*root\.currentBackground\s*:\s*root\.displayedBackground\b/.test(displayedResolver),
   'displayed resolver keys on the displayed canonical'
 )
 
@@ -57,14 +57,14 @@ assert(
 )
 
 assert(
-  (backgroundQml.match(/screenWidth:\s*panel\.modelData\.width/g) || []).length === 2 &&
-    (backgroundQml.match(/screenHeight:\s*panel\.modelData\.height/g) || []).length === 2,
+  (backgroundQml.match(/screenWidth:\s*panel\.modelData\.width/g) || []).length === 3 &&
+    (backgroundQml.match(/screenHeight:\s*panel\.modelData\.height/g) || []).length === 3,
   'every resolver uses its own panel screen dimensions'
 )
 
 assert(
   /refreshToken:\s*root\.backgroundVersion/.test(incomingResolver) &&
-    /refreshToken:\s*root\.displayedVersion/.test(displayedResolver),
+    /refreshToken:\s*panel\.incomingAbandoned\s*\?\s*root\.backgroundVersion\s*:\s*root\.displayedVersion/.test(displayedResolver),
   'a forced transition with an unchanged canonical path still re-resolves both layers'
 )
 
@@ -90,7 +90,7 @@ assert(
 // per transition and remain fixed for the whole reveal.
 const lockBlock = blockAfter(backgroundQml, 'function lockIncoming', 'incoming lock function exists')
 assert(
-  /if\s*\(incomingLockedVersion\s*===\s*root\.backgroundVersion\)\s*return/.test(lockBlock) &&
+  /if\s*\(incomingAbandoned\s*\|\|\s*incomingLockedVersion\s*===\s*root\.backgroundVersion\)\s*return/.test(lockBlock) &&
     /incomingLockedVersion\s*=\s*root\.backgroundVersion/.test(lockBlock),
   'a panel locks its incoming source at most once per backgroundVersion'
 )
@@ -170,7 +170,7 @@ assert(
 
 assert(
   /property int refreshToken/.test(resolverQml) &&
-    /onRefreshTokenChanged:\s*requestResolve\(\)/.test(resolverQml),
+    /onRefreshTokenChanged:\s*resetChoice\(\)/.test(resolverQml),
   'resolvers re-resolve when their refresh token bumps even if inputs are string-identical'
 )
 
@@ -237,7 +237,7 @@ const context = vm.createContext({
   Commons: { Color: { background: 'fallback' } },
   Qt: { rgba: (...channels) => channels },
   canonicalPath: '/theme/art.svg', screenWidth: 1920, screenHeight: 1080,
-  devicePixelRatio: 2, canonicalOnly: false, requestSeq: 1, resolveProc: {}, resolvePending: false
+  devicePixelRatio: 2, canonicalOnly: false, metadataOnly: false, requestSeq: 1, resolveProc: {}, resolvePending: false
 })
 vm.runInContext(blockAfter(resolverQml, 'function parseFillColor', 'color parser exists') + '\n}', context)
 assertDeepEqual(Array.from(context.parseFillColor('#ff000080')), [1, 0, 0, 128 / 255], 'RGBA metadata renders translucent red')
@@ -251,7 +251,7 @@ context.devicePixelRatio = 1.25
 context.startResolve()
 assertEqual(context.resolveProc.command[context.resolveProc.command.indexOf('--screen') + 1], '2400x1350', 'fractional scale resolves at physical output resolution')
 assert(/property real devicePixelRatio:\s*Screen.devicePixelRatio/.test(resolverQml) &&
-  /onDevicePixelRatioChanged:\s*requestResolve\(\)/.test(resolverQml),
+  /onDevicePixelRatioChanged:\s*resetChoice\(\)/.test(resolverQml),
   'every resolver follows its window screen scale and re-resolves on scale changes')
 
 const blurActive = wallpaperQml.match(/blurBackdropActive: (.*)/)[1]
@@ -352,7 +352,7 @@ decode.sized = false
 assertEqual(decode.decodeSize('/large.png').width, 0, 'an unsized panel waits before decoding')
 
 const locked = vm.createContext({
-  incomingLockedVersion: -1,
+  incomingLockedVersion: -1, incomingAbandoned: false,
   root: { backgroundVersion: 9, requestNativeSize() {} },
   incomingFallbackTimer: { stop() {} },
   starts: 0

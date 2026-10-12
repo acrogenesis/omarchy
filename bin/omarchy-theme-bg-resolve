@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # omarchy:summary=Resolve the background variant and render metadata for a screen
-# omarchy:args=[--screen <W>x<H>] [--canonical <path>] [--fields] [--canonical-only]
+# omarchy:args=[--screen <W>x<H>] [--canonical <path>] [--fields] [--canonical-only] [--metadata-only]
 # omarchy:hidden=true
 
 # The single implementation of background resolution, shared by the CLI and the
@@ -16,11 +16,12 @@ SCREEN_H=0
 CANONICAL=""
 OUTPUT="json"
 CANONICAL_ONLY=0
+METADATA_ONLY=0
 MAX_SVG_RENDER_DIMENSION=16384
 MAX_SVG_RENDER_PIXELS=33554432
 
 usage() {
-  echo "Usage: omarchy-theme-bg-resolve [--screen <W>x<H>] [--canonical <path>] [--fields] [--canonical-only]"
+  echo "Usage: omarchy-theme-bg-resolve [--screen <W>x<H>] [--canonical <path>] [--fields] [--canonical-only] [--metadata-only]"
 }
 
 while (( $# > 0 )); do
@@ -44,6 +45,11 @@ while (( $# > 0 )); do
       shift 2
       ;;
     --canonical-only)
+      CANONICAL_ONLY=1
+      shift
+      ;;
+    --metadata-only)
+      METADATA_ONLY=1
       CANONICAL_ONLY=1
       shift
       ;;
@@ -423,7 +429,7 @@ PYXML
 }
 
 RESOLVED="$SELECTED"
-if [[ -n $SCREEN && ${SELECTED,,} == *.svg ]]; then
+if [[ -n $SCREEN && ${SELECTED,,} == *.svg ]] && (( METADATA_ONLY == 0 )); then
   if rasterized=$(rasterize_svg "$SELECTED") && [[ -n $rasterized ]]; then
     RESOLVED="$rasterized"
   else
@@ -491,7 +497,7 @@ sample_edge_color() {
   printf '%s' "$line"
 }
 
-if [[ $BACKDROP == "edge" && $FILL != "crop" ]]; then
+if [[ $BACKDROP == "edge" && $FILL != "crop" ]] && (( METADATA_ONLY == 0 )); then
   sampled_color=$(sample_edge_color "$RESOLVED") || sampled_color=""
   [[ -z $sampled_color ]] || FILL_COLOR="$sampled_color"
 fi
