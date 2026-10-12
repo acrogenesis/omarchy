@@ -89,6 +89,7 @@ try {
   fs.mkdirSync(backgrounds)
   const svg = path.join(backgrounds,'only.svg')
   fs.writeFileSync(svg,'<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="red"/></svg>')
+  fs.copyFileSync(svg,path.join(backgrounds,'0-art@wide.svg'))
   const link = path.join(temporary,'background')
   fs.symlinkSync(path.join(temporary,'missing.png'),link)
   const expression = qml.match(/id: recoverProc\s+command: (\[[^]*?\n    \])/)[1]
