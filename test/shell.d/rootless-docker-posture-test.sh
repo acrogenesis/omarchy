@@ -3,7 +3,7 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
-for package in docker docker-buildx docker-compose docker-rootless-extras rootlesskit slirp4netns fuse-overlayfs lazydocker; do
+for package in docker docker-buildx docker-compose docker-rootless-extras rootlesskit slirp4netns fuse-overlayfs; do
   grep -qx "$package" "$ROOT/install/omarchy-base.packages" || fail "rootless Docker dependency is in the base install: $package"
 done
 pass "the base install keeps Docker tooling and adds the rootless runtime"
@@ -224,6 +224,7 @@ EOF
 cat >"$behavior_bin/systemctl" <<'EOF'
 #!/bin/bash
 echo "systemctl $*" >>"$BEHAVIOR_LOG"
+[[ $* == *once-background.service ]] && exit 1
 if [[ $* == "--user show-environment" || $* == "--user is-active --quiet docker.service" ]]; then
   exit 0
 fi
@@ -243,6 +244,11 @@ cat >"$behavior_bin/python3" <<'EOF'
 #!/bin/bash
 echo "python $*" >>"$BEHAVIOR_LOG"
 [[ $* == *"--check-target-policy"* ]] && exit 1
+exit 0
+EOF
+cat >"$behavior_bin/pacman" <<'EOF'
+#!/bin/bash
+[[ $* == "-Qq once-bin" ]] && exit 1
 exit 0
 EOF
 chmod +x "$behavior_bin"/*

@@ -13,6 +13,6 @@ fi
 
 # Refresh the Docker app entry so it uses the current rootless-aware launcher.
 dest="$HOME/.local/share/applications/Docker.desktop"
-if [[ -f $dest && -f $OMARCHY_PATH/applications/Docker.desktop ]]; then
-  cp "$OMARCHY_PATH/applications/Docker.desktop" "$dest"
+if [[ -f $dest && -f $OMARCHY_PATH/default/applications/Docker.desktop ]]; then
+  cp "$OMARCHY_PATH/default/applications/Docker.desktop" "$dest"
 fi
