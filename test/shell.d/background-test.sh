@@ -116,9 +116,9 @@ assert(
 )
 
 assert(
-  !backgroundQml.includes('incomingFallbackTimer') &&
+  backgroundQml.includes('incomingFallbackTimer') &&
     /lockIncoming\([\s\S]*fill, backdrop, fillColor, focalX, focalY/.test(incomingResolver),
-  'a slow resolve retains the outgoing image until incoming metadata is available'
+  'a slow resolve retains outgoing pixels while a bounded snapshot fallback is armed'
 )
 
 assert(
@@ -237,7 +237,7 @@ const context = vm.createContext({
   Commons: { Color: { background: 'fallback' } },
   Qt: { rgba: (...channels) => channels },
   canonicalPath: '/theme/art.svg', screenWidth: 1920, screenHeight: 1080,
-  devicePixelRatio: 2, requestSeq: 1, resolveProc: {}, resolvePending: false
+  devicePixelRatio: 2, canonicalOnly: false, requestSeq: 1, resolveProc: {}, resolvePending: false
 })
 vm.runInContext(blockAfter(resolverQml, 'function parseFillColor', 'color parser exists') + '\n}', context)
 assertDeepEqual(Array.from(context.parseFillColor('#ff000080')), [1, 0, 0, 128 / 255], 'RGBA metadata renders translucent red')
@@ -246,10 +246,10 @@ assertDeepEqual(Array.from(context.parseFillColor('#abcdef')), [171 / 255, 205 /
 assertEqual(context.parseFillColor('#bad'), 'fallback', 'invalid colors retain the theme fallback')
 vm.runInContext(startBlock + '\n}', context)
 context.startResolve()
-assertEqual(context.resolveProc.command[2], '3840x2160', 'scale 2 resolves SVGs at physical output resolution')
+assertEqual(context.resolveProc.command[context.resolveProc.command.indexOf('--screen') + 1], '3840x2160', 'scale 2 resolves SVGs at physical output resolution')
 context.devicePixelRatio = 1.25
 context.startResolve()
-assertEqual(context.resolveProc.command[2], '2400x1350', 'fractional scale resolves at physical output resolution')
+assertEqual(context.resolveProc.command[context.resolveProc.command.indexOf('--screen') + 1], '2400x1350', 'fractional scale resolves at physical output resolution')
 assert(/property real devicePixelRatio:\s*Screen.devicePixelRatio/.test(resolverQml) &&
   /onDevicePixelRatioChanged:\s*requestResolve\(\)/.test(resolverQml),
   'every resolver follows its window screen scale and re-resolves on scale changes')

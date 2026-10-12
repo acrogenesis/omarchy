@@ -179,6 +179,19 @@ Item {
     revealAnimation.restart()
   }
 
+  function finishTransitionWithoutReveal() {
+    revealAnimation.stop()
+    displayedBackground = currentBackground || displayedBackground
+    displayedVersion += 1
+    incomingBackground = ""
+    oldBackground = ""
+    preparedBackground = ""
+    finishingTransition = false
+    revealProgress = 1
+    applyPendingTheme()
+    pruneNativeSizes()
+  }
+
   function maybeFinishTransition() {
     // Multi-monitor resolves and decodes land with real skew (a large panel's
     // cold SVG raster can trail a small one by hundreds of ms), so the shared
@@ -435,6 +448,7 @@ Item {
       // Keep the outgoing layer while resolving instead of revealing a new
       // image using the previous wallpaper's fill and focal settings.
       property int incomingLockedVersion: -1
+      property bool incomingFallbackTried: false
       property string incomingPath: ""
       property string incomingFill: "crop"
       property string incomingBackdrop: "solid"
@@ -458,6 +472,42 @@ Item {
       // True once this panel's base layer is painting the final background:
       // its resolver has published for the current displayed canonical and
       // the decode is no longer in flight.
+      function recoverDisplayedImage() {
+        if (!displayedResolver.canonicalOnly && panel.lastDisplayedPath !== root.displayedBackground) {
+          // Qt may reject a variant whose header ImageMagick can probe. Retry
+          // this screen using the canonical asset rather than the same variant.
+          displayedResolver.canonicalOnly = true
+        } else {
+          root.recoverBackground(root.displayedBackground)
+        }
+      }
+
+      function tryIncomingFallback() {
+        if (!root.incomingBackground || maskReady) return
+        if (incomingFallbackTried) {
+          // No drawable snapshot: release the transition bookkeeping while
+          // the displayed resolver keeps the previous decoded pixels alive.
+          root.finishTransitionWithoutReveal()
+          return
+        }
+        incomingFallbackTried = true
+        incomingLockedVersion = -1
+        lockIncoming(root.incomingBackground,
+          incomingResolver.ready ? incomingResolver.fill : lastDisplayedFill,
+          incomingResolver.ready ? incomingResolver.backdrop : lastDisplayedBackdrop,
+          incomingResolver.ready ? incomingResolver.fillColor : lastDisplayedFillColor,
+          incomingResolver.ready ? incomingResolver.focalX : lastDisplayedFocalX,
+          incomingResolver.ready ? incomingResolver.focalY : lastDisplayedFocalY)
+        incomingFallbackTimer.restart()
+      }
+
+      Timer {
+        id: incomingFallbackTimer
+        interval: 1500
+        repeat: false
+        onTriggered: panel.tryIncomingFallback()
+      }
+
       function baseSettled() {
         if (root.displayedBackground === "") return true
         if (!displayedResolver.ready || lastDisplayedCanonical !== root.displayedBackground) return false
@@ -541,7 +591,7 @@ Item {
         cached: true
         constrainDecode: true
         decodeSize: panel.decodeSize(panel.lastDisplayedPath)
-        onFailedChanged: if (failed) root.recoverBackground(root.displayedBackground)
+        onFailedChanged: if (failed) panel.recoverDisplayedImage()
         onStatusChanged: {
           panel.readyFrames = 0
           root.maybeFinishTransition()
@@ -617,8 +667,11 @@ Item {
         target: root
         function onIncomingBackgroundChanged() {
           panel.maskReady = false
-            panel.incomingLockedVersion = -1
+          panel.incomingLockedVersion = -1
+          panel.incomingFallbackTried = false
           panel.incomingPath = ""
+          if (root.incomingBackground) incomingFallbackTimer.restart()
+          else incomingFallbackTimer.stop()
           panel.maybeStartReveal()
         }
       }

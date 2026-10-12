@@ -238,17 +238,24 @@ Item {
   // A plugin may read api.activePopout right after asking for its popout, so
   // its own api is brought up to date inline; everyone else waits for the
   // coalesced resync.
+  function syncPluginBarApisFor(pluginId) {
+    for (var id in pluginBarApis) {
+      var api = pluginBarApis[id]
+      if (api && api.pluginId === String(pluginId || "")) root.syncPluginBarApiObjects(api)
+    }
+  }
+
   function requestPluginPopout(pluginId, owner) {
     if (!root.markPluginObject(pluginId, owner, "popout")) return
     root.requestPopout(owner)
-    root.syncPluginBarApiObjects(pluginBarApis[String(pluginId || "")])
+    root.syncPluginBarApisFor(pluginId)
   }
 
   function releasePluginPopout(pluginId, owner) {
     if (!root.pluginOwnsBarObject(pluginId, owner)) return
     root.releasePopout(owner)
     root.unmarkPluginObject(pluginId, owner, "popout")
-    root.syncPluginBarApiObjects(pluginBarApis[String(pluginId || "")])
+    root.syncPluginBarApisFor(pluginId)
   }
 
   function pluginBarApiFor(pluginId, moduleName, registered, screen) {
@@ -346,7 +353,8 @@ Item {
 
   Component.onDestruction: {
     for (var id in pluginBarApis) {
-      root.releasePluginObjects(api.pluginId)
+      var api = pluginBarApis[id]
+      if (api) root.releasePluginObjects(api.pluginId)
       if (pluginBarApis[id] && typeof pluginBarApis[id].destroy === "function")
         pluginBarApis[id].destroy()
     }
