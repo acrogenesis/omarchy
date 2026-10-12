@@ -6,6 +6,8 @@
 
 set -euo pipefail
 
+source "$OMARCHY_PATH/bin/omarchy-lab-operation-lock"
+
 CONNECT=${OMARCHY_LAB_CONNECT:-qemu:///system}
 NAME=${OMARCHY_LAB_NAME:-omarchy-lab}
 STATE_DIR=${OMARCHY_LAB_STATE_DIR:-${HOME}/.config/omarchy/lab-vm}
@@ -294,7 +296,7 @@ ensure_lab_running() {
     return 1
   fi
   if [[ $state != "running" ]]; then
-    run_virsh start "$NAME" >/dev/null || return 1
+    lab_with_operation_lock run_virsh start "$NAME" >/dev/null || return 1
   fi
 }
 

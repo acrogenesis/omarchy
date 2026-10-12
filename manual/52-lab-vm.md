@@ -151,3 +151,5 @@ Changing between NAT and isolated networking requires a running guest so Lab can
 To get rid of the whole thing, use _Remove > Lab_ from the Omarchy menu. That deletes the VM and its disks. The hypervisor packages, UFW rules, and downloaded ISO stay, so a later install is faster.
 
 See also [Unattended Installs](51-unattended-installs.md) for the `cidata` mechanism the lab uses.
+
+Checkpoint records include the network source and link state so disk restores retain their matching guest addressing. Legacy checkpoints without network metadata retain the current network with a warning; select their original network before restoring them. Rebuilding gold preserves the SSH key used by saved checkpoints. Disk changes and guest starts share an operation lock.
