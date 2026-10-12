@@ -4,6 +4,11 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
+if (( EUID == 0 )); then
+  skip "restart fixtures require an unprivileged user; root entry always uses real sysfs"
+  exit 0
+fi
+
 tmp_dir=$(mktemp -d)
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -54,7 +59,7 @@ run_restart() {
   CALLS="$tmp_dir/calls" LSMOD_FILE="$tmp_dir/lsmod" \
     OMARCHY_WIFI_NET_ROOT="$tmp_dir/net" \
     PATH="$tmp_dir/bin:$PATH" \
-    "$ROOT/bin/omarchy-restart-wifi" >/dev/null
+    bash -c 'source "$ROOT/install/helpers/wifi-restart.sh"; NET_ROOT=$OMARCHY_WIFI_NET_ROOT; wifi_restart "$@"' bash "$@" >/dev/null
   echo $? >"$tmp_dir/rc"
   set -e
 }
@@ -260,3 +265,26 @@ chmod +x "$tmp_dir/bin/nmcli"
 grep -F 'omarchy-restart-wifi' "$ROOT/default/omarchy/omarchy-menu.jsonc" >/dev/null ||
   fail "the hardware menu still points at omarchy-restart-wifi"
 pass "the hardware menu still points at omarchy-restart-wifi"
+
+if bash "$ROOT/bin/omarchy-restart-wifi" -p >/dev/null 2>&1; then
+  fail "ordinary Bash with decoy -p reaches the privileged boundary"
+fi
+pass "restart rejects an ordinary Bash launch with a decoy protected-mode argument"
+
+# A targeted reload never lifts a sibling's block or disconnects its hotspot.
+rm -rf "$tmp_dir/net" "$tmp_dir/drivers"
+mkdir -p "$tmp_dir/net"
+add_iface wlan0 iwlwifi
+add_iface wlan1 rtw89_8852be
+printf 'iwlmvm 1 0\niwlwifi 1 1\nrtw89_8852be 1 0\n' >"$tmp_dir/lsmod"
+run_restart --interface wlan0
+[[ $(<"$tmp_dir/rc") == 0 ]] || fail "targeted reload succeeds"
+! grep -q 'rfkill unblock\|nmcli radio\|nmcli networking\|modprobe.*rtw89' "$tmp_dir/calls" || fail "targeted reload affects sibling radios"
+grep -q 'rescan ifname wlan0' "$tmp_dir/calls" || fail "rescan is not scoped to the recovered adapter"
+pass "automatic reload touches only the requested adapter and preserves global radio state"
+rm -f "$tmp_dir/net/wlan1/device/driver"
+ln -s "$tmp_dir/drivers/iwlwifi" "$tmp_dir/net/wlan1/device/driver"
+run_restart --interface wlan0
+[[ $(<"$tmp_dir/rc") == 1 ]] || fail "shared physical driver reload was allowed"
+[[ ! -s $tmp_dir/calls ]] || fail "shared driver refusal changed radio state"
+pass "automatic reload refuses a shared driver instead of interrupting a sibling"

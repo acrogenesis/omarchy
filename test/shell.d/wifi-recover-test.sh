@@ -134,7 +134,7 @@ run_loop() {
 }
 
 restart_count() {
-  grep -c '^sudo -n /usr/bin/omarchy-restart-wifi$' "$tmp_dir/calls"
+  grep -c '^sudo -n /usr/bin/omarchy-restart-wifi --interface ' "$tmp_dir/calls"
 }
 
 add_phy
@@ -254,10 +254,15 @@ pass "wifi recover treats an unavailable device the kernel cannot reach as wedge
 IW_FAIL=0
 
 NM_HANG=1 OMARCHY_WIFI_RECOVER_NM_TIMEOUT=1
-if ! run_check >/dev/null; then
-  fail "wifi recover treats a hung nmcli as wedged"
+if run_check >/dev/null; then
+  fail "a global NM timeout reset a kernel-responsive adapter"
 fi
-pass "wifi recover treats a hung nmcli as wedged"
+IW_FAIL=1
+if ! run_check >/dev/null; then
+  fail "an NM timeout hid an independently unresponsive radio"
+fi
+pass "an NM timeout recovers only independently unresponsive radios"
+IW_FAIL=0
 NM_HANG=0
 unset OMARCHY_WIFI_RECOVER_NM_TIMEOUT
 
@@ -273,7 +278,7 @@ pass "wifi recover does nothing on a machine with no radio"
 add_phy
 NM_STATUS=$'wlp9s0:wifi:connected\n' IW_CONNECTED=0
 run_once
-grep -qx 'sudo -n /usr/bin/omarchy-restart-wifi' "$tmp_dir/calls" ||
+grep -qx 'sudo -n /usr/bin/omarchy-restart-wifi --interface wlp9s0' "$tmp_dir/calls" ||
   fail "wifi recover reloads through the packaged restart command" "$(cat "$tmp_dir/calls")"
 grep -q 'notify ' "$tmp_dir/calls" ||
   fail "wifi recover tells the user it reloaded the radio" "$(cat "$tmp_dir/calls")"
@@ -293,7 +298,7 @@ grep -q 'sudo' "$tmp_dir/calls" &&
 pass "wifi recover does not reload on a single missed link poll"
 
 run_loop 2
-grep -qx 'sudo -n /usr/bin/omarchy-restart-wifi' "$tmp_dir/calls" ||
+grep -qx 'sudo -n /usr/bin/omarchy-restart-wifi --interface wlp9s0' "$tmp_dir/calls" ||
   fail "wifi recover reloads after two missed link polls" "$(cat "$tmp_dir/calls")"
 pass "wifi recover reloads after two missed link polls"
 
@@ -502,10 +507,10 @@ CALLS="$tmp_dir/calls" HOME="$mig_home" XDG_CONFIG_HOME="$mig_home/.config" \
 pass "migration does not restage over a customized unit"
 
 sudoers="$ROOT/etc/sudoers.d/omarchy-restart-wifi"
-rule='%wheel ALL=(root) NOPASSWD: /usr/bin/omarchy-restart-wifi ""'
+rule='%wheel ALL=(root) NOPASSWD: /usr/bin/omarchy-restart-wifi "", /usr/bin/omarchy-restart-wifi --interface *'
 rules=$(grep -vE '^[[:space:]]*(#|$)' "$sudoers")
 [[ $rules == "$rule" ]] ||
-  fail "wifi sudoers file grants only omarchy-restart-wifi with no args" "got: $rules"
+  fail "wifi sudoers file grants only the validated Wi-Fi restart entry point" "got: $rules"
 if command -v visudo >/dev/null; then
   visudo -cf "$sudoers" >/dev/null || fail "wifi sudoers rule parses"
 fi
@@ -531,3 +536,14 @@ pass "existing installs enable wifi recover"
 mode=$(stat -c '%a' "$ROOT/migrations/1787444800.sh")
 [[ $mode == 644 ]] || fail "wifi recover migration must be mode 644" "$mode"
 pass "wifi recover migration is mode 644"
+
+# A listed healthy radio must not hide a second interface lost by NM.
+add_phy wlan1
+NM_STATUS='wlp9s0:wifi:connected' IW_CONNECTED=1 run_once
+[[ $(restart_count) == 1 ]] || fail "missing second adapter was hidden"
+grep -qx 'sudo -n /usr/bin/omarchy-restart-wifi --interface wlan1' "$tmp_dir/calls" || fail "recovery did not target the missing adapter"
+! grep -q -- '--interface wlp9s0' "$tmp_dir/calls" || fail "healthy adapter was recovered"
+printf '1\n' >"$tmp_dir/net/wlan1/phy80211/rfkill0/soft"
+NM_STATUS='wlp9s0:wifi:connected' IW_CONNECTED=1 run_once
+[[ $(restart_count) == 0 ]] || fail "missing blocked adapter was recovered"
+pass "missing adapters are compared individually and blocked siblings remain untouched"

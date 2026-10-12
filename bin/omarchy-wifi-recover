@@ -33,6 +33,7 @@ notified_this_wedge=0
 reloads_this_wedge=0
 gave_up_this_wedge=0
 polls=0
+wedged_devices=()
 
 # A staged ~/.config copy shadows /usr/lib forever. Drop it only when it is
 # still stock, so a user edit is left alone. Stock means either copy we could
@@ -123,47 +124,51 @@ kernel_link_up() {
 # wifi device is in a state only a dead phy explains. A roam or a radio-on
 # race can look like this for one poll, which is what CONFIRM_POLLS is for.
 looks_wedged() {
-  local dev state found=0 nm_out nm_rc
-
+  local dev state iface nm_out nm_rc radio_rc
+  local -A listed=()
+  wedged_devices=()
   radio_state
-  case $? in
-    1) return 1 ;;    # radio off, or NM has no answer: not ours to fix.
-    2) return 0 ;;    # nmcli hung. The AX210 wedge hangs do-change-link.
-  esac
-
+  radio_rc=$?
+  (( radio_rc != 1 )) || return 1
   has_wireless_iface || return 1
-
   nm_out=$(LC_ALL=C timeout "$NM_TIMEOUT" nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null)
   nm_rc=$?
-  if ((nm_rc == 124)); then
-    return 0
+  if (( radio_rc == 2 || nm_rc == 124 )); then
+    # A global NM timeout cannot identify a radio. Reset only a kernel device
+    # that independently fails to answer; never guess at a healthy sibling.
+    for iface in "$NET_ROOT"/*; do
+      [[ -d $iface/wireless || -d $iface/phy80211 ]] || continue
+      dev=${iface##*/}
+      rfkill_blocked "$dev" && continue
+      kernel_responsive "$dev" || wedged_devices+=("$dev")
+    done
+    (( ${#wedged_devices[@]} > 0 ))
+    return
   fi
-  ((nm_rc == 0)) || return 1
-
+  (( nm_rc == 0 )) || return 1
   while IFS=$'\t' read -r dev state; do
     [[ -n $dev ]] || continue
-    found=1
-
-    # A radio the user blocked is a radio the user wants off.
+    listed[$dev]=1
     rfkill_blocked "$dev" && continue
-
     case $state in
       connected*)
-        # Only an infrastructure station has an association to lose. An AP,
-        # a hotspot, an ad-hoc cell and a mesh point are all connected with
-        # no link, and unloading the driver under one drops every client on
-        # it. An unreadable type is not evidence either way, so it waits.
         [[ $(iface_type "$dev") == "managed" ]] || continue
-        kernel_link_up "$dev" || return 0
+        kernel_link_up "$dev" || wedged_devices+=("$dev")
         ;;
       unavailable)
-        kernel_responsive "$dev" || return 0
+        kernel_responsive "$dev" || wedged_devices+=("$dev")
         ;;
     esac
   done < <(awk -F: '$2 == "wifi" { print $1 "\t" $3 }' <<<"$nm_out")
-
-  # NM listed nothing, but the phy is still in sysfs: same class of wedge.
-  ((found == 0))
+  for iface in "$NET_ROOT"/*; do
+    [[ -d $iface/wireless || -d $iface/phy80211 ]] || continue
+    dev=${iface##*/}
+    [[ -z ${listed[$dev]+present} ]] || continue
+    rfkill_blocked "$dev" && continue
+    [[ $(iface_type "$dev") != "AP" ]] || continue
+    wedged_devices+=("$dev")
+  done
+  (( ${#wedged_devices[@]} > 0 ))
 }
 
 # Two consecutive polls (~30s) before we unload the driver. One miss is a
@@ -215,10 +220,15 @@ try_reload() {
   last_reload=$now
   reloads_this_wedge=$((reloads_this_wedge + 1))
 
-  if ! timeout "$RESTART_TIMEOUT" sudo -n "$PACKAGED_RESTART"; then
-    echo "omarchy-wifi-recover: $PACKAGED_RESTART failed" >&2
-    return 1
-  fi
+  local dev recovered=0
+  for dev in "${wedged_devices[@]}"; do
+    if timeout "$RESTART_TIMEOUT" sudo -n "$PACKAGED_RESTART" --interface "$dev"; then
+      recovered=1
+    else
+      echo "omarchy-wifi-recover: $PACKAGED_RESTART failed for $dev" >&2
+    fi
+  done
+  (( recovered == 1 )) || return 1
 
   grant_warned=0
 
