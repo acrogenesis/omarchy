@@ -4,6 +4,11 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
+# The command fixture follows the runtime invariant and reads defaults through
+# OMARCHY_PATH. Point it at this checkout rather than whichever install launched
+# the test (or nothing at all on a non-Omarchy development machine).
+export OMARCHY_PATH="$ROOT"
+
 if perl -0ne 'exit(/drag\s*\.\s*target\s*:\s*[^;]*\bslot\b/s ? 0 : 1)' "$ROOT/shell/plugins/bar/Bar.qml"; then
   fail "bar module dragging must not mutate ModuleSlot positions"
 fi
@@ -14,13 +19,47 @@ if rg -q 'barMoveSettling|barMoveSettleTimer' "$ROOT/shell/plugins/bar/Bar.qml";
 fi
 pass "bar move outline has no post-release settling state"
 
+# A widget above the gesture area propagates its composed press-and-hold down
+# without handing over the grab, so the resulting move gets neither a release
+# nor a cancel and the ghost stays up for the session. Only the grabbing area
+# reports pressed, which is what separates the two, so the guard has to stay
+# ahead of the drag.
+if ! perl -0ne 'exit(/onPressAndHold:\s*function[^{]*\{[^}]*?\bpressed\b[^}]*?\bstartDrag\b/s ? 0 : 1)' \
+  "$ROOT/shell/plugins/bar/Bar.qml"; then
+  fail "bar move ignores a press-and-hold the gesture area does not hold the press for"
+fi
+pass "bar move ignores a press-and-hold propagated from a widget above"
+
+# Every click target registration used to resync every plugin api inline. With
+# six monitors' worth of widgets that is hundreds of full walks at startup, so
+# the change handlers coalesce into one deferred resync and ownership lookups
+# are keyed by target instead of scanning an array.
+if ! rg -q 'onClickTargetsChanged: schedulePluginBarApiSync\(\)' "$ROOT/shell/plugins/bar/Bar.qml"; then
+  fail "bar coalesces plugin api resyncs instead of running one per click target change"
+fi
+if ! rg -q 'Qt\.callLater\(root\.syncAllPluginBarApiObjects\)' "$ROOT/shell/plugins/bar/Bar.qml"; then
+  fail "bar defers the coalesced plugin api resync to the event loop"
+fi
+if ! rg -q 'pluginObjectOwners\.get\(target\)' "$ROOT/shell/plugins/bar/Bar.qml"; then
+  fail "bar looks plugin object ownership up by target instead of scanning"
+fi
+pass "bar coalesces plugin api resyncs and looks ownership up by target"
+
+# Both bar orientations used to be instantiated and toggled with `visible`,
+# doubling every indicator (and every process an indicator spawns) per bar.
+if ! rg -q 'sourceComponent: root\.vertical \? verticalIndicatorsTree : horizontalIndicatorsTree' \
+  "$ROOT/shell/plugins/bar/widgets/Indicators.qml"; then
+  fail "indicators instantiate only the tree for the current bar orientation"
+fi
+pass "indicators instantiate only the tree for the current bar orientation"
+
 run_node_test <<'JS'
 const fs = require('fs')
 const bar = requireFromRoot('shell/plugins/bar/BarModel.js')
 const barSource = fs.readFileSync(root + '/shell/plugins/bar/Bar.qml', 'utf8')
 const shellSource = fs.readFileSync(root + '/shell/shell.qml', 'utf8')
 
-assert(/function toggleBarTransparency\(\): string \{[\s\S]*?shell\.bar\.toggleTransparency\(\)/.test(shellSource), 'shell exposes the bar transparency toggle over IPC')
+assert(/function toggleBarTransparency\(\): string \{[\s\S]*?shell\.bar\.cycleBackground\(\)/.test(shellSource), 'shell exposes the bar background cycle over IPC')
 
 // put tolerates a placement target the bar does not carry, so the IPC call
 // must reach the registry's put rather than route back through enable.
@@ -42,8 +81,8 @@ assert(
 )
 for (const edge of ['top', 'bottom', 'left', 'right']) {
   assert(
-    new RegExp(`${edge}: root\\.barHidden && root\\.position === "${edge}" \\? -root\\.barSize : 0`).test(barSource),
-    `a hidden bar parks past the ${edge} edge`
+    new RegExp(`${edge}: root\\.barHidden && root\\.position === "${edge}" \\? -barWindow\\.thickness : 0`).test(barSource),
+    `a hidden bar parks past the ${edge} edge by its whole thickness`
   )
 }
 
@@ -243,7 +282,7 @@ assert(
   'bar uses nearest insertion targeting for widget and free-space drops'
 )
 assert(
-  /component DragGhostPanel:[\s\S]*?readonly property var targetRect: root\.barDragTargetGeometry[\s\S]*?color: Color\.accent/.test(barSource),
+  /component DragGhostPanel:[\s\S]*?readonly property var targetRect: root\.barDragTargetGeometry[\s\S]*?color: Commons\.Color\.accent/.test(barSource),
   'bar draws the insertion marker above the bar in the drag overlay'
 )
 

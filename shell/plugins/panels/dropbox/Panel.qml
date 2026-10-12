@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -12,6 +13,12 @@ Panel {
   moduleName: "omarchy.dropbox"
   ipcTarget: "omarchy.dropbox"
   manageIpc: false
+
+  // Items inside the panel's lazily built content, null until it first
+  // opens. Code inside the content reaches its own ids directly.
+  readonly property Item panelFlick: panel.loadedContent ? panel.loadedContent.panelFlick : null
+  readonly property Item hero: panel.loadedContent ? panel.loadedContent.hero : null
+  readonly property Item fileColumn: panel.loadedContent ? panel.loadedContent.fileColumn : null
 
   property string omarchyPath: Quickshell.env("OMARCHY_PATH")
   property string focusSection: "login"
@@ -32,8 +39,8 @@ Panel {
     "Cataloging chaos"
   ]
   readonly property string heroPhraseText: activePhrases[phraseIndex % activePhrases.length]
-  readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  readonly property color foreground: bar ? bar.foreground : Commons.Color.foreground
+  readonly property color urgent: bar ? bar.urgent : Commons.Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property color iconColor: dropbox.authenticated && dropbox.active ? foreground : dim
@@ -139,7 +146,7 @@ Panel {
     cursorActive = false
     if (panelFlick) panelFlick.contentY = 0
     dropbox.refresh()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() { if (panel.loadedContent) panel.loadedContent.forceActiveFocus() })
   }
   onFileIndexChanged: scrollCursorIntoView()
 
@@ -155,7 +162,7 @@ Panel {
     function onFilesChanged() { root.ensureCursor() }
   }
 
-  IpcHandler {
+  ShellIpc {
     target: root.ipcTarget
     function open(): void { root.open() }
     function close(): void { root.close() }
@@ -174,8 +181,10 @@ Panel {
     iconComponent: Component {
       Item {
         DropboxIcon {
-          anchors.centerIn: parent
-          iconSize: Style.space(12)
+          x: (parent.width - width) / 2
+          y: (parent.height - height) / 2
+          iconSize: button.iconSize / aspectRatio
+          artworkScale: 1
           color: root.barIconColor
           opacity: dropbox.active ? 1.0 : 0.6
         }
@@ -194,12 +203,16 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: panel.loadedContent
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
+    contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(560))
 
-    PanelKeyCatcher {
+    content: PanelKeyCatcher {
       id: keyCatcher
+      property alias panelFlick: panelFlick
+      property alias hero: hero
+      property alias fileColumn: fileColumn
+      implicitHeight: column.implicitHeight
       anchors.fill: parent
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
@@ -281,6 +294,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: dropbox.actionStatus !== "" || dropbox.lastError !== ""
             width: parent.width
             text: dropbox.actionStatus !== "" ? dropbox.actionStatus : dropbox.lastError
@@ -368,14 +382,14 @@ Panel {
     id: phraseSwap
     PropertyAnimation {
       target: hero; property: "metaOpacity"
-      to: 0.0; duration: 180; easing.type: Easing.OutQuad
+      to: 0.0; duration: Style.duration(180); easing.type: Easing.OutQuad
     }
     ScriptAction {
       script: root.phraseIndex = (root.phraseIndex + 1) % root.activePhrases.length
     }
     PropertyAnimation {
       target: hero; property: "metaOpacity"
-      to: 1.0; duration: 260; easing.type: Easing.InQuad
+      to: 1.0; duration: Style.duration(260); easing.type: Easing.InQuad
     }
   }
 
@@ -421,6 +435,7 @@ Panel {
         spacing: Style.space(1)
 
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: dropbox.installed ? "Login to Dropbox" : "Dropbox CLI is not installed"
           color: root.foreground
@@ -430,6 +445,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: dropbox.installed ? "Start the authentication flow" : "Install Dropbox from the service menu"
           color: root.dim
@@ -478,6 +494,7 @@ Panel {
       spacing: Style.space(8)
 
       Text {
+        textFormat: Text.PlainText
         text: Model.fileGlyph(fileRow.fileName)
         color: root.foreground
         font.family: root.fontFamily
@@ -491,6 +508,7 @@ Panel {
         spacing: Style.space(1)
 
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: fileRow.fileName
           color: root.foreground
@@ -500,6 +518,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: Model.fileMeta(fileRow.file)
           color: root.dim
@@ -524,6 +543,7 @@ Panel {
   }
 
   component InfoLabel: Text {
+    textFormat: Text.PlainText
     color: root.foreground
     opacity: 0.6
     font.family: root.fontFamily
@@ -531,6 +551,7 @@ Panel {
   }
 
   component InfoValue: Text {
+    textFormat: Text.PlainText
     color: root.foreground
     font.family: root.fontFamily
     font.pixelSize: Style.font.bodySmall

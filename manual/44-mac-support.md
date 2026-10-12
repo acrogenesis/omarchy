@@ -6,7 +6,7 @@ Please note that installing on an M-series Mac is not directly supported at this
 
 In a simple test, we were able to achieve 36% performance gains on a 2019 MacBook Pro just by installing Omarchy.
 
- ![G0-1NXRWQAAn_IH.jpeg](https://learn.omacom.io/u/g0-1nxrwqaan_ih-nOdzdG.jpeg)
+ ![macbook-omarchy](images/macbook-omarchy.webp)
 
 ### Installing Omarchy on Mac
 
@@ -65,6 +65,7 @@ The Apple T2 Security Chip was introduced in 2017. The T2 chip was discontinued 
 - MacBook Pro 13-inch (2019, two Thunderbolt 3 ports) – Model: A2159
 - MacBook Pro 13-inch (2019, four Thunderbolt 3 ports) – Model: A2178
 - MacBook Pro 15-inch (2019) – Model: A1990
+- iMac (Retina 5K, 27-inch, 2020) – Model: A2115 (iMac20,1 and iMac20,2)
 - MacBook Pro 13-inch (2020, two Thunderbolt 3 ports) – Model: A2265
 - MacBook Pro 15-inch (2020) – Model: A1990
 

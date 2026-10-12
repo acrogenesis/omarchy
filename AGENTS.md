@@ -6,18 +6,29 @@ matching guide before starting:
 - [`agents/skills/command-metadata.md`](agents/skills/command-metadata.md) - adding or changing commands in `bin/`
 - [`agents/skills/install-scripts.md`](agents/skills/install-scripts.md) - working under `install/` or on system/user setup commands
 - [`agents/skills/shell-dev.md`](agents/skills/shell-dev.md) - editing the Quickshell desktop under `shell/`
+- [`agents/skills/icon-font.md`](agents/skills/icon-font.md) - adding branded glyphs to `default/fonts/omarchy/omarchy.ttf`
 - [`agents/skills/acceptance-tests.md`](agents/skills/acceptance-tests.md) - writing or running graphical acceptance tests under `test/acceptance.d/`
 - [`agents/skills/visual-verification.md`](agents/skills/visual-verification.md) - verifying any change with a visual effect in the running UI
-- [`docs/migrations.md`](docs/migrations.md) - creating or changing migrations under `migrations/`
+- [`agents/skills/migrations.md`](agents/skills/migrations.md) - creating or changing migrations under `migrations/`
+
+# Documentation Layout
+
+Three documentation trees, split by genre and audience:
+
+- `agents/skills/` - task procedure ("do this when doing X"), for anyone working on the codebase
+- `docs/` - reference on how the system is shaped (file layout, update pipeline, theming, shell architecture), for anyone working on the codebase; skills link here for depth
+- `manual/` - end-user documentation for using Omarchy, published; never codebase internals
 
 # Style
 
+- In markdown documents (`plans/`, `docs/`, `manual/`), write full lines — no hard wrapping at 80 columns; break only at structural boundaries like headings and list items
 - Two spaces for indentation, no tabs
 - Use bash 5 conditionals: use `[[ ]]` for string/file tests and `(( ))` for numeric tests
 - In `[[ ]]`, don't quote variables, but do quote string literals when comparing values (e.g., `[[ $branch == "dev" ]]`)
 - Prefer `(( ))` over numeric operators inside `[[ ]]` (e.g., `(( count < 50 ))`, not `[[ $count -lt 50 ]]`)
+- Prefer a full `if`/`else` conditional for simple two-path control flow; don't rely on `exec` or `exit` in one branch to make following statements unreachable
 - For strings/paths with spaces, quote them instead of escaping spaces with `\ ` (e.g., `"$APP_DIR/Disk Usage.desktop"`, not `$APP_DIR/Disk\ Usage.desktop`)
-- Shebangs must use `#!/bin/bash` consistently (never `#!/usr/bin/env bash`)
+- Shebangs must use `#!/bin/bash` consistently (never `#!/usr/bin/env bash`). A security-sensitive entrypoint may use the exact `#!/bin/bash -p` form only when it must suppress `BASH_ENV` and exported-function startup injection before its first command; that exception must be explained at the boundary and covered by a regression that rejects an ordinary Bash launch with a decoy `-p` argument.
 - Scripts under `install/` and `migrations/` may be sourced and intentionally omit shebangs
 
 # Command Naming
@@ -52,6 +63,30 @@ guidance does not drift from the router.
 - `$OMARCHY_PATH` is set at the top level by the uwsm session environment and is always available to Omarchy runtime code.
 - Commands in `bin/` and Quickshell QML should rely on `$OMARCHY_PATH` / `Quickshell.env("OMARCHY_PATH")`; do not derive fallback paths from `HOME`, `Quickshell.shellDir`, or re-export/default `OMARCHY_PATH` manually.
 
+# Platforms
+
+Omarchy runs on x86 and aarch64 (ARM). A platform name is the CPU architecture, then a hardware family only when that family needs handling of its own:
+
+- `x86` - every x86_64 machine
+- `aarch64` - every ARM machine without a family of its own (Snapdragon laptops, Raspberry Pis and ARM VMs today)
+- `aarch64-apple` - Apple Silicon Macs
+
+A new family is named `aarch64-<family>` (e.g. `aarch64-qualcomm`, `aarch64-n1x`) and is added only once it needs code of its own, so `aarch64*` always means ARM. `omarchy-hw-platform` prints the most specific name. Use these exact names wherever a platform is named: package lists, pacman template directories, image manifests, dispatch registration, tests and docs. Never introduce `generic`, `arm64`, `apple-silicon` or other spellings; the old `apple-silicon`, `generic-aarch64` and `generic` are read only for compatibility with older image builders.
+
+Ask a helper; don't read `uname -m` or the device tree in feature code:
+
+- `omarchy-hw-x86` / `omarchy-hw-aarch64` - the CPU architecture. Use them for binary and ABI availability: a package with no aarch64 build, an x86 guest VM, multilib.
+- `omarchy-hw-aarch64-apple` (and later `omarchy-hw-aarch64-<family>`) - built on `omarchy-hw-platform`, image-build aware. Use them for hardware behaviour. `omarchy-hw-apple-silicon` is a hidden alias kept for the omarchy-mac packages; don't use it in new code.
+
+Where platform code lives:
+
+- Packages: `install/omarchy-base.packages` for everyone, `install/omarchy-aarch64.packages` for every ARM machine, `install/omarchy-<platform>.packages` for one family, and base packages with no aarch64 build in `install/omarchy-x86_64-only.packages`. `omarchy-pkg-defaults` composes them.
+- Pacman templates: `default/pacman/` for x86, `default/pacman/<platform>/` for each ARM platform.
+- Hardware setup: `install/hardware/<vendor-or-family>/`, gated by a predicate. `install/hardware/apple/` holds Intel Mac quirks; Apple Silicon's own setup ships in the omarchy-mac packages.
+- Boot chains Omarchy can't drive generically: a platform package behind `omarchy-lifecycle-dispatch` ([`docs/lifecycle-dispatch.md`](docs/lifecycle-dispatch.md)). Platforms that boot Limine with UKIs like x86 keep the generic path.
+
+The experience should be the same on every platform. When a package or feature is missing or broken on one, the default is to get it fixed upstream (an aarch64 build, a bug report, a patch to the maintainer) and leave the gap visible meanwhile, not to paper over it. When asked for a platform workaround, say so and propose the upstream fix first. Hiding a menu entry or skipping a package is fine only for things that can't exist there (an x86 guest VM, an x86-only proprietary binary). Alternative packages and platform-only replacements are a last resort, used only when upstream can't or won't fix it, with the reason written next to the code.
+
 # Privileged Commands
 
 - Follow the "Privilege Escalation" section of `default/agents/skills/omarchy/SKILL.md`. It draws the
@@ -69,7 +104,7 @@ Use these instead of raw shell commands:
 
 - `omarchy-cmd-missing` / `omarchy-cmd-present` - check for commands
 - `omarchy-pkg-missing` / `omarchy-pkg-present` - check for packages (don't use these if you can just use `omarchy-pkg-add`/`omarchy-pkg-drop`)
-- `omarchy-pkg-add` - install packages (handles both pacman and AUR)
+- `omarchy-pkg-add` - install packages from the configured pacman repos, Omarchy's included; use `omarchy-pkg-aur-add` for AUR packages
 - `omarchy-pkg-drop` - remove packages; use this instead of raw `pacman -R*`
 - `omarchy-notification-send` - send desktop notifications; do not call `notify-send` directly
 - `omarchy-hw-asus-rog` - detect ASUS ROG hardware (and similar `hw-*` commands)
@@ -78,9 +113,14 @@ Commands installed by Omarchy's default package set are runtime invariants. Invo
 
 Exceptions are allowed for migration and package-helper scripts where the helper may not be available yet, where the helper itself is being implemented, or where direct package-manager behavior is required.
 
+# Background Work
+
+- Long-running code (the shell, daemons, watchers) reacts to events instead of polling with a timer. Polling is the last resort, for state with no change signal; [`agents/skills/shell-dev.md`](agents/skills/shell-dev.md) lists the event sources and the push-refresh pattern.
+
 # Menu
 
-- The menu definition lives in `default/omarchy/omarchy-menu.jsonc`.
+- The menu definition lives in `default/omarchy/omarchy-menu.jsonc`;
+  [`docs/menu.md`](docs/menu.md) covers the schema, guards, and providers.
 - Do not add `aliases` to new menu entries. Aliases are reserved for
   established alternate names users already type, kept for compatibility.
 
@@ -92,7 +132,9 @@ Exceptions are allowed for migration and package-helper scripts where the helper
 
 # Tests
 
-Run focused automated tests for the area you changed. Current test entry points:
+Run focused automated tests for the area you changed;
+[`docs/testing.md`](docs/testing.md) covers how the suites are shaped. Current
+test entry points:
 
 - `./test/all` - aggregate runner for CLI and shell tests; it intentionally does not run graphical acceptance tests
 - `./test/cli` - CLI routing, command metadata, theme helpers, and safe dispatch coverage

@@ -14,7 +14,9 @@ hl.config({
       inactive_border = inactive_border_color,
     },
 
-    resize_on_border = false,
+    resize_on_border = true,
+    extend_border_grab_area = 8,
+    hover_icon_on_border = true,
     allow_tearing = false,
     layout = "dwindle",
   },
@@ -86,7 +88,6 @@ hl.animation({ leaf = "layersOut", enabled = true, speed = 1.5, bezier = "linear
 hl.animation({ leaf = "fadeLayersIn", enabled = true, speed = 1.79, bezier = "almostLinear" })
 hl.animation({ leaf = "fadeLayersOut", enabled = true, speed = 1.39, bezier = "almostLinear" })
 hl.animation({ leaf = "workspaces", enabled = false })
-hl.animation({ leaf = "specialWorkspace", enabled = true, speed = 3, bezier = "easeOutQuint", style = "slidevert" })
 
 hl.config({
   dwindle = {
@@ -105,6 +106,7 @@ hl.config({
   misc = {
     disable_hyprland_logo = true,
     disable_splash_rendering = true,
+    background_color = "rgb(000000)",
     disable_scale_notification = true,
     focus_on_activate = true,
     anr_missed_pings = 3,
