@@ -232,6 +232,10 @@ set_theme_background() {
     ) 9>&- &
     return
   fi
+  # Supersede any pending intro palette before an ordinary still transition.
+  # Older shells can cancel through applyTheme until they restart with the
+  # cancellation-only IPC method.
+  shell_ipc shell cancelThemeIntro || shell_ipc shell applyTheme "$colors_payload" "$shell_payload" || true
   new_background_snapshot=""
   if [[ -n $PREPARED_BACKGROUND_SNAPSHOT && $PREPARED_BACKGROUND == "$new_background" ]]; then
     new_background_snapshot="$PREPARED_BACKGROUND_SNAPSHOT"

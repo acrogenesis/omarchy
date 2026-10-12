@@ -79,3 +79,24 @@ result=$(HOME="$task_tmp/home" UNEXPECTED_RENDER="$task_tmp/rendered" PATH="$tas
 [[ ! -e $task_tmp/rendered ]] || fail "metadata-only resolution invoked image probing, rendering or sampling"
 jq -e '.fill == "fit" and .backdrop == "edge" and .fill_color == "#123456" and .focal_x == 0.2 and .focal_y == 0.8' <<<"$result" >/dev/null || fail "metadata-only resolution lost incoming framing"
 pass "incoming framing is available without waiting for probing, SVG rendering or edge sampling"
+
+run_node_test <<'JS'
+const fs = require('fs'), vm = require('vm'), os = require('os'), cp = require('child_process')
+const qml = fs.readFileSync(path.join(root,'shell/plugins/background/Background.qml'),'utf8')
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(),'omarchy-svg-recovery-'))
+try {
+  const backgrounds = path.join(temporary,'backgrounds')
+  fs.mkdirSync(backgrounds)
+  const svg = path.join(backgrounds,'only.svg')
+  fs.writeFileSync(svg,'<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="red"/></svg>')
+  const link = path.join(temporary,'background')
+  fs.symlinkSync(path.join(temporary,'missing.png'),link)
+  const expression = qml.match(/id: recoverProc\s+command: (\[[^]*?\n    \])/)[1]
+  const args = vm.runInNewContext(expression,{root:{currentBackgroundLink:link,currentThemeBackgrounds:backgrounds}})
+  const recovered = cp.execFileSync(args[0],Array.from(args.slice(1)),{encoding:'utf8'}).trim()
+  assertEqual(recovered,svg,'a dangling background recovers the active themes remaining SVG')
+  const env = {...process.env,HOME:temporary,PATH:path.join(root,'bin')+':'+process.env.PATH}
+  const metadata = JSON.parse(cp.execFileSync(path.join(root,'bin/omarchy-theme-bg-resolve'),['--screen','640x480','--canonical',recovered],{env,encoding:'utf8'}))
+  assert(metadata.path.endsWith('.png') && fs.existsSync(metadata.path),'the recovered SVG reaches Qt through the bounded raster resolver')
+} finally { fs.rmSync(temporary,{recursive:true,force:true}) }
+JS
