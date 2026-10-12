@@ -304,7 +304,7 @@ Item {
     command: [
       "bash", "-c",
       'target=$(readlink -f "$1"); if [[ -e $target ]]; then echo "$target"; else ' +
-      'find "$2" -maxdepth 1 -type f \\( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" -o -iname "*.svg" \\) | sort | head -n 1; fi',
+      'find "$2" -maxdepth 1 -type f ! -name "*@*" \\( -iname "*.jpg" -o -iname "*.jpeg" -o -iname "*.png" -o -iname "*.webp" -o -iname "*.svg" \\) | sort | head -n 1; fi',
       "resolve", root.currentBackgroundLink, root.currentThemeBackgrounds
     ]
     stdout: StdioCollector {
