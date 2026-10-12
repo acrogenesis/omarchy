@@ -24,10 +24,15 @@ spec.loader.exec_module(launcher)
 class Executed(Exception):
     pass
 
-def simulate(engine='podman', uid=1000, version='v0.3.2-omarchy1', rootless=True, socket_owner=1000):
+def simulate(engine='podman', uid=1000, version='v0.3.2-omarchy1', rootless=True, socket_owner=1000, missing_socket=False, repair_fails=False):
     captured = {}
+    socket_probes = 0
     def metadata(path):
+        nonlocal socket_probes
         if str(path).endswith('.sock'):
+            socket_probes += 1
+            if missing_socket and (socket_probes == 1 or repair_fails):
+                raise FileNotFoundError(str(path))
             return SimpleNamespace(st_uid=socket_owner, st_mode=stat.S_IFSOCK | 0o600)
         return SimpleNamespace(st_uid=1000, st_mode=stat.S_IFDIR | 0o700)
     def execute(binary, args, env):
@@ -46,7 +51,7 @@ def simulate(engine='podman', uid=1000, version='v0.3.2-omarchy1', rootless=True
             launcher.main(engine, ['list'])
         except Executed:
             pass
-        except RuntimeError as error:
+        except (RuntimeError, OSError) as error:
             captured['error'] = str(error)
         captured['start_calls'] = start.call_args_list
         captured['info_calls'] = info.call_args_list
@@ -65,6 +70,21 @@ for engine, endpoint, unit in (
     assert result['start_calls'][0].args[0] == ['systemctl', '--user', 'start', unit]
     assert result['info_calls'][0].args == (endpoint,)
 print('ok - ONCE pins each local engine and clears remote Docker overrides')
+
+result = simulate(missing_socket=True)
+assert [call.args[0] for call in result['start_calls']] == [
+    ['systemctl', '--user', 'start', 'podman.socket'],
+    ['systemctl', '--user', 'stop', 'podman.service'],
+    ['systemctl', '--user', 'restart', 'podman.socket'],
+], result
+assert result['env']['DOCKER_HOST'] == 'unix:///run/user/1000/podman/podman.sock', result
+for options in ({'missing_socket': True, 'repair_fails': True},
+                {'engine': 'docker', 'missing_socket': True}):
+    result = simulate(**options)
+    assert 'error' in result and 'env' not in result, result
+result = simulate(socket_owner=0)
+assert len(result['start_calls']) == 1, result
+print('ok - ONCE repairs an unlinked Podman API socket, preserves foreign sockets and propagates failed repairs')
 
 for options in ({'uid': 0}, {'version': 'v0.3.2'}):
     result = simulate(**options)

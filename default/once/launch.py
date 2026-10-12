@@ -56,7 +56,16 @@ def main(engine, args):
     else:
         raise RuntimeError("Unknown engine")
     subprocess.run(["systemctl", "--user", "start", unit], env=env, check=True)
-    endpoint_stat = endpoint.stat()
+    try:
+        endpoint_stat = endpoint.stat()
+    except FileNotFoundError:
+        if engine != "podman":
+            raise
+        # An older Desktop may unlink an active socket. Restart only the API
+        # units; containers keep running independently of these units.
+        subprocess.run(["systemctl", "--user", "stop", "podman.service"], env=env, check=True)
+        subprocess.run(["systemctl", "--user", "restart", "podman.socket"], env=env, check=True)
+        endpoint_stat = endpoint.stat()
     if not stat.S_ISSOCK(endpoint_stat.st_mode) or endpoint_stat.st_uid != uid:
         raise RuntimeError("ONCE requires a socket owned by the current user.")
     info = engine_info(str(endpoint))
