@@ -36,13 +36,9 @@ User templates in `~/.config/omarchy/themed/*.tpl` are processed before the
 built-in templates. If a user template has the same output filename as a
 built-in template, the built-in output is skipped.
 
-After activation, `omarchy-theme-set` fires the `theme-set` hook
-(`~/.config/omarchy/hooks/theme-set*`, theme name in `$1`) and dispatches a
-parallel retint of running apps — terminals, Hyprland, btop, browser, editors,
-and the rest of the `post_theme_commands` list in `bin/omarchy-theme-set`.
-Making a new app follow theme changes means adding its restart/retint command
-to that list. Runs serialize on a `flock`, so scripted theme changes queue
-instead of racing.
+After activation, `omarchy-theme-set` retints what is on screen first: the terminals and the programs inside them (`visible_theme_commands`), plus the Hyprland reload when no background intro is playing (an intro reloads after playback). Those run in parallel and the command waits for them. The rest of the apps — GTK, the browser policy, editors, agents, the keyboard backlight (`other_theme_commands`) — then retint in parallel, followed by the `theme-set` hook (`~/.config/omarchy/hooks/theme-set*`, theme name in `$1`). During an intro they wait for its reveal first.
+
+A switch from the theme picker, the menu or a script does not wait for that second group: the command returns and the group finishes in the background, writing its output to `~/.local/state/omarchy/theme-set.log` and naming any retint that failed in a notification. Run in a terminal, or with `OMARCHY_THEME_WAIT=1`, it waits for everything and reports failures on stderr, so a browser policy update can ask for a sudo password there. A systemd service or timer that sets the theme should set `OMARCHY_THEME_WAIT=1` as well: when a oneshot unit finishes, systemd stops whatever is left in its cgroup, and the background group with it. A failed retint never changes the exit status. Batches from quick successive switches run one at a time, and a batch whose theme was replaced before it got its turn skips the retints (its hook still runs), so an older theme's slow write can't land after a newer one. Making a new app follow theme changes means adding its restart/retint command to one of the two lists in `bin/omarchy-theme-set`. Runs serialize on a `flock`, so scripted theme changes queue instead of racing.
 
 Last, it starts `omarchy-theme-set-herdr-machines` detached. That command sets the same theme on every enabled `herdr machine list` target that runs Omarchy, over SSH inside the remote's live Hyprland session, and logs each machine's result to `~/.local/state/omarchy/theme-set-herdr-machines.log`. Sync is off by default. The `herdr-theme-sync` toggle turns it on, and a machine only sends and accepts themes while it is on. A mirrored change carries `OMARCHY_THEME_SYNC_FROM`, so the receiving machine never sends it on.
 

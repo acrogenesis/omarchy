@@ -153,7 +153,8 @@ QtObject {
     return {
       left:   normalizeLayoutSection(src.left),
       center: normalizeLayoutSection(src.center),
-      right:  normalizeLayoutSection(src.right)
+      right:  normalizeLayoutSection(src.right),
+      tray: normalizeLayoutSection(src.tray)
     }
   }
 }

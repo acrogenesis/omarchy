@@ -107,36 +107,16 @@ if missing or bad:
 PY
 pass "default bar widget ids resolve to manifests and entry points"
 
-ROOT="$ROOT" python3 <<'PY'
+# The PKGBUILDs live in the omarchy-pkgs checkout, wherever this machine keeps it.
+if find_omarchy_pkgs; then
+  ROOT="$ROOT" OMARCHY_PKGS_ROOT="$OMARCHY_PKGS_ROOT" python3 <<'PY'
 import os
 import re
 import sys
 from pathlib import Path
 
 root = Path(os.environ["ROOT"])
-home = Path.home()
-pkgs_candidates = [
-  root.parent / "omarchy-pkgs/pkgbuilds",
-  root.parent / "omarchy/omarchy-pkgs/pkgbuilds",
-  root.parent.parent / "omarchy-pkgs/pkgbuilds",
-  root.parent / "omacom/omarchy-pkgs/pkgbuilds",
-  root.parent.parent / "omacom/omarchy-pkgs/pkgbuilds",
-  home / "Work/omacom/omarchy-pkgs/pkgbuilds",
-]
-# Checkouts differ per machine, so allow an explicit pointer at the sibling repo.
-# Accepts either the omarchy-pkgs checkout or its pkgbuilds/ directory.
-override = os.environ.get("OMARCHY_PKGS_PATH")
-if override:
-  pkgs_candidates = [Path(override) / "pkgbuilds", Path(override)] + pkgs_candidates
-pkgs_root = next((path for path in pkgs_candidates if path.exists()), None)
-if pkgs_root is None:
-  print("not ok - omarchy-pkgs checkout found for PKGBUILD coverage", file=sys.stderr)
-  print(
-    "looked in:\n  " + "\n  ".join(str(path) for path in pkgs_candidates) +
-    "\nset OMARCHY_PKGS_PATH to the omarchy-pkgs checkout",
-    file=sys.stderr,
-  )
-  sys.exit(1)
+pkgs_root = Path(os.environ["OMARCHY_PKGS_ROOT"])
 settings_pkgbuild_path = pkgs_root / "omarchy-settings/PKGBUILD"
 omarchy_pkgbuild_path = pkgs_root / "omarchy/PKGBUILD"
 if not settings_pkgbuild_path.exists():
@@ -228,7 +208,10 @@ if errors:
   print("\n".join(errors), file=sys.stderr)
   sys.exit(1)
 PY
-pass "package-owned defaults live outside config"
+  pass "package-owned defaults live outside config"
+else
+  skip "package-owned defaults live outside config: needs the omarchy-pkgs checkout; set OMARCHY_PKGS_PATH to it"
+fi
 
 grep -F 'dofile((os.getenv("OMARCHY_PATH") or "/usr/share/omarchy") .. "/default/hypr/bootstrap.lua")' "$ROOT/config/hypr/hyprland.lua" >/dev/null
 grep -F 'require("default.hypr.omarchy")' "$ROOT/config/hypr/hyprland.lua" >/dev/null

@@ -168,5 +168,5 @@ if ! $NO_REBUILD; then
 fi
 
 if ! $FORCE && ! $NO_REBUILD && gum confirm "Reboot to enable hibernation?"; then
-  omarchy-system-reboot
+  omarchy-system reboot
 fi

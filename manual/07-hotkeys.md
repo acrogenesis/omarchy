@@ -7,7 +7,7 @@ You can see all the main keyboard bindings with `Super + K` (Tmux bindings with 
 | Hotkey                  | Function              |
 | ----------------------- | --------------------- |
 | `Super + Space`           | Omarchy menu (apps and everything else)    |
-| `Super + Alt + Space` | Apps menu |
+| `Super + Alt + Space` | App grid |
 | `Super + Escape` | System menu (suspend, restart, etc)  |
 | `Super + Ctrl + L` | Lock computer |
 | `Super + W` or `Super + Q` | Close window             |

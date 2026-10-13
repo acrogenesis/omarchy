@@ -17,7 +17,7 @@ Nearly every widget does something on left, right, and middle click, and several
 | Widget | Left | Right | Middle / scroll |
 | --- | --- | --- | --- |
 | Menu | Omarchy menu | New terminal | — |
-| Workspaces | Focus that workspace | — | — |
+| Workspaces | Focus that workspace | — | Scroll: next/previous workspace |
 | Clock | Calendar popup | Cycle the label format | Middle: timezone picker |
 | Weather | Forecast popup | Full weather as a notification | Middle: refresh |
 | Audio | Audio panel | Mute | Middle: panel · scroll: volume |
@@ -83,6 +83,8 @@ The bar configures itself. You don't have to open a config file to move things.
 
 Grab an empty patch of the bar around the center and drag it toward another screen edge, and the bar moves there — left, right, top, or bottom all work, and every widget adapts (vertical bars fall back to compact icon-only forms). A click-and-hold starts the same drag. Double-left-click that same empty space to cycle the bar background from clear to glassy to opaque. And drag any widget to reorder it or throw it into another section.
 
+A widget you want around but not always in view can go in the tray's drawer: drag it onto the tray, and the drawer opens to take it. It sits there after the app icons, shows up whenever the drawer does, and keeps its drawer open while its panel is up. Drag it back out onto the bar to put it back.
+
 If you'd rather pick from a menu, **Trigger → Appearance → Menu Bar** has the position, and **Bar Background** picks how the bar is drawn: **Opaque Bar**, **Glassy Bar** (see-through, with what's behind it blurred), or **Clear Bar**.
 
 The same things have commands, which is what you want for a [dotfiles](31-dotfiles.md) setup:
@@ -91,6 +93,7 @@ The same things have commands, which is what you want for a [dotfiles](31-dotfil
 omarchy bar position bottom
 omarchy bar background glassy  # opaque, glassy, none, or cycle
 omarchy bar move omarchy.clock --section center --index 0
+omarchy bar move omarchy.bluetooth --section tray  # into the tray's drawer
 omarchy bar set omarchy.clock format "HH:mm"
 omarchy bar defaults          # back to the shipped layout
 ```

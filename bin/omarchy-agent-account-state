@@ -669,7 +669,7 @@ def autoswitch(provider: str, now: dt.datetime | None = None) -> bool:
       registry["active"] = target["id"]
       if not target.get("primary"):
         link_shared(provider, account_home(provider, target))
-      notify(headline, f"New {name} sessions now use {target['label']} ({round(decision['toPeak'])}%). Running sessions stay on {source['label']}.")
+      notify(headline, f"New {name} sessions now use {target['label']} ({round(decision['toPeak'])}%).\nRunning sessions stay on {source['label']}.")
       return True
     notify(
       headline,

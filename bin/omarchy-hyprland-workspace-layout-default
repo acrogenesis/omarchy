@@ -4,6 +4,17 @@
 # omarchy:args=[dwindle|scrolling|floating]
 # omarchy:examples=omarchy hyprland workspace layout default | omarchy hyprland workspace layout default scrolling
 
+# Layout changes replace one notification instead of stacking a new one for
+# each press, so cycling through the layouts leaves a single, current one.
+notify_layout() {
+  local state="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/workspace-layout-notification"
+  local last id
+  [[ -r $state ]] && read -r last <"$state"
+  if id=$(omarchy-notification-send -p -r "${last:-0}" -g 󱂬 "$1") && [[ $id =~ ^[0-9]+$ ]]; then
+    mkdir -p "$(dirname "$state")" && printf '%s\n' "$id" >"$state"
+  fi
+}
+
 MODES_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/workspace-layouts"
 DEFAULT_FILE="$MODES_DIR/default.lua"
 
@@ -25,11 +36,39 @@ case $1 in
     ;;
 esac
 
+mkdir -p "$MODES_DIR"
+
+# A workspace with windows on it keeps the layout it has, so changing the
+# default never rearranges work in progress: it is saved as that workspace's
+# own layout. Every other workspace, empty or not opened yet, takes the new
+# default, including one given a layout of its own with Super + L.
+# Without a list of workspaces nothing can tell busy from empty, so nothing is
+# changed rather than every saved layout taken for an empty workspace's.
+if ! workspaces=$(hyprctl workspaces -j) ||
+  ! busy=$(jq -r 'if type == "array" then .[] | select(.id >= 1 and (.windows // 0) > 0) | .id else error("not a workspace list") end' <<<"$workspaces"); then
+  echo "omarchy-hyprland-workspace-layout-default: could not read the workspaces, so nothing was changed" >&2
+  exit 1
+fi
+
+while read -r workspace; do
+  [[ -n $workspace && ! -f $MODES_DIR/$workspace.lua ]] || continue
+  current=$(omarchy-hyprland-workspace-layout-current "$workspace")
+  if [[ $current != "$1" ]]; then
+    printf 'o.workspace_mode({ workspace = "%s", mode = "%s" })\n' "$workspace" "$current" >"$MODES_DIR/$workspace.lua"
+  fi
+done <<<"$busy"
+
+for mode_file in "$MODES_DIR"/[0-9]*.lua; do
+  [[ -f $mode_file ]] || continue
+  workspace=$(basename "$mode_file" .lua)
+  grep -qx -- "$workspace" <<<"$busy" || rm -f "$mode_file"
+done
+
 # Saved even for dwindle, so the choice also wins over a layout set in the
 # user's own looknfeel. Workspaces given a layout with Super + L keep theirs.
-mkdir -p "$MODES_DIR"
 printf 'o.workspace_mode({ default = "%s" })\n' "$1" >"$DEFAULT_FILE"
 
 hyprctl reload >/dev/null
 omarchy-shell -q omarchy.workspaces refresh
-omarchy-notification-send -g 󱂬 "New workspaces use the $LABEL layout"
+omarchy-shell -q omarchy.dock refresh
+notify_layout "Default layout set to $LABEL"
