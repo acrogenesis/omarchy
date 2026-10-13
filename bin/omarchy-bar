@@ -31,7 +31,8 @@ Usage: omarchy bar <command> [args...]
   get <id> <key>                       Print a per-widget option
 
 Placement:
-  --section <left|center|right>        Target section
+  --section <left|center|tray|right>    Target section; tray is the tray's
+                                       drawer
   --index <n>                          Target index
   --before <id>                        Insert before a widget
   --after <id>                         Insert after a widget
@@ -63,7 +64,7 @@ bar_option_exists() {
 }
 
 validate_section() {
-  [[ $1 =~ ^(left|center|right)$ ]] || fail "section must be left, center, or right"
+  [[ $1 =~ ^(left|center|tray|right)$ ]] || fail "section must be left, center, tray, or right"
 }
 
 validate_index() {
@@ -294,7 +295,7 @@ bar_widget_default_section() {
   }
   jq -r --arg id "$1" '
     map(select(.id == $id))[0].barWidget.defaultSection // "center"
-    | if IN("left", "center", "right") then . else "center" end
+    | if IN("left", "center", "tray", "right") then . else "center" end
   ' <<<"$catalog"
 }
 

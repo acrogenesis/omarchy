@@ -486,12 +486,11 @@ Item {
                     anchors.bottomMargin: Style.space(8)
                     spacing: Style.space(10)
 
-                    Image {
+                    SizedImage {
                       visible: parent.parent.previewImage.length > 0
                       width: visible ? parent.height : 0
                       height: parent.height
-                      source: parent.parent.previewImage
-                      fillMode: Image.PreserveAspectFit
+                      url: parent.parent.previewImage
                       asynchronous: true
                       smooth: true
                     }
@@ -560,15 +559,14 @@ Item {
                 verticalAlignment: Text.AlignTop
               }
 
-              Image {
+              SizedImage {
                 visible: parent.activeRow && parent.activeRow.previewImage
                 anchors.fill: parent
                 anchors.leftMargin: root.contentMargin
                 anchors.rightMargin: 0
                 anchors.topMargin: 0
                 anchors.bottomMargin: 0
-                source: parent.activeRow ? parent.activeRow.previewImage : ""
-                fillMode: Image.PreserveAspectFit
+                url: parent.activeRow ? parent.activeRow.previewImage : ""
                 verticalAlignment: Image.AlignTop
                 asynchronous: true
                 smooth: true

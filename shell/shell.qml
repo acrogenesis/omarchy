@@ -1103,7 +1103,7 @@ ShellRoot {
     if (!Util.isPlainObject(copy.bar.layout)) copy.bar.layout = { left: [], center: [], right: [] }
     if (!Array.isArray(copy.plugins)) copy.plugins = []
 
-    var sections = ["left", "center", "right"]
+    var sections = ["left", "center", "right", "tray"]
     var foundInLayout = false
     var dirty = false
     for (var s = 0; s < sections.length; s++) {

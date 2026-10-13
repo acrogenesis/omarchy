@@ -95,7 +95,10 @@ export PATH="$mock_bin:$ROOT/bin:$PATH"
 export OMARCHY_PATH="$ROOT"
 export OMARCHY_TEST_NOTIFICATIONS="$notifications"
 export OMARCHY_TEST_BROWSER_LOG="$test_tmp/browser"
+# A session started by an account launch pins its home through these, and
+# a run from inside one (an agent working on Omarchy) must not inherit it.
 unset CLAUDE_CONFIG_DIR CODEX_HOME GROK_HOME BROWSER
+unset OMARCHY_AGENT_CLAUDE_HOME OMARCHY_AGENT_CODEX_HOME OMARCHY_AGENT_GROK_HOME
 
 accounts="$XDG_STATE_HOME/omarchy/agents/accounts"
 
@@ -209,7 +212,7 @@ pass "Grok accounts are added and used like the others"
 
 omarchy-agent-account-use claude work >/dev/null
 [[ $(omarchy-agent-account-home claude) == "$work" ]] || fail "the active account's home is what launches use"
-grep -q "New Claude sessions now use Work (Max 5x)" "$notifications" || fail "switching says where new sessions go"
+grep -q "New Claude sessions now use Work Running sessions stay on" "$notifications" || fail "switching says where new sessions go"
 pass "use makes an account active and says so"
 
 [[ $(omarchy-agent-account-exec claude --version) == "claude home=$work args=--version" ]] || fail "claude at a prompt starts as the active account"

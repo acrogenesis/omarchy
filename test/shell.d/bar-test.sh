@@ -340,6 +340,22 @@ assertEqual(
   null,
   'bar treats added entries as structural'
 )
+assertDeepEqual(
+  bar.inlineSettingsDelta(
+    { left: [], center: [], right: [], tray: [{ id: 'omarchy.clock', format: 'HH:mm' }] },
+    { left: [], center: [], right: [], tray: [{ id: 'omarchy.clock', format: 'h:mm' }] }
+  ),
+  [{ region: 'tray', index: 0, entry: { id: 'omarchy.clock', format: 'h:mm' } }],
+  'bar patches the settings of a widget in the tray section in place'
+)
+assertEqual(
+  bar.inlineSettingsDelta(
+    { left: [], center: [], right: [{ id: 'omarchy.clock' }], tray: [] },
+    { left: [], center: [], right: [], tray: [{ id: 'omarchy.clock' }] }
+  ),
+  null,
+  'bar rebuilds when a widget moves into the tray section'
+)
 assertEqual(
   bar.inlineSettingsDelta(
     { left: [{ id: 'local.status', exec: 'date' }], center: [], right: [] },

@@ -25,6 +25,7 @@ for platform in aarch64-apple aarch64 x86; do
     fail "$platform: the detected platform selects its own list"
   printf '%s\n' "$defaults" >"$work/$platform.packages"
 
+  grep -Fxq superwhisper-bin "$work/$platform.packages" || fail "$platform: Superwhisper is a default package"
   [[ -z $(sort "$work/$platform.packages" | uniq -d) ]] || fail "$platform: each package is listed once"
   # aarch64 platforms leave out the base packages only x86_64 builds.
   expected_base=$base
@@ -93,7 +94,6 @@ for platform in aarch64-apple aarch64 x86; do
     fi
   done <"$ROOT/install/omarchy-x86_64-only.packages"
 done
-grep -Fxq superwhisper-bin "$ROOT/install/omarchy-x86_64-only.packages" || fail "superwhisper-bin is listed as x86_64-only"
 pass "base packages only x86_64 builds stay out of every aarch64 set"
 
 ! omarchy-pkg-defaults riscv 2>/dev/null || fail "an unknown platform is refused"

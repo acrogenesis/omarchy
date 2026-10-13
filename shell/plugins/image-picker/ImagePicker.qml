@@ -68,6 +68,13 @@ Item {
 
   onOpenedChanged: if (!opened) { layoutSettled = false; renderedFrames = 0; deleteConfirmOpen = false; pendingDeleteTheme = ""; deleteSelectionPath = ""; awaitingDeleteRefresh = false }
 
+  PreviewHold {
+    id: previewHold
+    active: root.opened
+    // The selected preview decodes first again on the next open.
+    onHeldChanged: if (!held) root.neighborImagesEnabled = false
+  }
+
   function scriptPath(name) {
     return omarchyPath + "/shell/plugins/image-picker/" + name
   }
@@ -591,6 +598,7 @@ Item {
     // leaving the picker invisible behind its own open overlay.
     if (opened || requestActive) return
 
+    previewHold.warm()
     requestSerial += 1
     imageRows = nextImageRows
     selectedImage = nextSelectedImage
@@ -796,7 +804,7 @@ Item {
                   // every preview visited in a large collection.
                   // Queue the selected preview first; neighbors must not delay
                   // the image the user opened the picker to see.
-                  source: (item.selected || root.neighborImagesEnabled) && item.thumbnailPath ? Util.fileUrl(item.thumbnailPath) : ""
+                  source: previewHold.held && (item.selected || root.neighborImagesEnabled) && item.thumbnailPath ? Util.fileUrl(item.thumbnailPath) : ""
                   sourceSize.width: Math.ceil(root.expandedWidth * Screen.devicePixelRatio)
                   sourceSize.height: Math.ceil(root.expandedHeight * Screen.devicePixelRatio)
                   fillMode: Image.PreserveAspectCrop

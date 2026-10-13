@@ -116,6 +116,7 @@ Exceptions are allowed for migration and package-helper scripts where the helper
 # Background Work
 
 - Long-running code (the shell, daemons, watchers) reacts to events instead of polling with a timer. Polling is the last resort, for state with no change signal; [`agents/skills/shell-dev.md`](agents/skills/shell-dev.md) lists the event sources and the push-refresh pattern.
+- `test/shell.d/shell-idle-spawn-test.sh` fails when an idle shell starts any process, and other tests hold the router, menu guards and theme switch to budgets; see "Performance guards" in [`docs/testing.md`](docs/testing.md).
 
 # Menu
 
