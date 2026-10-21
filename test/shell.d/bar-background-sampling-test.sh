@@ -79,6 +79,19 @@ const b = context.pluginBarApiFor('example.widget', 'example.widget', false, wid
 assert(a !== b, 'third-party widgets receive distinct presentation facades per screen')
 assertEqual(a.pluginId, b.pluginId, 'per-screen presentation retains the original plugin authority scope')
 assertEqual(b.sampleScreen.name, 'wide', 'wide facade binds to the correct screen')
+// Widgets now live in a per-bar pool. Exercise its real host injection so a
+// layout refactor cannot silently reconnect both screens to one facade.
+const widgetHost = source.slice(source.indexOf('component WidgetHost'), source.indexOf('component ModuleSlot'))
+const injectStart = widgetHost.indexOf('    function injectProps(')
+assert(injectStart >= 0, 'pooled widget host exposes property injection')
+vm.runInContext(widgetHost.slice(injectStart, widgetHost.indexOf('\n    }', injectStart) + 6), context)
+Object.assign(context, {firstParty: false, pluginApiId: 'example.widget', moduleName: 'example.widget', registered: false, fixedEdge: 'end', moduleSettings: {value: 1}})
+for (const screen of [square, wide]) {
+  context.activeItem = {screen, bar: null, fixedEdge: null, moduleName: '', settings: null}
+  context.injectProps()
+  assertEqual(context.activeItem.bar.sampleScreen.name, screen.name, 'pooled widget inherits its own display facade')
+  assertEqual(context.activeItem.fixedEdge, 'end', 'screen binding preserves upstream widget anchoring')
+}
 context.prunePluginBarApis()
 assertDeepEqual(Array.from(context.released), ['example.widget', 'example.widget'], 'facade pruning releases by plugin ID rather than presentation cache key')
 JS
