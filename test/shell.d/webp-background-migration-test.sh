@@ -10,7 +10,7 @@ home="$test_dir/home"
 # Exercise the historical conversion independently of later theme artwork.
 omarchy_path="$test_dir/omarchy"
 mkdir -p "$omarchy_path/themes/tokyo-night/backgrounds" "$omarchy_path/themes/catppuccin/backgrounds"
-touch "$omarchy_path/themes/tokyo-night/backgrounds/2-swirl-buck.webp" "$omarchy_path/themes/catppuccin/backgrounds/omarchy.webp"
+touch "$omarchy_path/themes/tokyo-night/backgrounds/3-swirl-buck.webp" "$omarchy_path/themes/catppuccin/backgrounds/omarchy.webp"
 migration="$ROOT/migrations/1791470456.sh"
 mkdir -p "$test_dir/bin"
 call_log="$test_dir/shell-calls"
@@ -39,18 +39,18 @@ remembered_png="$home/.local/state/omarchy/theme-backgrounds/catppuccin"
 reset_home
 touch "$backgrounds/current.webp"
 ln -s "$backgrounds/current.jpg" "$current"
-printf '%s\n' "$backgrounds/2-swirl-buck.jpg" >"$remembered"
+printf '%s\n' "$backgrounds/3-swirl-buck.jpg" >"$remembered"
 printf '%s\n' "$backgrounds/omarchy.png" >"$remembered_png"
 run_migration
 [[ $(readlink "$current") == "$backgrounds/current.webp" ]] || fail "the current background moves from the removed JPEG to its WebP replacement"
 [[ $(<"$call_log") == "-q background set $backgrounds/current.webp" ]] || fail "the running shell is told about the repaired current background"
-[[ $(<"$remembered") == "$backgrounds/2-swirl-buck.webp" ]] || fail "an inactive theme's remembered JPEG moves to its bundled WebP replacement"
+[[ $(<"$remembered") == "$backgrounds/3-swirl-buck.webp" ]] || fail "an inactive theme's remembered JPEG moves to its bundled WebP replacement"
 [[ $(<"$remembered_png") == "$backgrounds/omarchy.webp" ]] || fail "an inactive theme's remembered PNG moves to its bundled WebP replacement"
 pass "converted bundled backgrounds keep their current and remembered selections"
 
 run_migration
 [[ $(readlink "$current") == "$backgrounds/current.webp" ]] || fail "the repair can be rerun"
-[[ $(<"$remembered") == "$backgrounds/2-swirl-buck.webp" ]] || fail "the remembered JPEG repair can be rerun"
+[[ $(<"$remembered") == "$backgrounds/3-swirl-buck.webp" ]] || fail "the remembered JPEG repair can be rerun"
 [[ $(<"$remembered_png") == "$backgrounds/omarchy.webp" ]] || fail "the remembered PNG repair can be rerun"
 pass "the background repair is idempotent"
 
@@ -81,17 +81,17 @@ run_migration
 pass "remembered selections are checked against their named theme"
 
 reset_home
-touch "$backgrounds/2-swirl-buck.jpg"
-printf '%s\n' "$backgrounds/2-swirl-buck.jpg" >"$remembered"
+touch "$backgrounds/3-swirl-buck.jpg"
+printf '%s\n' "$backgrounds/3-swirl-buck.jpg" >"$remembered"
 run_migration
-[[ $(<"$remembered") == "$backgrounds/2-swirl-buck.webp" ]] || fail "an active-theme filename collision does not hide an inactive theme's WebP replacement"
+[[ $(<"$remembered") == "$backgrounds/3-swirl-buck.webp" ]] || fail "an active-theme filename collision does not hide an inactive theme's WebP replacement"
 pass "active theme files do not control inactive remembered repairs"
 
 reset_home
 printf 'tokyo-night\n' >"$home/.local/state/omarchy/current/theme.name"
-touch "$backgrounds/2-swirl-buck.jpg"
-ln -s "$backgrounds/2-swirl-buck.jpg" "$current"
+touch "$backgrounds/3-swirl-buck.jpg"
+ln -s "$backgrounds/3-swirl-buck.jpg" "$current"
 run_migration
-[[ -f $backgrounds/2-swirl-buck.webp ]] || fail "the active staged theme receives its bundled WebP replacement"
-[[ $(readlink "$current") == "$backgrounds/2-swirl-buck.webp" ]] || fail "a selected staged JPEG moves before a later refresh can strand it"
+[[ -f $backgrounds/3-swirl-buck.webp ]] || fail "the active staged theme receives its bundled WebP replacement"
+[[ $(readlink "$current") == "$backgrounds/3-swirl-buck.webp" ]] || fail "a selected staged JPEG moves before a later refresh can strand it"
 pass "the active staged theme is repaired before its old bundled image disappears"
