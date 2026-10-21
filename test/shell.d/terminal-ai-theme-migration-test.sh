@@ -4,6 +4,9 @@ set -euo pipefail
 
 source "$(dirname "$0")/base-test.sh"
 
+# Keep inherited application homes from escaping the isolated fixture HOME.
+unset CODEX_HOME CODEX_CONFIG_PATH GROK_HOME GROK_CONFIG_DIR GROK_CONFIG_PATH CLAUDE_CONFIG_DIR
+
 migration="$ROOT/migrations/1786637624.sh"
 test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
