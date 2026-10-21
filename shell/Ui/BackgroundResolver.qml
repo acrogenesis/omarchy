@@ -53,6 +53,13 @@ Item {
   onRefreshTokenChanged: resetChoice()
   Component.onCompleted: requestResolve()
 
+  // A consumer can report a Qt decode failure even after ImageMagick probed
+  // the variant successfully. Retry once through the canonical resolver.
+  function retryCanonical(failedPath) {
+    if (!ready || canonicalOnly || !failedPath || failedPath !== resolvedPath) return
+    canonicalOnly = true
+  }
+
   function resetChoice() {
     if (canonicalOnly) canonicalOnly = false
     else requestResolve()

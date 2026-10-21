@@ -686,6 +686,12 @@ Item {
       BackgroundMedia {
         anchors.fill: parent
         path: preloadResolver.ready ? preloadResolver.resolvedPath : ""
+        onFailedChanged: {
+          if (failed) {
+            const failedPath = path
+            Qt.callLater(function() { preloadResolver.retryCanonical(failedPath) })
+          }
+        }
         version: root.backgroundVersion
         fill: preloadResolver.fill
         backdrop: preloadResolver.backdrop

@@ -386,3 +386,23 @@ assert(
   'background reveal takes 840ms'
 )
 JS
+
+run_node_test <<'JS'
+const fs = require('fs')
+const vm = require('vm')
+const resolver = fs.readFileSync(path.join(root, 'shell/Ui/BackgroundResolver.qml'), 'utf8')
+const body = resolver.match(/  function retryCanonical\(failedPath\) \{[^]*?\n  }/)[0]
+const context = {ready: true, canonicalOnly: false, resolvedPath: '/variant.png'}
+vm.createContext(context)
+vm.runInContext(body, context)
+context.retryCanonical('/obsolete.png')
+assertEqual(context.canonicalOnly, false, 'stale image failures cannot change the current lock resolution')
+context.retryCanonical('/variant.png')
+assertEqual(context.canonicalOnly, true, 'a failed current variant requests the canonical wallpaper')
+context.canonicalOnly = false; context.ready = false
+context.retryCanonical('/variant.png')
+assertEqual(context.canonicalOnly, false, 'in-flight resolution does not retry an obsolete decode')
+for (const [file, binding] of [['shell/plugins/lock/Service.qml', 'preloadResolver.retryCanonical(failedPath)'], ['shell/plugins/lock/LockView.qml', 'root.resolution.retryCanonical(failedPath)']]) {
+  assert(fs.readFileSync(path.join(root, file), 'utf8').includes('Qt.callLater(function() { ' + binding), file + ' reports decode failure to the owning resolver')
+}
+JS
