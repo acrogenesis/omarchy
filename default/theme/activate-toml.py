@@ -112,14 +112,14 @@ def equivalent(left, right):
     return left == right
 
 
-def activate(path, table, theme):
+def activate(path, table, theme, setting_key="theme"):
     source = path.read_text() if path.exists() else ""
     document = tomllib.loads(source)
     expected = copy.deepcopy(document)
     section = expected.setdefault(table, {})
     if not isinstance(section, dict):
         raise ValueError(f"{table} must be a TOML table")
-    section["theme"] = theme
+    section[setting_key] = theme
     if equivalent(document, expected):
         return
     context = ()
@@ -134,8 +134,8 @@ def activate(path, table, theme):
                 insertion = end
         elif parsed:
             keys = assignment_path(statement)
-            if context + keys == (table, "theme"):
-                prefix = "theme" if context else f"{table}.theme"
+            if context + keys == (table, setting_key):
+                prefix = setting_key if context else f"{table}.{setting_key}"
                 replacement = (start, end, f"{prefix} = {inline(theme)}\n")
             elif not context and keys == (table,) and isinstance(parsed[table], dict):
                 # An inline table cannot be extended by a dotted assignment.
@@ -144,7 +144,7 @@ def activate(path, table, theme):
         start, end, value = replacement
         candidate = source[:start] + value + source[end:]
     else:
-        key = "theme" if insertion else f"{table}.theme"
+        key = setting_key if insertion else f"{table}.{setting_key}"
         separator = "" if insertion == 0 or source[:insertion].endswith("\n") else "\n"
         candidate = source[:insertion] + separator + f"{key} = {inline(theme)}\n" + source[insertion:]
     if not equivalent(tomllib.loads(candidate), expected):
@@ -156,6 +156,6 @@ def activate(path, table, theme):
 
 if __name__ == "__main__":
     try:
-        activate(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
+        activate(Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "theme")
     except (OSError, ValueError) as error:
         sys.exit(f"Theme activation failed; original configuration preserved: {error}")

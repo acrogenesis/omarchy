@@ -16,6 +16,7 @@ cat >"$test_dir/bin/herdr" <<'STUB'
 printf '%s\n' "$*" >>"$HERDR_CALLS"
 
 if [[ $* == "config check" ]]; then
+  (( ${HERDR_CHECK_STATUS:-0} == 0 )) || exit 1
   grep -q 'invalid = ' "$HERDR_CONFIG_PATH" && exit 1
 fi
 
@@ -51,7 +52,7 @@ reset_home() {
 }
 
 run_migration() {
-  HOME="$home" XDG_CONFIG_HOME="${TEST_XDG_CONFIG_HOME:-}" PATH="$test_dir/bin:$PATH" \
+  HOME="$home" OMARCHY_PATH="$ROOT" XDG_CONFIG_HOME="${TEST_XDG_CONFIG_HOME:-}" PATH="$test_dir/bin:$PATH" \
     bash -euo pipefail "$migration" >/dev/null
 }
 
@@ -126,10 +127,13 @@ accent = "cyan"
 EOF
 
 run_migration
-tail -n 2 "$config_file" | grep -Fxq '[theme]' ||
-  fail "Herdr migration adds a missing theme section" "$(cat "$config_file")"
-tail -n 1 "$config_file" | grep -Fxq 'name = "terminal"' ||
-  fail "Herdr migration adds the terminal theme to a new section"
+python3 - "$config_file" <<'PYTOML'
+import sys, tomllib
+with open(sys.argv[1], "rb") as file:
+    config = tomllib.load(file)
+assert config["theme"]["name"] == "terminal"
+assert config["ui"]["accent"] == "cyan"
+PYTOML
 pass "Herdr migration adds a missing theme section"
 
 reset_home
@@ -190,7 +194,7 @@ name = "dracula"
 EOF
 cp "$config_file" "$test_dir/invalid-config"
 
-run_migration
+if run_migration; then fail "invalid Herdr config must leave the migration pending"; fi
 cmp -s "$test_dir/invalid-config" "$config_file" || fail "failed validation leaves the config untouched"
 [[ ! -e $config_file.bak.1234567890 ]] || fail "failed validation creates no misleading backup"
 [[ ! -s $HERDR_RESTARTS ]] || fail "failed validation does not reload Herdr"
@@ -206,3 +210,24 @@ HERDR_RESTART_STATUS=1 run_migration
 grep -Fxq 'name = "terminal"' "$config_file" || fail "reload failure keeps the valid migration"
 [[ -f $config_file.bak.1234567890 ]] || fail "reload failure keeps the migration backup"
 pass "Herdr migration survives a transient live reload failure"
+
+for header in '["theme"]' "['theme']" '["th\u0065me"]'; do
+  reset_home
+  printf '%s\n"name" = "nord"\nauto_switch = false\n' "$header" >"$config_file"
+  run_migration
+  python3 - "$config_file" <<'PYTOML'
+import sys, tomllib
+with open(sys.argv[1], "rb") as file:
+    config = tomllib.load(file)
+assert config["theme"] == {"name": "terminal", "auto_switch": False}
+PYTOML
+done
+pass "Herdr migration accepts equivalent quoted and escaped table headers"
+
+reset_home
+printf '["theme"]\nname = "nord"\n' >"$config_file"
+cp "$config_file" "$test_dir/rejected-original"
+if HERDR_CHECK_STATUS=1 run_migration; then fail "Herdr rejection must leave the migration pending"; fi
+cmp -s "$config_file" "$test_dir/rejected-original" || fail "Herdr rejection changed the original"
+[[ ! -s $HERDR_RESTARTS ]] || fail "Herdr rejection restarted the server"
+pass "Herdr validation failure is retryable and preserves the original"

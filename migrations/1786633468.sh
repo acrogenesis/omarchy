@@ -10,52 +10,13 @@ config_file="${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config
 
 tmp=$(mktemp)
 
-awk '
-  function section(line) {
-    return line ~ /^[[:space:]]*\[[^][]+\][[:space:]]*(#.*)?$/
-  }
-
-  function theme_section(line) {
-    return line ~ /^[[:space:]]*\[theme\][[:space:]]*(#.*)?$/
-  }
-
-  function add_name_if_missing() {
-    if (in_theme && !wrote_name) {
-      print "name = \"terminal\""
-      wrote_name = 1
-    }
-  }
-
-  section($0) {
-    add_name_if_missing()
-    in_theme = theme_section($0)
-    if (in_theme) {
-      saw_theme = 1
-      wrote_name = 0
-    }
-    print
-    next
-  }
-
-  in_theme && /^[[:space:]]*name[[:space:]]*=/ {
-    if (!wrote_name) {
-      print "name = \"terminal\""
-      wrote_name = 1
-    }
-    next
-  }
-
-  { print }
-
-  END {
-    add_name_if_missing()
-    if (!saw_theme) {
-      if (NR) print ""
-      print "[theme]"
-      print "name = \"terminal\""
-    }
-  }
-' "$config_file" >"$tmp"
+trap 'rm -f "$tmp"' EXIT
+cp "$config_file" "$tmp"
+# Reuse the TOML-aware activation editor for equivalent quoted/dotted headers.
+if ! python3 "$OMARCHY_PATH/default/theme/activate-toml.py" "$tmp" theme terminal name; then
+  echo "Could not update $config_file; migration remains pending." >&2
+  exit 1
+fi
 
 if cmp -s "$tmp" "$config_file"; then
   rm -f "$tmp"
@@ -67,7 +28,7 @@ fi
 if ! HERDR_CONFIG_PATH="$tmp" herdr config check >/dev/null; then
   echo "Could not update $config_file; the generated Herdr config did not validate." >&2
   rm -f "$tmp"
-  exit 0
+  exit 1
 fi
 
 backup="$config_file.bak.$(date +%s)"
