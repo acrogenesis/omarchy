@@ -118,6 +118,12 @@ Item {
       objectName: "lockWallpaper"
       anchors.fill: parent
       path: root.loadBackground && root.resolution.ready ? root.resolution.resolvedPath : ""
+      onFailedChanged: {
+        if (failed) {
+          const failedPath = path
+          Qt.callLater(function() { root.resolution.retryCanonical(failedPath) })
+        }
+      }
       version: root.backgroundVersion
       fill: root.resolution.fill
       backdrop: root.resolution.backdrop
