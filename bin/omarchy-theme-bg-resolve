@@ -309,9 +309,11 @@ bound_svg_target() {
 # in cost: a backgrounds directory holds a handful of files.
 sibling_digest() {
   local dir="$1" self="$2" file out=""
+  # Rendering hardlinks siblings temporarily, so ctime/link count are not
+  # content identities. Nanosecond mtime, size and inode remain stable.
   for file in "$dir"/*; do
     [[ -f $file && $file != "$self" ]] || continue
-    out+="${file##*/}:$(stat -c '%y:%z:%s:%i' "$file" 2>/dev/null):"
+    out+="${file##*/}:$(stat -c '%y:%s:%i' "$file" 2>/dev/null):"
   done
   printf '%s' "$out" | md5sum | cut -d ' ' -f 1
 }

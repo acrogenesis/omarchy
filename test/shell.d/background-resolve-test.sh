@@ -457,6 +457,19 @@ second=$(resolve --screen 20x20 --canonical "$cache_svg" | jq -r .path)
 [[ $(resolve --screen 20x20 --canonical "$cache_svg" | jq -r .path) == "$second" ]] || fail "unchanged artwork reuses its cached render"
 pass "same-timestamp SVG changes invalidate cached pixels and unchanged content reuses them"
 
+# Responsive rasterization hardlinks siblings into a temporary directory. That
+# changes ctime but must not invalidate the render's own cache entry.
+mkdir -p "$backgrounds/stable-responsive"
+stable="$backgrounds/stable-responsive"
+printf '[defaults]\nsvg_layout = "responsive"\n' >"$stable/backgrounds.toml"
+cp "$backgrounds/cache-freshness.svg" "$stable/art.svg"
+printf 'unchanged sibling\n' >"$stable/asset.txt"
+first=$(resolve --screen 200x100 --canonical "$stable/art.svg" | jq -r .path)
+second=$(resolve --screen 200x100 --canonical "$stable/art.svg" | jq -r .path)
+[[ $first == "$second" ]] || fail "responsive rendering reuses its cache despite temporary sibling hardlinks"
+(( $(find "$home/.cache/omarchy/background-renders" -name '*.png' | wc -l) > 0 )) || fail "responsive cache was written"
+pass "temporary sibling hardlinks do not invalidate unchanged responsive artwork"
+
 # A failed or killed renderer must never publish its original SVG. Keep the
 # declared fallback pixels and metadata, with no incomplete cache entries.
 mkdir -p "$test_tmp/stubs"
