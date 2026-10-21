@@ -40,6 +40,7 @@ case "$name" in
       *) exit 94;;
     esac ;;
   omarchy-update-pacman) exec pacman "$@" ;;
+  omarchy-hw-platform) printf 'x86\n' ;;
   omarchy-pkg-defaults) sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$OMARCHY_PATH/install/omarchy-base.packages" ;;
   pacman)
     [[ $TEST_ENGINE != broken ]] || exit 2
@@ -59,7 +60,7 @@ esac
 '''
     for name in ('id', 'sudo', 'systemctl', 'pacman', 'python3', 'docker', 'podman', 'ufw',
                  'omarchy-pkg-add', 'omarchy-pkg-drop', 'omarchy-state',
-                 'dbus-update-activation-environment', 'omarchy-refresh-pacman', 'omarchy-update-pacman', 'omarchy-cmd-present', 'omarchy-pkg-defaults'):
+                 'dbus-update-activation-environment', 'omarchy-refresh-pacman', 'omarchy-update-pacman', 'omarchy-cmd-present', 'omarchy-pkg-defaults', 'omarchy-hw-platform'):
         path = stubs / name
         path.write_text(stub)
         path.chmod(0o755)
