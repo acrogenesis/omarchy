@@ -196,7 +196,9 @@ remove_legacy_docker_group
 # anchors, and rewrite the credential-bearing Compose file to root:root 0600.
 # An existing managed VM is recreated through dockerd's own mount namespace
 # while its running or stopped lifecycle is preserved.
-/usr/bin/omarchy-windows-vm __migration-secure
+if omarchy-hw-x86; then
+  /usr/bin/omarchy-windows-vm __migration-secure
+fi
 
 # A killed runtime-limit probe is journaled before it starts and uses a bounded,
 # auto-removing container. Clear any such verified probe before taking the

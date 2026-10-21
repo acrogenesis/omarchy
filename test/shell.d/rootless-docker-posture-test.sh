@@ -346,7 +346,7 @@ listener_line=$(grep -n '^verify_rootful_listeners$' "$migration" | head -n1 | c
   fail "custom rootful Docker listeners are not rejected before source migration"
 grep -q -- '--check-windows "$windows_id"' "$migration" ||
   fail "the name-based Windows exception is not authenticated against its managed runtime"
-windows_secure_line=$(grep -n '^/usr/bin/omarchy-windows-vm __migration-secure$' "$migration" | cut -d: -f1)
+windows_secure_line=$(grep -n '^[[:space:]]*/usr/bin/omarchy-windows-vm __migration-secure$' "$migration" | cut -d: -f1)
 [[ -n $windows_secure_line && -n $inventory_line ]] && (( windows_secure_line < inventory_line )) ||
   fail "legacy Windows credentials and mounts are not secured before rootful inventory"
 windows_check_line=$(grep -n -- '--check-windows "$windows_id"' "$migration" | head -n1 | cut -d: -f1)
@@ -523,3 +523,20 @@ grep -q 'sudo "$target" __priv' "$ROOT/bin/omarchy-windows-vm" ||
 grep -q 'pkexec "$target" __priv' "$ROOT/bin/omarchy-windows-vm" ||
   fail "graphical Windows operations do not authenticate"
 pass "Windows remains on an authenticated root-only Docker daemon"
+
+python3 - "$migration" <<'PYARM'
+import os, re, subprocess, sys, tempfile
+from pathlib import Path
+source = Path(sys.argv[1]).read_text()
+match = re.search(r"if omarchy-hw-x86; then\n  /usr/bin/omarchy-windows-vm __migration-secure\nfi", source)
+assert match, "Windows-only hardening must have an architecture gate"
+with tempfile.TemporaryDirectory() as directory:
+    marker = Path(directory) / "secured"
+    block = match.group().replace("/usr/bin/omarchy-windows-vm", "secure_windows")
+    for architecture, expected in [("arm", False), ("x86", True)]:
+        marker.unlink(missing_ok=True)
+        program = 'omarchy-hw-x86() { [[ $ARCH == x86 ]]; }; secure_windows() { touch "$MARKER"; };\n' + block
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", program], env=dict(os.environ, ARCH=architecture, MARKER=str(marker)))
+        assert result.returncode == 0 and marker.exists() == expected, architecture
+print("ok - Windows hardening is a successful no-op on ARM and still executes on x86")
+PYARM
