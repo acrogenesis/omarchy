@@ -303,7 +303,7 @@ bound_svg_target() {
   '
 }
 
-# Newline-free digest of a directory's files (name + mtime), excluding one file.
+# Newline-free digest of a directory's files (name + precise file identity), excluding one file.
 # Folded into the SVG raster cache key so a render is invalidated when a sibling
 # asset the SVG may reference changes, not only when the SVG itself does. Bounded
 # in cost: a backgrounds directory holds a handful of files.
@@ -311,7 +311,7 @@ sibling_digest() {
   local dir="$1" self="$2" file out=""
   for file in "$dir"/*; do
     [[ -f $file && $file != "$self" ]] || continue
-    out+="${file##*/}:$(stat -c %Y "$file" 2>/dev/null):"
+    out+="${file##*/}:$(stat -c '%y:%z:%s:%i' "$file" 2>/dev/null):"
   done
   printf '%s' "$out" | md5sum | cut -d ' ' -f 1
 }
@@ -330,7 +330,7 @@ trim_cache_dir() {
 rasterize_svg() {
   local svg="$1"
   local cache_dir="$HOME/.cache/omarchy/background-renders"
-  local dims target mtime siblings cache_key cache_file render_tmp render_source render_work asset
+  local dims target content_digest siblings cache_key cache_file render_tmp render_source render_work asset
 
   if [[ $SVG_LAYOUT == "responsive" ]]; then
     target="$SCREEN_W $SCREEN_H"
@@ -353,10 +353,10 @@ rasterize_svg() {
   [[ $target =~ ^([1-9][0-9]*)\ ([1-9][0-9]*)$ ]] || return 1
   local target_w=${BASH_REMATCH[1]} target_h=${BASH_REMATCH[2]}
 
-  mtime=$(stat -c %Y "$svg" 2>/dev/null) || return 1
+  content_digest=$(md5sum <"$svg") || return 1
   siblings=$(sibling_digest "$(dirname "$svg")" "$svg")
   # Invalidate renders made by the old textual viewport rewriter.
-  cache_key=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "svg-root-v2:$svg" "$mtime" "${SCREEN_W}x${SCREEN_H}" "$FILL" "$FILL_COLOR" "$SVG_LAYOUT" "$MAX_SVG_RENDER_DIMENSION" "$MAX_SVG_RENDER_PIXELS" "$siblings" | md5sum)
+  cache_key=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "svg-root-v3:$svg" "$content_digest" "${SCREEN_W}x${SCREEN_H}" "$FILL" "$FILL_COLOR" "$SVG_LAYOUT" "$MAX_SVG_RENDER_DIMENSION" "$MAX_SVG_RENDER_PIXELS" "$siblings" | md5sum)
   cache_key=${cache_key%% *}
   cache_file="$cache_dir/$cache_key.png"
 

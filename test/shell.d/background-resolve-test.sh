@@ -444,6 +444,19 @@ jq -e '.path | endswith("/9-linebreak.png")' <<<"$json" >/dev/null || fail "JSON
 
 pass "control characters never corrupt the output framing"
 
+# Content can change while staging preserves the same whole-second mtime.
+cache_svg="$backgrounds/cache-freshness.svg"
+printf '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="red"/></svg>' >"$cache_svg"
+touch -d @1700000000 "$cache_svg"
+first=$(resolve --screen 20x20 --canonical "$cache_svg" | jq -r .path)
+printf '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="blue"/></svg>' >"$cache_svg"
+touch -d @1700000000 "$cache_svg"
+second=$(resolve --screen 20x20 --canonical "$cache_svg" | jq -r .path)
+[[ $first != "$second" ]] || fail "SVG edits with identical mtimes invalidate the cached render"
+[[ $(magick "$second" -format '%[pixel:p{10,10}]' info:) == *"0,0,255"* ]] || fail "the new cache entry contains the updated artwork"
+[[ $(resolve --screen 20x20 --canonical "$cache_svg" | jq -r .path) == "$second" ]] || fail "unchanged artwork reuses its cached render"
+pass "same-timestamp SVG changes invalidate cached pixels and unchanged content reuses them"
+
 # A failed or killed renderer must never publish its original SVG. Keep the
 # declared fallback pixels and metadata, with no incomplete cache entries.
 mkdir -p "$test_tmp/stubs"
