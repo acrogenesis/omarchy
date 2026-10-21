@@ -164,6 +164,10 @@ end
 -- run a bind that Hyprland only reports as Lua.
 o.bind_commands = {}
 
+-- The Lua expression each function bind stands for, for binds with no command
+-- to run instead. The menu dispatches it as `hyprctl dispatch <expression>`.
+o.bind_expressions = {}
+
 -- Hand the launcher the focused window's pid, which it would otherwise ask
 -- Hyprland for, to open the new terminal in that terminal's directory.
 function o.launch_terminal()
@@ -310,7 +314,7 @@ function o.window(match, rules)
 end
 
 -- Opt a window in to Omarchy's standard active/inactive transparency. The tag
--- lets Appearance > Window Opacity turn these windows opaque or glassy.
+-- lets Appearance > Windows > Window Opacity turn these windows opaque or glassy.
 function o.transparent_window(match, opacity)
   o.window(match, { opacity = opacity or "0.985 0.96", tag = "+transparent-window" })
 end
