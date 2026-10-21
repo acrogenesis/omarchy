@@ -48,9 +48,23 @@ replacement_svg() {
 }
 
 stage_replacement() {
-  if [[ ${SVG_REPLACEMENT%/*} == "$staged_backgrounds" && $1 == "$active_theme" && ! -e $SVG_REPLACEMENT ]]; then
+  local metadata_source metadata="$staged_backgrounds/backgrounds.toml"
+  if [[ ${SVG_REPLACEMENT%/*} == "$staged_backgrounds" && $1 == "$active_theme" ]]; then
     mkdir -p "$staged_backgrounds"
-    cp "$SVG_SOURCE" "$SVG_REPLACEMENT"
+    if [[ ! -e $SVG_REPLACEMENT ]]; then
+      cp "$SVG_SOURCE" "$SVG_REPLACEMENT"
+    fi
+    # Old staged themes predate responsive metadata. Preserve any staged/user
+    # settings and otherwise install the same metadata as a fresh theme stage.
+    if [[ ! -e $metadata && ! -L $metadata ]]; then
+      metadata_source="$HOME/.config/omarchy/themes/$1/backgrounds/backgrounds.toml"
+      if [[ ! -f $metadata_source ]]; then
+        metadata_source="$OMARCHY_PATH/themes/$1/backgrounds/backgrounds.toml"
+      fi
+      if [[ -f $metadata_source ]]; then
+        cp "$metadata_source" "$metadata"
+      fi
+    fi
   fi
 }
 

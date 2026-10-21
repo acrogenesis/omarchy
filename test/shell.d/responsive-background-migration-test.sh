@@ -24,6 +24,15 @@ run
 run
 (( $(wc -l <"$test_tmp/calls") == 1 )) || fail "repair is idempotent"
 pass "removed bundled wallpapers keep their active and remembered selections idempotently"
+cmp "$staged/backgrounds.toml" "$ROOT/themes/tokyo-night/backgrounds/backgrounds.toml" || fail "old staged themes receive responsive metadata along with the SVG"
+rendered=$(HOME="$test_home" PATH="$ROOT/bin:/usr/bin:$PATH" bash "$ROOT/bin/omarchy-theme-bg-resolve" --screen 200x100 --canonical "$staged/omarchy.svg" | jq -r .path)
+[[ $(magick identify -format '%wx%h' "$rendered") == "200x100" ]] || fail "the upgraded active SVG uses the screen viewport before any theme refresh"
+printf '[defaults]\nfill = "tile"\n' >"$staged/backgrounds.toml"
+ln -sfn "$staged/omarchy.webp" "${staged%/theme/backgrounds}/background"
+run
+[[ $(cat "$staged/backgrounds.toml") == $'[defaults]\nfill = "tile"' ]] || fail "existing staged user metadata remains untouched"
+pass "upgraded wallpapers receive responsive metadata while existing user settings remain untouched"
+
 # A user override with the old name must survive a later refresh.
 user="$test_home/.config/omarchy/themes/tokyo-night/backgrounds"
 mkdir -p "$user"
