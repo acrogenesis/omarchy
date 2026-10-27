@@ -236,6 +236,17 @@ center=$(magick "$rendered" -format '%[pixel:p{100,100}]' info:)
 
 pass "responsive SVG backgrounds render against the exact screen viewport"
 
+mkdir -p "$backgrounds/assets/textures"
+cp "$backgrounds/responsive-asset.png" "$backgrounds/assets/textures/texture.png"
+sed -i 's|href="responsive-asset.png"|href="assets/textures/texture.png"|' "$backgrounds/5-responsive.svg"
+first=$(fields_value path "$(resolve --fields --screen 200x200)")
+[[ $(magick "$first" -format '%[pixel:p{100,100}]' info:) == "srgb(0,0,255)" ]] || fail "responsive SVGs retain nested image assets"
+magick -size 20x20 xc:lime "$backgrounds/assets/textures/texture.png"
+second=$(fields_value path "$(resolve --fields --screen 200x200)")
+[[ $first != "$second" && $(magick "$second" -format '%[pixel:p{100,100}]' info:) == "srgb(0,255,0)" ]] || fail "nested asset edits invalidate rendered pixels"
+[[ $(fields_value path "$(resolve --fields --screen 200x200)") == "$second" ]] || fail "unchanged nested assets reuse their render"
+pass "nested SVG image assets render, invalidate on edits and reuse unchanged caches"
+
 # Equivalent XML spellings must reflow identically. Absolute child geometry
 # exposes accidental viewport scaling, and a nested SVG must stay untouched.
 cat >"$backgrounds/backgrounds.toml" <<'TOML'
@@ -290,6 +301,10 @@ rendered=$(fields_value path "$output")
 center=$(magick "$rendered" -format '%[pixel:p{10,10}]' info:)
 [[ $center == "srgb(255,0,0)" ]] || fail "an SVG cannot read an image above its background directory" "got $center"
 
+ln -s "$state/theme/private.png" "$backgrounds/assets/escape.png"
+sed -i 's|href="../private.png"|href="assets/escape.png"|' "$backgrounds/5-parent-reference.svg"
+rendered=$(fields_value path "$(resolve --fields --screen 20x20 --canonical "$backgrounds/5-parent-reference.svg")")
+[[ $(magick "$rendered" -format '%[pixel:p{10,10}]' info:) == "srgb(255,0,0)" ]] || fail "nested asset symlinks cannot escape the render tree"
 pass "SVG external resources stay confined to the background directory"
 
 # Edge backdrops sample the dominant perimeter colour from the per-screen
