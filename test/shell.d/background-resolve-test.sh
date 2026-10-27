@@ -247,6 +247,18 @@ second=$(fields_value path "$(resolve --fields --screen 200x200)")
 [[ $(fields_value path "$(resolve --fields --screen 200x200)") == "$second" ]] || fail "unchanged nested assets reuse their render"
 pass "nested SVG image assets render, invalidate on edits and reuse unchanged caches"
 
+# Force the same fallback as a theme on a different filesystem from the cache.
+mkdir -p "$test_tmp/no-hardlinks"
+printf '#!/bin/bash\nexit 1\n' >"$test_tmp/no-hardlinks/ln"
+chmod +x "$test_tmp/no-hardlinks/ln"
+ln -s textures "$backgrounds/assets/linked"
+ln -s missing.png "$backgrounds/assets/dangling.png"
+sed -i 's|assets/textures/texture.png|assets/linked/texture.png|' "$backgrounds/5-responsive.svg"
+output=$(HOME="$home" PATH="$test_tmp/no-hardlinks:$ROOT/bin:$PATH" bash "$ROOT/bin/omarchy-theme-bg-resolve" --fields --screen 200x200)
+rendered=$(fields_value path "$output")
+[[ $(magick "$rendered" -format '%[pixel:p{100,100}]' info:) == "srgb(0,255,0)" ]] || fail "copy fallback preserves directory and unrelated dangling symlinks"
+pass "cross-filesystem SVG staging preserves links without following them"
+
 # Equivalent XML spellings must reflow identically. Absolute child geometry
 # exposes accidental viewport scaling, and a nested SVG must stay untouched.
 cat >"$backgrounds/backgrounds.toml" <<'TOML'
@@ -305,6 +317,9 @@ ln -s "$state/theme/private.png" "$backgrounds/assets/escape.png"
 sed -i 's|href="../private.png"|href="assets/escape.png"|' "$backgrounds/5-parent-reference.svg"
 rendered=$(fields_value path "$(resolve --fields --screen 20x20 --canonical "$backgrounds/5-parent-reference.svg")")
 [[ $(magick "$rendered" -format '%[pixel:p{10,10}]' info:) == "srgb(255,0,0)" ]] || fail "nested asset symlinks cannot escape the render tree"
+printf '\n' >>"$backgrounds/5-parent-reference.svg"
+rendered=$(fields_value path "$(HOME="$home" PATH="$test_tmp/no-hardlinks:$ROOT/bin:$PATH" bash "$ROOT/bin/omarchy-theme-bg-resolve" --fields --screen 20x20 --canonical "$backgrounds/5-parent-reference.svg")")
+[[ $(magick "$rendered" -format '%[pixel:p{10,10}]' info:) == "srgb(255,0,0)" ]] || fail "copy fallback cannot follow external asset links"
 pass "SVG external resources stay confined to the background directory"
 
 # Edge backdrops sample the dominant perimeter colour from the per-screen

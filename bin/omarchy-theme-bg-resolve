@@ -386,7 +386,7 @@ rasterize_svg() {
       relative=${asset#"$asset_dir"/}
       destination="$render_work/$relative"
       if ! mkdir -p -- "$(dirname "$destination")" ||
-        ! { ln -- "$asset" "$destination" 2>/dev/null || cp --reflink=auto -- "$asset" "$destination"; }; then
+        ! { ln -- "$asset" "$destination" 2>/dev/null || cp -P --reflink=auto -- "$asset" "$destination"; }; then
         rm -rf -- "$render_work"
         rm -f -- "$render_tmp"
         return 1
