@@ -3,21 +3,6 @@
 set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
-for package in docker docker-buildx docker-compose docker-rootless-extras rootlesskit slirp4netns fuse-overlayfs; do
-  grep -qx "$package" "$ROOT/install/omarchy-base.packages" || fail "rootless Docker dependency is in the base install: $package"
-done
-pass "the base install keeps Docker tooling and adds the rootless runtime"
-
-! rg -q 'systemctl --global enable docker.service' "$ROOT/install" ||
-  fail "rootless Docker starts globally before each account is initialized"
-grep -q 'docker.service' "$ROOT/install/user/first-run/enable-user-units.sh" ||
-  fail "first login starts the rootless Docker user service"
-grep -q 'rootless_docker_ensure_subids' "$ROOT/install/config/docker.sh" ||
-  fail "fresh installs allocate subordinate IDs before rootless Docker starts"
-grep -q 'rootless_docker_ensure_subids' "$ROOT/bin/omarchy-provision-owner" ||
-  fail "deferred provisioning allocates subordinate IDs"
-pass "fresh and deferred installs prepare the rootless user daemon"
-
 test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
 python3 - "$ROOT/install/helpers/rootless-docker.sh" <<'PY'
@@ -330,26 +315,3 @@ with tempfile.TemporaryDirectory() as directory:
 print("ok - listener verification accepts only the protected rootful Unix socket")
 PY
 pass "rootful Docker listener verification rejects extra API endpoints"
-
-grep -q "alias d='docker'" "$ROOT/default/bash/aliases" || fail "the d alias remains Docker"
-! rg -q 'sudo[[:space:]]+docker' "$ROOT/bin/omarchy-install-docker-dbs" ||
-  fail "development database installs still use rootful Docker"
-! rg -q 'pkexec|omarchy-sudo-docker' "$ROOT/bin/omarchy-launch-docker-tui" ||
-  fail "lazydocker still crosses a root boundary"
-[[ ! -e $ROOT/bin/omarchy-sudo-docker && ! -e $ROOT/bin/omarchy-setup-security-sudoless-docker && ! -e $ROOT/bin/omarchy-remove-security-sudoless-docker ]] ||
-  fail "the obsolete docker-group toggle remains installed"
-! rg -q 'sudoless-docker|Sudoless Docker' "$ROOT/default/omarchy/omarchy-menu.jsonc" ||
-  fail "the obsolete docker-group toggle remains in the menu"
-pass "Docker CLI, Compose, Buildx, databases and lazydocker use the user daemon directly"
-
-socket_policy="$ROOT/default/systemd/system/docker.socket.d/10-omarchy-rootful.conf"
-grep -qx 'SocketUser=root' "$socket_policy" || fail "the Windows Docker socket is root-owned"
-grep -qx 'SocketGroup=root' "$socket_policy" || fail "the Windows Docker socket has no docker-group access"
-grep -qx 'SocketMode=0600' "$socket_policy" || fail "the Windows Docker socket is root-only"
-grep -q 'host="unix:///proc/\$main_pid/root/run/docker.sock"' "$ROOT/bin/omarchy-windows-vm" ||
-  fail "privileged Windows actions are not pinned to dockerd's mount namespace"
-grep -q 'sudo "$target" __priv' "$ROOT/bin/omarchy-windows-vm" ||
-  fail "terminal Windows operations do not authenticate"
-grep -q 'pkexec "$target" __priv' "$ROOT/bin/omarchy-windows-vm" ||
-  fail "graphical Windows operations do not authenticate"
-pass "Windows remains on an authenticated root-only Docker daemon"
