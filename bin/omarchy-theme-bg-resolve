@@ -354,7 +354,7 @@ rasterize_svg() {
   content_digest=$(md5sum <"$svg") || return 1
   siblings=$(sibling_digest "$(dirname "$svg")" "$svg")
   # Rebuild older renders which did not preserve nested asset paths.
-  cache_key=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "svg-root-v4:$svg" "$content_digest" "${SCREEN_W}x${SCREEN_H}" "$FILL" "$FILL_COLOR" "$SVG_LAYOUT" "$MAX_SVG_RENDER_DIMENSION" "$MAX_SVG_RENDER_PIXELS" "$siblings" | md5sum)
+  cache_key=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "svg-root-v5:$svg" "$content_digest" "${SCREEN_W}x${SCREEN_H}" "$FILL" "$FILL_COLOR" "$SVG_LAYOUT" "$MAX_SVG_RENDER_DIMENSION" "$MAX_SVG_RENDER_PIXELS" "$siblings" | md5sum)
   cache_key=${cache_key%% *}
   cache_file="$cache_dir/$cache_key.png"
 
