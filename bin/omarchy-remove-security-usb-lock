@@ -4,10 +4,10 @@
 # omarchy:requires-sudo=true
 
 set -euo pipefail
-gum confirm "Disable USB and Thunderbolt protection?" || exit 0
+gum confirm "$(omarchy-i18n deviceProtection.disable)" || exit 0
 sudo /usr/bin/omarchy-usb-lock-admin disable
 omarchy-shell -q lock refreshUsbPolicy >/dev/null 2>&1 || true
-omarchy-notification-dismiss "USB accessory blocked" || true
-omarchy-notification-dismiss "Thunderbolt accessory blocked" || true
-omarchy-notification-dismiss "Thunderbolt protection" || true
+omarchy-notification-dismiss "$(omarchy-i18n usb.accessoryBlocked)" || true
+omarchy-notification-dismiss "$(omarchy-i18n thunderbolt.accessoryBlocked)" || true
+omarchy-notification-dismiss "$(omarchy-i18n thunderbolt.protection)" || true
 echo "USB and Thunderbolt protection is disabled."

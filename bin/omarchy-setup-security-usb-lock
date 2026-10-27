@@ -9,11 +9,11 @@ echo "Unlocking automatically allows devices plugged in while locked, in either 
 echo "A malicious device left connected can therefore attack when you unlock."
 echo "Keep an existing keyboard available: a new keyboard cannot unlock the screen."
 echo
-choice=$(gum choose --header "USB and Thunderbolt protection" \
-  "While locked (default)" "Also require approval while unlocked") || exit 0
-case "$choice" in
-  "While locked (default)") mode=locked ;;
-  "Also require approval while unlocked") mode=approval ;;
+mode=$(gum choose --label-delimiter $'\t' --header "$(omarchy-i18n deviceProtection.title)" \
+  "$(omarchy-i18n deviceProtection.locked)"$'\tlocked' \
+  "$(omarchy-i18n deviceProtection.approval)"$'\tapproval') || exit 0
+case "$mode" in
+  locked | approval) ;;
   *) exit 0 ;;
 esac
 omarchy-shell lock status >/dev/null

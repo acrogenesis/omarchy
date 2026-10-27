@@ -12,6 +12,7 @@ case ${USBGUARD_IPC_SIGNAL:-} in
   *) exit 0 ;;
 esac
 
+blocked_title=$(omarchy-i18n usb.accessoryBlocked)
 requests="$XDG_RUNTIME_DIR/omarchy-usb-lock-notices"
 mkdir -p "$requests"
 chmod 700 "$requests"
@@ -19,14 +20,14 @@ exec 9>"$requests/.lock"
 while true; do
   flock 9
   if [[ ! -e /etc/omarchy/usb-lock.approval || ! -e /etc/omarchy/usb-lock.enabled ]]; then
-    omarchy-notification-dismiss "USB accessory blocked" || true
+    omarchy-notification-dismiss "$blocked_title" || true
     rm -f "$requests/current"
     exit 0
   fi
   # Wait for the shell during login/recovery, then avoid prompting over a lock.
   status=$(omarchy-shell lock status 2>/dev/null || true)
   if jq -e '.locked == true' <<<"$status" >/dev/null 2>&1; then
-    omarchy-notification-dismiss "USB accessory blocked" || true
+    omarchy-notification-dismiss "$blocked_title" || true
     rm -f "$requests/current"
     exit 0
   elif ! jq -e '.locked == false' <<<"$status" >/dev/null 2>&1; then
@@ -38,7 +39,7 @@ while true; do
   [[ $generation =~ ^[0-9a-f]{32}$ ]] || exit 1
   blocked=$(usbguard list-devices --blocked)
   if [[ -z $blocked ]]; then
-    omarchy-notification-dismiss "USB accessory blocked" || true
+    omarchy-notification-dismiss "$blocked_title" || true
     rm -f "$requests/current"
     exit 0
   fi
@@ -54,9 +55,9 @@ while true; do
   # blocked inventory gets a fresh prompt, including after a disconnected watch.
   token=$(printf '%s\0%s\0%s' "$OMARCHY_USB_LOCK_WATCH_ID" "$generation" "$blocked" | sha256sum | cut -d' ' -f1)
   [[ ! -f $requests/current || $(<"$requests/current") != "$token" ]] || exit 0
-  omarchy-notification-dismiss "USB accessory blocked" || true
+  omarchy-notification-dismiss "$blocked_title" || true
   if omarchy-notification-wait 1 && omarchy-notification-send --urgency critical --glyph 󰖀 \
-    "USB accessory blocked" "Click to review connected devices awaiting approval." \
+    "$blocked_title" "$(omarchy-i18n thunderbolt.reviewPending)" \
     --exec omarchy-launch-floating-terminal-with-presentation omarchy-usb-lock-review; then
     printf '%s\n' "$token" >"$requests/current"
     exit 0

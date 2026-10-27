@@ -930,7 +930,7 @@ Item {
   Process {
     id: usbFailureNotice
     command: [omarchyPath + "/bin/omarchy-notification-send", "-u", "critical",
-      "Device lock policy could not be applied", "The screen lock still works. USB/Thunderbolt policy will retry; check the services before relying on it."]
+      I18n.t("lock.usbPolicyFailedTitle"), I18n.t("lock.usbPolicyFailedBody")]
   }
 
   ShellIpc {

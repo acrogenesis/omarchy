@@ -360,7 +360,7 @@ mkdir "$scratch/setup-bin"
 cat >"$scratch/setup-bin/mock" <<'SH'
 #!/bin/bash
 case ${0##*/} in
-  gum) echo "While locked (default)" ;;
+  gum) echo "locked" ;;
   sudo|systemctl) ;;
   omarchy-pkg-add) touch "$USB_TEST_SETUP/locked" ;;
   omarchy-shell)
