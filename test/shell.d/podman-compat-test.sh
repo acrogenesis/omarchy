@@ -15,7 +15,7 @@ if [[ $* == '-Qq docker' ]]; then
   echo "$TEST_PROVIDER"
 fi
 SH
-for command in systemctl omarchy-pkg-add omarchy-pkg-drop dbus-update-activation-environment; do
+for command in systemctl omarchy-pkg-add omarchy-pkg-drop dbus-update-activation-environment omarchy-refresh-pacman omarchy-update-pacman; do
   cat >"$test_dir/bin/$command" <<'SH'
 #!/bin/bash
 echo "${0##*/} $*" >>"$TEST_LOG"
@@ -45,3 +45,29 @@ done
 grep -q '^omarchy-pkg-drop podman-docker$' "$TEST_LOG" || fail "optional removal targets wrong package"
 ! grep -qx podman-docker "$ROOT/install/omarchy-base.packages" || fail "compatibility is still a default dependency"
 pass "optional compatibility preserves real engines and configured endpoints"
+
+# Repair must retain the installed engine even if defaults include its shim.
+cat >"$test_dir/bin/omarchy-pkg-defaults" <<'SH'
+#!/bin/bash
+printf '%s\n' podman podman-docker docker-compose podman-compose
+SH
+cat >"$test_dir/bin/omarchy-hw-platform" <<'SH'
+#!/bin/bash
+echo x86
+SH
+chmod +x "$test_dir/bin/omarchy-pkg-defaults" "$test_dir/bin/omarchy-hw-platform"
+for TEST_PROVIDER in docker docker-git podman-docker; do
+  : >"$TEST_LOG"
+  "$ROOT/bin/omarchy-reinstall-pkgs" >"$test_dir/output" 2>&1 || fail "package repair fails for $TEST_PROVIDER"
+  install=$(grep '^omarchy-update-pacman -Syu ' "$TEST_LOG")
+  if [[ $TEST_PROVIDER == "podman-docker" ]]; then
+    [[ " $install " == *" podman-docker "* ]] || fail "repair drops the installed compatibility provider"
+  else
+    [[ " $install " != *" podman-docker "* ]] || fail "repair replaces $TEST_PROVIDER before workload transfer"
+  fi
+done
+TEST_DB_FAIL=1
+: >"$TEST_LOG"
+! "$ROOT/bin/omarchy-reinstall-pkgs" >"$test_dir/output" 2>&1 || fail "repair accepts a failed package query"
+! grep -q '^omarchy-update-pacman -Syu ' "$TEST_LOG" || fail "repair installs packages after a failed provider query"
+pass "package repair preserves existing engines and refuses unreadable package state"
