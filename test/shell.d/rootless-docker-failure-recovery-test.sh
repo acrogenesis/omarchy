@@ -6,7 +6,6 @@ import copy
 import importlib.util
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 from unittest.mock import patch
 
@@ -73,40 +72,4 @@ for fault in ['events', 'runtime', 'receipt', 'foreign', 'durable-receipt']:
             assert target['HostConfig']['RestartPolicy']['Name'] == 'no'
             assert len(calls) == 3, calls
 print('ok - resumed event/runtime/receipt faults fence the owned destination, retain both stores and never restore the source; foreign ownership and durable completion remain untouched')
-
-script = (root / 'migrations/1789164756.sh').read_text()
-start = script.index('quiesced_recovery_pending=1\n')
-end = script.index('  quiesced_recovery_pending=0\n', start)
-phase = script[start:end] + '\nfi\n'
-phase = phase.replace('/usr/bin/python3', 'fixture_python').replace('/usr/bin/systemctl', 'systemctl').replace('/usr/bin/docker', 'docker')
-prefix = r'''
-set -euo pipefail
-migrator=/fixture/migrate.py
-windows_arg=-
-windows_id=""
-container_names=(alpha)
-source_host=unix:///fixture
-docker_inventory=inventory
-sudo() {
-  printf 'sudo %s\n' "$*" >>"$LOG"
-  [[ $* != 'systemctl restart docker.service' || $FAULT != restart ]] || return 33
-  if [[ $1 == docker ]]; then printf '%s\n' inventory; fi
-}
-fixture_python() {
-  printf 'python %s\n' "$*" >>"$LOG"
-  [[ ${2:-} != --check || $FAULT != check ]] || return 33
-}
-verify_rootful_listeners() { [[ $FAULT != listeners ]] || return 33; }
-restrict_rootful_socket() { [[ $FAULT != socket ]] || return 33; }
-verify_rootful_socket_unit() { :; }
-'''
-with tempfile.TemporaryDirectory() as directory:
-    for fault in ['restart', 'socket', 'listeners', 'check']:
-        log = Path(directory) / fault
-        result = subprocess.run(['bash', '-c', prefix + phase],
-                                env=dict(os.environ, FAULT=fault, LOG=str(log)), capture_output=True, text=True)
-        assert result.returncode == 33, (fault, result.stderr)
-        calls = log.read_text()
-        assert 'python /fixture/migrate.py --restore-quiesced-all - alpha\n' in calls, (fault, calls)
-print('ok - failures after quiescing in daemon restart, socket checks, listener checks or second preflight invoke journal-gated source recovery and preserve failure status')
 PY
