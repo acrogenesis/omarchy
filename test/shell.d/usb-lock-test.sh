@@ -2,6 +2,7 @@
 
 set -euo pipefail
 source "$(dirname "$0")/base-test.sh"
+export PATH="$ROOT/bin:$PATH"
 source "$ROOT/install/helpers/usb-lock.sh"
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT

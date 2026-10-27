@@ -2,6 +2,7 @@
 
 set -euo pipefail
 source "$(dirname "$0")/base-test.sh"
+export PATH="$ROOT/bin:$PATH"
 source "$ROOT/install/helpers/thunderbolt-lock.sh"
 source "$ROOT/install/helpers/thunderbolt-lock-setup.sh"
 T=$(mktemp -d)
