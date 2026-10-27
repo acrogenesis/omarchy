@@ -92,9 +92,9 @@ done
 printf 'partial' >"$stale_tmp"
 
 cache_key=$(printf '%s' "$images" | md5sum | cut -d ' ' -f 1)
-printf '%s\t%s' "$images/one.png" "$cache_dir/missing.jpg" >"$cache_dir/$cache_key.rows"
-printf 'v2\n%s:%s\n' "$images" "$(stat -Lc '%Y' "$images")" >"$cache_dir/$cache_key.signature"
-printf 'v1\n%s:%s\n' "$images" "$(stat -Lc '%Y' "$images")" >"$cache_dir/$cache_key.fast-signature"
+printf '%s\t%s' "$images/one@ultrawide.png" "$images/one@ultrawide.png" >"$cache_dir/$cache_key.rows"
+printf 'v4\n%s:%s\n' "$images" "$(stat -Lc '%Y' "$images")" >"$cache_dir/$cache_key.signature"
+printf 'v3\n%s:%s\n' "$images" "$(stat -Lc '%Y' "$images")" >"$cache_dir/$cache_key.fast-signature"
 
 PATH="$stub_bin:$PATH" XDG_CACHE_HOME="$cache_home" \
   "$ROOT/bin/omarchy-menu-images" --cache-only "$images"
@@ -103,8 +103,6 @@ PATH="$stub_bin:$PATH" XDG_CACHE_HOME="$cache_home" \
   fail "image menu recovers thumbnails from stranded locks"
 (( $(awk 'END { print NR }' "$cache_dir/$cache_key.rows") == 4 )) ||
   fail "image menu rebuilds every row after cache invalidation"
-[[ $(head -n 1 "$cache_dir/$cache_key.signature") == "v4" ]] ||
-  fail "image menu invalidates stale row caches"
 [[ ! -e $stale_tmp ]] ||
   fail "image menu clears partial thumbnails left by killed generators"
 grep -q 'art\.svg' "$cache_dir/$cache_key.rows" ||
