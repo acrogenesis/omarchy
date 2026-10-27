@@ -84,7 +84,7 @@ tb_inventory() {
     item=$(jq -c --arg inode "$inode" '. + {inode:$inode}' <<< "$item") || return 1
     devices=$(jq -c --argjson item "$item" '. + [$item]' <<< "$devices") || return 1
   done < <(jq -r '.[]' <<< "$paths")
-  [[ $(tb_owner) == "$owner" ]] || { tb_fail "Bolt restarted while reading its inventory"; return 1; }
+  [[ $(tb_owner) == $owner ]] || { tb_fail "Bolt restarted while reading its inventory"; return 1; }
   jq -cn --arg owner "$owner" --argjson manager "$manager" --argjson domains "$domains" \
     --argjson devices "$devices" --argjson stored "$stored" '
     {owner:$owner,manager:$manager,domains:$domains,stored:$stored,devices:[$devices[] |
@@ -130,7 +130,7 @@ tb_prepare_key() (
   # Authorize provisions it and the subsequent enrollment imports it into Bolt.
   jq -e '.device.Secure and (.device.Stored | not)' <<< "$current" >/dev/null || return 0
   cd -- "$(jq -r .device.SysfsPath <<< "$current")" || return 1
-  [[ $(stat -Lc '%i' .) == "$(jq -r .device.inode <<< "$current")" &&
+  [[ $(stat -Lc '%i' .) == $(jq -r .device.inode <<< "$current") &&
     $(cat unique_id) == "$(jq -r .device.Uid <<< "$current")" ]] || {
     tb_fail 'The Thunderbolt connection changed before key setup'; return 1;
   }
@@ -144,7 +144,7 @@ tb_prepare_key() (
     [[ $key =~ ^[0-9a-f]{64}$ ]] || return 1
     tb_current "$identity" >/dev/null || return 1
     printf '%s' "$key" >&"$key_fd" || return 1
-    [[ $(cat key) == "$key" ]] || { tb_fail 'Could not verify the Thunderbolt key'; return 1; }
+    [[ $(cat key) == $key ]] || { tb_fail 'Could not verify the Thunderbolt key'; return 1; }
   else
     [[ $key =~ ^[0-9a-fA-F]{64}$ ]] || { tb_fail 'The Thunderbolt key is invalid'; return 1; }
   fi
@@ -222,7 +222,7 @@ tb_boot_apply() {
     uid=$(jq -r .Uid <<< "$item")
     value=$(jq -c --arg uid "$uid" '.acls[$uid] // empty' <<< "$saved") || return 1
     [[ -n $value ]] || continue
-    [[ $(jq length <<< "$value") == "$(jq '.BootACL | length' <<< "$item")" ]] || {
+    [[ $(jq length <<< "$value") == $(jq '.BootACL | length' <<< "$item") ]] || {
       tb_fail "Firmware boot allowlist capacity changed"; return 1;
     }
     tb_set "$owner" "$(jq -r .path <<< "$item")" "$TB_DOMAIN" BootACL "$value" as || return 1

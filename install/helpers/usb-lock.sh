@@ -113,7 +113,7 @@ usb_lock_capture() {
   while IFS= read -r line; do
     [[ -n $line ]] || continue
     [[ $line =~ ^[0-9]+:[[:space:]](allow|block|reject)[[:space:]] ]] || return 1
-    if [[ ${BASH_REMATCH[1]} == "allow" || ( $include_blocked == 1 && ${BASH_REMATCH[1]} == "block" ) ]]; then
+    if [[ ${BASH_REMATCH[1]} == "allow" || ( $include_blocked == "1" && ${BASH_REMATCH[1]} == "block" ) ]]; then
       usb_lock_portable_rule "${line#*: }" || return 1
     fi
   done <<<"$inventory"
@@ -331,10 +331,10 @@ usb_lock_require_approval() {
 usb_lock_approve() {
   local choice=$1 id=$2 expected=$3 generation=$4 current portable rules destination
   [[ $choice == "always" ]] || return 64
-  [[ $id =~ ^[0-9]+$ && $generation =~ ^[0-9a-f]{32}$ && $expected == block\ * ]] || return 64
+  [[ $id =~ ^[0-9]+$ && $generation =~ ^[0-9a-f]{32}$ && $expected == "block "* ]] || return 64
   (( ${#expected} <= 16384 )) || return 64
   usb_lock_require_approval || return 1
-  [[ $(systemctl show "$USB_LOCK_SERVICE" --property=InvocationID --value) == "$generation" ]] || return 1
+  [[ $(systemctl show "$USB_LOCK_SERVICE" --property=InvocationID --value) == $generation ]] || return 1
   current=$(usbguard list-devices --blocked) || return 1
   grep -Fqx -- "$id: $expected" <<<"$current" || return 1
   portable=$(usb_lock_portable_rule "$expected") || return 1
@@ -366,7 +366,13 @@ usb_lock_list_approved() {
 usb_lock_without_rule() {
   local excluded=$1 rule
   while IFS= read -r rule; do
-    if [[ -n $rule && $rule != "$excluded" ]]; then printf '%s\n' "$rule"; fi
+    if [[ -n $rule ]]; then
+      # A saved device rule may contain glob characters; compare it literally.
+      case $rule in
+        "$excluded") ;;
+        *) printf '%s\n' "$rule" ;;
+      esac
+    fi
   done
 }
 
@@ -376,7 +382,7 @@ usb_lock_forget() {
   usb_lock_require_approval recover || return 1
   inventory=$(usb_lock_list_approved) || return 1
   while IFS= read -r line; do
-    if [[ ${line%%$'\t'*} == "$token" ]]; then rule=${line#*$'\t'}; break; fi
+    if [[ ${line%%$'\t'*} == $token ]]; then rule=${line#*$'\t'}; break; fi
   done <<<"$inventory"
   [[ -n $rule ]] || return 1
   rules=$(usb_lock_rules) || return 1
