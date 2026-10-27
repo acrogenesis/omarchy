@@ -606,7 +606,8 @@ def validate_volumes(container):
             raise ValueError(f"{name}: host mounts or custom storage need an explicit transfer")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", mount["Name"]):
             raise ValueError(f"{name}: unsupported volume name")
-        if not mount["Destination"].startswith("/") or ":" in mount["Destination"]:
+        if (not mount["Destination"].startswith("/") or
+                any(delimiter in mount["Destination"] for delimiter in (":", ","))):
             raise ValueError(f"{name}: unsupported volume destination")
     # -v also records named volumes in Binds. Accept only an exact match to a
     # local volume; never treat a host directory or socket as a named volume.

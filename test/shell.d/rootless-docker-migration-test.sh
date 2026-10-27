@@ -489,6 +489,15 @@ container = {
                 "Destination": "/data", "RW": True}],
 }
 assert migration.validate(container) == "project-worker"
+comma_mount = copy.deepcopy(container)
+comma_mount["Mounts"][0]["Destination"] = "/app,data"
+comma_mount["HostConfig"]["Binds"] = ["project-data:/app,data"]
+try:
+    migration.validate(comma_mount)
+except ValueError as error:
+    assert "unsupported volume destination" in str(error), error
+else:
+    raise AssertionError("comma-delimited volume destination passed preflight")
 actual_nofile = {"soft": 32768, "hard": 262144}
 original_run = migration.run
 original_inspect = migration.inspect
