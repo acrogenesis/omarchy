@@ -383,7 +383,7 @@ for request in first warm; do
   HOME="$home" PATH="$test_tmp/edge-bin:$ROOT/bin:$PATH" REAL_MAGICK="$real_magick" EDGE_SAMPLE_LOG="$test_tmp/edge-samples" \
     "$ROOT/bin/omarchy-theme-bg-resolve" --screen 1920x1080 --fields --canonical "$backgrounds/warm-edge.svg" >"$test_tmp/warm-$request"
 done
-[[ $(wc -l <"$test_tmp/edge-samples") == 1 ]] || fail "a warm SVG repeats its expensive edge sample"
+(( $(wc -l <"$test_tmp/edge-samples") == 1 )) || fail "a warm SVG repeats its expensive edge sample"
 pass "warm SVG edge colors survive render-cache eviction timestamp touches"
 
 
