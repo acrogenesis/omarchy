@@ -148,6 +148,20 @@ for (const screen of [square, wide]) {
 }
 context.prunePluginBarApis()
 assertDeepEqual(Array.from(context.released), ['example.widget', 'example.widget'], 'facade pruning releases by plugin ID rather than presentation cache key')
+
+const liveScreen = {name:'live'}, removedScreen = {name:'removed'}
+const liveTarget = {}, removedTarget = {}, retired = []
+const prune = vm.createContext({widgetHosts:[{pluginApiId:'example.widget',activeItem:{screen:liveScreen}}], pluginBarApis:{
+  live:{pluginId:'example.widget',sampleScreen:liveScreen,destroy(){retired.push('live')}},
+  removed:{pluginId:'example.widget',sampleScreen:removedScreen,destroy(){retired.push('removed')}}
+},pluginObjectOwners:new Map([[liveTarget,{target:liveTarget,pluginId:'example.widget',screen:liveScreen,clickTarget:true}],[removedTarget,{target:removedTarget,pluginId:'example.widget',screen:removedScreen,clickTarget:true}]]),targetWindow(item){return item ? {screen:item.screen} : null},unregisterClickTarget(target){this.unregistered=target},activePopout:null})
+prune.root=prune
+for (const name of ['pluginBarApiUsed','releasePluginObjects','prunePluginBarApis']) vm.runInContext(productionFunction(name),prune)
+prune.prunePluginBarApis()
+assertDeepEqual(Object.keys(prune.pluginBarApis),['live'],'disconnecting a screen destroys only that screens facade')
+assertDeepEqual(retired,['removed'],'the removed facade is destroyed even when the plugin remains visible')
+assert(prune.pluginObjectOwners.has(liveTarget) && !prune.pluginObjectOwners.has(removedTarget),'removed-screen cleanup preserves the other screens registrations')
+
 JS
 
   # The bounded canvas must shrink native center/tile geometry too. Without

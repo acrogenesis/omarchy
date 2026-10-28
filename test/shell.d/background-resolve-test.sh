@@ -356,6 +356,15 @@ output=$(resolve --fields --screen 5120x1440 --canonical "$backgrounds/6-blur.pn
 
 pass "edge and blur backdrops resolve with sampled and fallback colours"
 
+# Replacing a raster with preserved timestamps must refresh sampled padding.
+old_time=$(stat -c %y "$backgrounds/6-edge.png")
+magick -size 160x90 xc:'#abcdef' "$backgrounds/6-edge.png"
+touch -d "$old_time" "$backgrounds/6-edge.png"
+output=$(resolve --fields --screen 1920x1080 --canonical "$backgrounds/6-edge.png")
+[[ $(fields_value fill_color "$output") == "#ABCDEF" ]] || fail "same-timestamp raster edits leave stale edge padding" "$output"
+pass "same-timestamp raster edits refresh edge padding"
+
+
 # Malformed metadata never breaks resolution: unparseable lines are ignored
 # and invalid values fall back to the defaults (with the theme background
 # color backing an unknown palette key).
