@@ -112,7 +112,7 @@ function productionFunction(name) {
 }
 const context = vm.createContext({
   useTransparentForeground: true, screenForegrounds: { square: '#ffffff', wide: '#000000' },
-  barForeground: '#aaaaaa', shell: null, pluginBarApis: {},
+  barForeground: '#aaaaaa', shell: null, pluginBarApis: {}, pluginBarApiScreens: {},
   pluginBarApiComponent: { createObject(parent, properties) { return properties } },
   targetWindow(item) { return { screen: item.screen } },
   bindPluginBarApi(api, screen) { api.sampleScreen = screen },
@@ -150,17 +150,22 @@ context.prunePluginBarApis()
 assertDeepEqual(Array.from(context.released), ['example.widget', 'example.widget'], 'facade pruning releases by plugin ID rather than presentation cache key')
 
 const liveScreen = {name:'live'}, removedScreen = {name:'removed'}
-const liveTarget = {}, removedTarget = {}, retired = []
-const prune = vm.createContext({widgetHosts:[{pluginApiId:'example.widget',activeItem:{screen:liveScreen}}], pluginBarApis:{
-  live:{pluginId:'example.widget',sampleScreen:liveScreen,destroy(){retired.push('live')}},
-  removed:{pluginId:'example.widget',sampleScreen:removedScreen,destroy(){retired.push('removed')}}
-},pluginObjectOwners:new Map([[liveTarget,{target:liveTarget,pluginId:'example.widget',screen:liveScreen,clickTarget:true}],[removedTarget,{target:removedTarget,pluginId:'example.widget',screen:removedScreen,clickTarget:true}]]),targetWindow(item){return item ? {screen:item.screen} : null},unregisterClickTarget(target){this.unregistered=target},activePopout:null})
+const liveTarget = {screen:liveScreen}, removedTarget = {screen:removedScreen}, retired = []
+const prune = vm.createContext({shell:null,widgetHosts:[{pluginApiId:'example.widget',activeItem:liveTarget}],pluginBarApis:{},pluginBarApiScreens:{},pluginObjectOwners:new Map(),
+  pluginBarApiComponent:{createObject(parent,properties){return {...properties,destroy(){retired.push(this)}}}},
+  bindPluginBarApi(){}, targetWindow(item){return item ? {screen:item.screen} : null},unregisterClickTarget(target){this.unregistered=target},activePopout:null})
 prune.root=prune
-for (const name of ['pluginBarApiUsed','releasePluginObjects','prunePluginBarApis']) vm.runInContext(productionFunction(name),prune)
+for (const name of ['pluginBarApiFor','pluginObjectRecord','markPluginObject','pluginBarApiUsed','releasePluginObjects','prunePluginBarApis']) vm.runInContext(productionFunction(name),prune)
+const liveApi=prune.pluginBarApiFor('example.widget','example.widget',false,liveScreen)
+const removedApi=prune.pluginBarApiFor('example.widget','example.widget',false,removedScreen)
+prune.markPluginObject('example.widget',liveTarget,'clickTarget')
+prune.markPluginObject('example.widget',removedTarget,'clickTarget')
 prune.prunePluginBarApis()
-assertDeepEqual(Object.keys(prune.pluginBarApis),['live'],'disconnecting a screen destroys only that screens facade')
-assertDeepEqual(retired,['removed'],'the removed facade is destroyed even when the plugin remains visible')
+assertDeepEqual(Object.keys(prune.pluginBarApis),['example.widget@live'],'disconnecting a screen destroys only that screens facade')
+assertEqual(retired[0],removedApi,'the removed facade is destroyed even when the plugin remains visible')
+assertEqual(prune.pluginBarApis['example.widget@live'],liveApi,'the live screen retains its original facade')
 assert(prune.pluginObjectOwners.has(liveTarget) && !prune.pluginObjectOwners.has(removedTarget),'removed-screen cleanup preserves the other screens registrations')
+assertDeepEqual(Object.keys(prune.pluginBarApiScreens),['example.widget@live'],'screen metadata is retired together with its facade')
 
 JS
 

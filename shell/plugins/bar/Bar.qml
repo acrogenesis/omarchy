@@ -215,6 +215,8 @@ Item {
   property var widgetHosts: []
   property var centerBoxes: []
   property var pluginBarApis: ({})
+  // Keep screen ownership private; plugin facades expose scalar presentation.
+  property var pluginBarApiScreens: ({})
   // target -> { target, pluginId, clickTarget, popout }. Keyed by object so a
   // registration edits one entry in place instead of copying and rescanning an
   // array in QML; Qt's Map still finds a key by a native linear scan.
@@ -271,7 +273,7 @@ Item {
     var record = root.pluginObjectRecord(target)
     if (record && record.pluginId !== key) return false
     if (!record) {
-      record = { target: target, pluginId: key, screen: root.targetWindow(target)?.screen, clickTarget: false, popout: false }
+      record = { target: target, pluginId: key, screenName: root.targetWindow(target)?.screen?.name || "", clickTarget: false, popout: false }
       pluginObjectOwners.set(target, record)
     }
     record[role] = true
@@ -409,22 +411,25 @@ Item {
     for (var id in pluginBarApis) next[id] = pluginBarApis[id]
     next[cacheKey] = api
     pluginBarApis = next
+    var screens = Object.assign({}, pluginBarApiScreens)
+    screens[cacheKey] = screen ? screen.name : ""
+    pluginBarApiScreens = screens
     return api
   }
 
-  function pluginBarApiUsed(pluginId, screen) {
+  function pluginBarApiUsed(pluginId, screenName) {
     for (var i = 0; i < widgetHosts.length; i++) {
       var host = widgetHosts[i]
-      if (host && host.pluginApiId === pluginId && (screen === undefined || root.targetWindow(host.activeItem)?.screen === screen)) return true
+      if (host && host.pluginApiId === pluginId && (screenName === undefined || (root.targetWindow(host.activeItem)?.screen?.name || "") === screenName)) return true
     }
     return false
   }
 
-  function releasePluginObjects(pluginId, screen) {
+  function releasePluginObjects(pluginId, screenName) {
     var owned = Array.from(pluginObjectOwners.values())
     for (var i = 0; i < owned.length; i++) {
       var record = owned[i]
-      if (!record || record.pluginId !== pluginId || (screen !== undefined && record.screen !== screen)) continue
+      if (!record || record.pluginId !== pluginId || (screenName !== undefined && record.screenName !== screenName)) continue
       if (record.clickTarget) root.unregisterClickTarget(record.target)
       if (record.popout && root.activePopout === record.target) root.releasePopout(record.target)
       pluginObjectOwners.delete(record.target)
@@ -432,17 +437,20 @@ Item {
   }
 
   function prunePluginBarApis() {
-    var next = ({})
+    var next = ({}), screens = ({})
     for (var id in pluginBarApis) {
       var api = pluginBarApis[id]
-      if (root.pluginBarApiUsed(api.pluginId, api.sampleScreen)) {
+      var screenName = pluginBarApiScreens[id] || ""
+      if (root.pluginBarApiUsed(api.pluginId, screenName)) {
         next[id] = api
+        screens[id] = screenName
         continue
       }
-      root.releasePluginObjects(api.pluginId, api.sampleScreen)
+      root.releasePluginObjects(api.pluginId, screenName)
       if (api && typeof api.destroy === "function") api.destroy()
     }
     pluginBarApis = next
+    pluginBarApiScreens = screens
   }
 
   onActivePopoutChanged: schedulePluginBarApiSync()
@@ -464,6 +472,7 @@ Item {
         pluginBarApis[id].destroy()
     }
     pluginBarApis = ({})
+    pluginBarApiScreens = ({})
   }
 
   function registerClickTarget(target) {
