@@ -154,6 +154,16 @@ if [[ ${sample_path,,} =~ \.(mp4|m4v|mov|webm|mkv|avi)$ ]]; then
   fill="crop"
 fi
 
+# Resolve against the real display before bounding the sampling canvas. Native
+# center/tile sizes shrink by the same ratio, preserving the displayed framing.
+sample_scale=1
+if ((screen_width > 1920)); then
+  sample_scale=$(awk -v width="$screen_width" 'BEGIN { print 1920 / width }')
+  screen_height=$(((screen_height * 1920 + screen_width - 1) / screen_width))
+  bar_size=$(((bar_size * 1920 + screen_width - 1) / screen_width))
+  screen_width=1920
+fi
+
 case "$position" in
 top)
   crop="${screen_width}x${bar_size}+0+0"
@@ -178,7 +188,7 @@ sample_format='%[fx:int(255*r)],%[fx:int(255*g)],%[fx:int(255*b)]'
 
 # Compose the same viewport as WallpaperImage before extracting the bar strip.
 # Crop offsets are fractions of the cover overflow, matching its focal bindings.
-cover=("$sample_path[0]" -auto-orient -resize "${screen}^"
+cover=(-define jpeg:size="$screen" "$sample_path[0]" -auto-orient -scale "${screen}^"
   -gravity NorthWest -crop "${screen}+%[fx:max(0,round((w-$screen_width)*$focal_x))]+%[fx:max(0,round((h-$screen_height)*$focal_y))]" +repage)
 composition=()
 if [[ $fill != "crop" ]]; then
@@ -186,14 +196,15 @@ if [[ $fill != "crop" ]]; then
   if [[ $backdrop == "blur" ]]; then
     # Qt uses a subdued cover copy over the solid tint. Approximate its blur
     # for contrast sampling; retain the same 35% opacity and full geometry.
-    composition+=(\( "${cover[@]}" -blur 0x40 -alpha set -channel A -evaluate multiply 0.35 +channel \) -compose Over -composite)
+    blur_radius=$(awk -v ratio="$sample_scale" 'BEGIN { print 40 * ratio }')
+    composition+=(\( "${cover[@]}" -blur "0x$blur_radius" -alpha set -channel A -evaluate multiply 0.35 +channel \) -compose Over -composite)
   fi
 fi
 
-native_percent=$(awk -v scale="$scale" 'BEGIN { printf "%.6f%%", scale * 100 }')
+native_percent=$(awk -v scale="$scale" -v ratio="$sample_scale" 'BEGIN { printf "%.6f%%", scale * ratio * 100 }')
 case "$fill" in
 fit)
-  composition+=(\( "$sample_path[0]" -auto-orient -resize "$screen" \) -gravity center -compose Over -composite)
+  composition+=(\( -define jpeg:size="$screen" "$sample_path[0]" -auto-orient -scale "$screen" \) -gravity center -compose Over -composite)
   ;;
 center)
   composition+=(\( "$sample_path[0]" -auto-orient -resize "$native_percent" \) -gravity center -compose Over -composite)
@@ -206,7 +217,12 @@ tile)
   composition=("${cover[@]}")
   ;;
 esac
-pixel=$(magick "${composition[@]}" -gravity NorthWest -crop "$crop" +repage \
+pixel=$(MAGICK_MEMORY_LIMIT=512MiB \
+  MAGICK_MAP_LIMIT=0 \
+  MAGICK_DISK_LIMIT=0 \
+  MAGICK_TIME_LIMIT=5 \
+  MAGICK_THREAD_LIMIT=2 \
+  timeout --kill-after=1s 5s magick "${composition[@]}" -gravity NorthWest -crop "$crop" +repage \
   -resize '1x1!' -format "$sample_format" info:- 2>/dev/null || true)
 [[ $pixel =~ ^([0-9]+),([0-9]+),([0-9]+)$ ]] || fallback
 
