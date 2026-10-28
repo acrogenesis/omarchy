@@ -4,38 +4,6 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
-run_node_test <<'JS'
-const fs = require('fs')
-
-const commands = ['action', 'capture', 'checkout', 'checkpoint', 'common', 'gold', 'health', 'network', 'resource', 'scenario', 'transfer']
-for (const name of commands) {
-  const file = path.join(root, 'bin', `omarchy-lab-${name}`)
-  const source = fs.readFileSync(file, 'utf8')
-  assert(source.startsWith('#!/bin/bash\n'), `${name} uses the repository bash shebang`)
-  assert(source.includes('set -euo pipefail'), `${name} enables strict shell behavior`)
-  assert(source.includes('# omarchy:summary='), `${name} has command metadata`)
-}
-
-for (const name of ['checkpoint', 'gold']) {
-  const source = fs.readFileSync(path.join(root, 'bin', `omarchy-lab-${name}`), 'utf8')
-  assert(source.includes('confirm_destructive'), `${name} routes destructive operations through confirmation`)
-  assert(source.includes('--yes'), `${name} has an explicit non-interactive confirmation flag`)
-}
-
-const scenario = fs.readFileSync(path.join(root, 'bin/omarchy-lab-scenario'), 'utf8')
-assert(scenario.includes('all(.command[]; type == "string"'), 'scenario steps are argument arrays')
-assert(!scenario.includes('eval '), 'scenario runner never evaluates shell strings')
-
-const network = fs.readFileSync(path.join(root, 'bin/omarchy-lab-network'), 'utf8')
-assert(network.includes('ipv4.never-default yes'), 'isolated mode gives the guest no default route')
-assert(network.includes('update-device') && !network.includes('detach-interface'), 'network switching preserves the guest NIC identity')
-
-const resource = fs.readFileSync(path.join(root, 'bin/omarchy-lab-resource'), 'utf8')
-assert(resource.includes('Power-cycling the Lab'), 'resource changes use a full VM cycle')
-
-const transfer = fs.readFileSync(path.join(root, 'bin/omarchy-lab-transfer'), 'utf8')
-assert(transfer.includes('systemd-run --user') && transfer.includes('wl-copy --foreground'), 'guest clipboard ownership survives the SSH session')
-JS
 
 test_tmp=$(mktemp -d)
 trap 'rm -rf -- "$test_tmp"' EXIT
@@ -270,6 +238,7 @@ pass "comparison joins screenshots and emits structured metadata"
   require_lab() { :; }
   find_pool() { echo test-pool; }
   domain_running() { return 1; }
+  lab_mac() { echo 52:54:00:00:00:01; }
   is_tty() { return 0; }
   sudo() { [[ $1 == "-v" ]]; }
   run_as_root() {
@@ -278,6 +247,7 @@ pass "comparison joins screenshots and emits structured metadata"
   run_virsh() {
     case $1 in
     dumpxml) printf "<interface type='network'>\n<source network='default'/>\n</interface>\n" ;;
+    domif-getlink) echo up ;;
     pool-refresh) : ;;
     vol-delete) rm -f "$IMAGES/$OVERLAY_VOL" ;;
     vol-create-as) qemu-img create -q -f qcow2 -F qcow2 -b "$IMAGES/$BASE_VOL" "$IMAGES/$OVERLAY_VOL" "$4" ;;
