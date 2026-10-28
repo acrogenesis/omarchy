@@ -466,7 +466,13 @@ sample_edge_color() {
   local cache_dir="$HOME/.cache/omarchy/background-edge-colors"
   local identity cache_key cache_file cache_tmp line
 
-  identity=$(stat -Lc '%d:%i:%s:%y:%z' "$image" 2>/dev/null) || return 1
+  if [[ -n $SCREEN && ${SELECTED,,} == *.svg ]]; then
+    # Generated raster paths already hash the SVG, relative assets and viewport.
+    # Their timestamps are touched for eviction, not because pixels changed.
+    identity="content-keyed-svg"
+  else
+    identity=$(stat -Lc '%d:%i:%s:%y:%z' "$image" 2>/dev/null) || return 1
+  fi
   cache_key=$(printf '%s\t%s\t%s' "$image" "$identity" "$FILL_COLOR" | md5sum)
   cache_key=${cache_key%% *}
   cache_file="$cache_dir/$cache_key"

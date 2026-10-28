@@ -364,6 +364,29 @@ output=$(resolve --fields --screen 1920x1080 --canonical "$backgrounds/6-edge.pn
 [[ $(fields_value fill_color "$output") == "#ABCDEF" ]] || fail "same-timestamp raster edits leave stale edge padding" "$output"
 pass "same-timestamp raster edits refresh edge padding"
 
+# LRU touches of a content-keyed SVG raster must not repeat edge sampling.
+cat >"$backgrounds/warm-edge.svg" <<'SVG'
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90"><rect width="160" height="90" fill="#345678"/></svg>
+SVG
+printf '\n["warm-edge"]\nfill = "fit"\nbackdrop = "edge"\n' >>"$backgrounds/backgrounds.toml"
+mkdir -p "$test_tmp/edge-bin"
+cat >"$test_tmp/edge-bin/magick" <<'STUB'
+#!/bin/bash
+for arg in "$@"; do
+  if [[ $arg == "histogram:info:-" ]]; then printf 'sample\n' >>"$EDGE_SAMPLE_LOG"; fi
+done
+exec "$REAL_MAGICK" "$@"
+STUB
+chmod +x "$test_tmp/edge-bin/magick"
+real_magick=$(command -v magick)
+for request in first warm; do
+  HOME="$home" PATH="$test_tmp/edge-bin:$ROOT/bin:$PATH" REAL_MAGICK="$real_magick" EDGE_SAMPLE_LOG="$test_tmp/edge-samples" \
+    "$ROOT/bin/omarchy-theme-bg-resolve" --screen 1920x1080 --fields --canonical "$backgrounds/warm-edge.svg" >"$test_tmp/warm-$request"
+done
+[[ $(wc -l <"$test_tmp/edge-samples") == 1 ]] || fail "a warm SVG repeats its expensive edge sample"
+pass "warm SVG edge colors survive render-cache eviction timestamp touches"
+
+
 
 # Malformed metadata never breaks resolution: unparseable lines are ignored
 # and invalid values fall back to the defaults (with the theme background
