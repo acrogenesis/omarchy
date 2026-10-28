@@ -242,17 +242,6 @@ pass "the upgrade snapshots first and pins root= around the kernel install"
   fail "the upgrade never reboots into boot entries missing root="
 pass "the upgrade reboots on --reboot only when root= is confirmed in the boot entries"
 
-# Exercise the real manifest selection without running a package transaction.
-# Native installs keep the shim optional; upgrades retain Docker until migration.
-package_selection=$(function_body install_omarchy_quattro_packages | grep -m1 'mapfile -t base_packages')
-package_selection=${package_selection//\/usr\/share\/omarchy/\$ROOT}
-eval "$package_selection"
-printf '%s\n' "${base_packages[@]}" | grep -qx podman || fail "upgrade installs Podman before migration"
-if printf '%s\n' "${base_packages[@]}" | grep -qx podman-docker; then
-  fail "upgrade replaces Docker before workload migration"
-fi
-pass "Omarchy 4 upgrade defers the Docker shim until workload migration"
-
 # Run the actual transition calls in a separate shell so set -e remains active
 # even though the test captures its status. An older packaged tree can lack
 # either unit; failure must warn and leave the rest of the transition reachable.

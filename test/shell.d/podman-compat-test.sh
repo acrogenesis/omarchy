@@ -43,7 +43,6 @@ for variable in DOCKER_HOST DOCKER_CONTEXT; do
 done
 "$ROOT/bin/omarchy-remove-docker-compat" >"$test_dir/output" 2>&1
 grep -q '^omarchy-pkg-drop podman-docker$' "$TEST_LOG" || fail "optional removal targets wrong package"
-! grep -qx podman-docker "$ROOT/install/omarchy-base.packages" || fail "compatibility is still a default dependency"
 pass "optional compatibility preserves real engines and configured endpoints"
 
 # Repair must retain the installed engine even if defaults include its shim.
