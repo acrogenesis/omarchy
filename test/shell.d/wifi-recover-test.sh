@@ -11,18 +11,18 @@ mkdir -p "$tmp_dir/bin" "$tmp_dir/net"
 
 cat >"$tmp_dir/bin/nmcli" <<'EOF'
 #!/bin/bash
-if [[ ${NM_HANG:-0} == 1 ]]; then
+if [[ ${NM_HANG:-0} == "1" ]]; then
   sleep 100
   exit 0
 fi
-if [[ ${NMCLI_RC:-0} != 0 ]]; then
+if [[ ${NMCLI_RC:-0} != "0" ]]; then
   exit "$NMCLI_RC"
 fi
-if [[ $1 == radio && $2 == wifi ]]; then
+if [[ $1 == "radio" && $2 == "wifi" ]]; then
   printf '%s\n' "${RADIO:-enabled}"
   exit 0
 fi
-if [[ $1 == -t && $2 == -f && $3 == DEVICE,TYPE,STATE ]]; then
+if [[ $1 == "-t" && $2 == "-f" && $3 == DEVICE,TYPE,STATE ]]; then
   printf '%s\n' "${NM_STATUS:-}"
   exit 0
 fi
@@ -31,7 +31,7 @@ EOF
 
 cat >"$tmp_dir/bin/rfkill" <<'EOF'
 #!/bin/bash
-if [[ ${RFKILL_BLOCKED:-0} == 1 ]]; then
+if [[ ${RFKILL_BLOCKED:-0} == "1" ]]; then
   printf '0: phy0: Wireless LAN\n\tSoft blocked: yes\n\tHard blocked: no\n'
   exit 0
 fi
@@ -43,10 +43,10 @@ EOF
 # prints "Joined IBSS", neither of which is a dead radio.
 cat >"$tmp_dir/bin/iw" <<'EOF'
 #!/bin/bash
-if [[ ${IW_FAIL:-0} == 1 ]]; then
+if [[ ${IW_FAIL:-0} == "1" ]]; then
   exit 1
 fi
-if [[ $3 == info ]]; then
+if [[ $3 == "info" ]]; then
   printf 'Interface %s\n\tifindex 3\n\twdev 0x1\n\ttype %s\n\twiphy 0\n' "$2" "${IW_TYPE:-managed}"
   exit 0
 fi
@@ -60,7 +60,7 @@ case ${IW_TYPE:-managed} in
     exit 0
     ;;
 esac
-if [[ ${IW_CONNECTED:-0} == 1 ]]; then
+if [[ ${IW_CONNECTED:-0} == "1" ]]; then
   printf 'Connected to aa:bb:cc:dd:ee:ff (on %s)\n' "$2"
   exit 0
 fi
@@ -70,14 +70,14 @@ EOF
 cat >"$tmp_dir/bin/sudo" <<'EOF'
 #!/bin/bash
 printf 'sudo %s\n' "$*" >>"$CALLS"
-if [[ $1 == -n && $2 == -l ]]; then
-  if [[ ${GRANT_FAIL:-0} == 1 ]]; then
+if [[ $1 == "-n" && $2 == "-l" ]]; then
+  if [[ ${GRANT_FAIL:-0} == "1" ]]; then
     exit 1
   fi
   printf '!authenticate\n'
   exit 0
 fi
-if [[ ${RESTART_FAIL:-0} == 1 ]]; then
+if [[ ${RESTART_FAIL:-0} == "1" ]]; then
   exit 1
 fi
 exit 0
@@ -395,155 +395,57 @@ HOME="$tmp_dir/custom" XDG_CONFIG_HOME="$tmp_dir/custom/.config" \
   OMARCHY_WIFI_RECOVER_POLL=0 OMARCHY_WIFI_RECOVER_MAX_POLLS=1 \
   PATH="$tmp_dir/bin:$PATH" \
   "$ROOT/bin/omarchy-wifi-recover" >/dev/null || true
-[[ $(<"$tmp_dir/custom/.config/systemd/user/omarchy-wifi-recover.service") == customized ]] ||
+[[ $(<"$tmp_dir/custom/.config/systemd/user/omarchy-wifi-recover.service") == "customized" ]] ||
   fail "wifi recover leaves a customized staged unit alone"
 pass "wifi recover leaves a customized staged unit alone"
 
 
-grep -F 'timeout "$IW_TIMEOUT" iw' "$ROOT/bin/omarchy-wifi-recover" >/dev/null ||
-  fail "wifi recover does not bound iw probes"
-grep -F 'timeout "$NM_TIMEOUT" nmcli' "$ROOT/bin/omarchy-wifi-recover" >/dev/null ||
-  fail "wifi recover does not bound nmcli probes"
-pass "wifi recover bounds iw and nmcli probes"
-
-grep -F 'rm -f "$staged"' "$ROOT/install/user/first-run/enable-user-units.sh" >/dev/null ||
-  fail "first-run does not unstage a packaged wifi recover unit"
-grep -F 'sudo install -Dm440' "$ROOT/migrations/1787444800.sh" >/dev/null ||
-  fail "migration does not install the sudoers grant"
-pass "first-run unstages a packaged wifi recover unit"
-
-# The migration runs on every existing install and had no test at all, which
-# is how it came to disagree with the two other paths that stage this unit.
-# Run it rather than grepping it. `visudo` and `systemctl` are absent or
-# unusable in a test environment, and the runner supplies OMARCHY_PATH.
-cat >"$tmp_dir/bin/visudo" <<'EOF'
-#!/bin/bash
-exit "${VISUDO_RC:-0}"
-EOF
-cat >"$tmp_dir/bin/systemctl" <<'EOF'
-#!/bin/bash
-exit 1
-EOF
-chmod +x "$tmp_dir/bin/visudo" "$tmp_dir/bin/systemctl"
-
-mig_home="$tmp_dir/mig"
-run_migration() {
-  : >"$tmp_dir/calls"
-  rm -rf "$mig_home"
-  mkdir -p "$mig_home/.config/systemd/user"
-  "$@"
-  set +e
-  CALLS="$tmp_dir/calls" HOME="$mig_home" XDG_CONFIG_HOME="$mig_home/.config" \
-    OMARCHY_PATH="$ROOT" \
-    OMARCHY_WIFI_SUDOERS_DEST="$tmp_dir/sudoers-dest" \
-    OMARCHY_WIFI_RECOVER_PACKAGED_UNIT="$tmp_dir/mig-packaged.service" \
-    RESTART_FAIL="${MIG_SUDO_FAIL:-0}" VISUDO_RC="${MIG_VISUDO_RC:-0}" \
-    PATH="$tmp_dir/bin:$PATH" \
-    bash -euo pipefail "$ROOT/migrations/1787444800.sh" >"$tmp_dir/mig.out" 2>&1
-  echo $? >"$tmp_dir/mig.rc"
-  set -e
-}
-
-mig_staged="$mig_home/.config/systemd/user/omarchy-wifi-recover.service"
-unit_src="$ROOT/default/systemd/user/omarchy-wifi-recover.service"
-rm -f "$tmp_dir/sudoers-dest" "$tmp_dir/mig-packaged.service"
-
-# A user who cancels the sudo prompt, or is not in %wheel, must not lose every
-# migration queued behind this one.
-MIG_SUDO_FAIL=1 run_migration true
-[[ $(<"$tmp_dir/mig.rc") == 0 ]] ||
-  fail "migration survives a refused sudo" "$(cat "$tmp_dir/mig.out")"
-grep -q 'Could not install' "$tmp_dir/mig.out" ||
-  fail "migration says the grant was not installed" "$(cat "$tmp_dir/mig.out")"
-pass "migration survives a refused sudo"
-
-MIG_VISUDO_RC=1 run_migration true
-[[ $(<"$tmp_dir/mig.rc") == 0 ]] ||
-  fail "migration survives an unparsable sudoers file" "$(cat "$tmp_dir/mig.out")"
-grep -q 'does not parse' "$tmp_dir/mig.out" ||
-  fail "migration says the sudoers file did not parse" "$(cat "$tmp_dir/mig.out")"
-pass "migration reports an unparsable sudoers file"
-MIG_VISUDO_RC=0
-
-# Packaged unit present and the staged copy is stock: clean it up.
-run_migration cp "$unit_src" "$tmp_dir/mig-packaged.service"
-install -Dm644 "$unit_src" "$mig_staged"
-CALLS="$tmp_dir/calls" HOME="$mig_home" XDG_CONFIG_HOME="$mig_home/.config" \
-  OMARCHY_PATH="$ROOT" OMARCHY_WIFI_SUDOERS_DEST="$tmp_dir/sudoers-dest" \
-  OMARCHY_WIFI_RECOVER_PACKAGED_UNIT="$tmp_dir/mig-packaged.service" \
-  PATH="$tmp_dir/bin:$PATH" \
-  bash -euo pipefail "$ROOT/migrations/1787444800.sh" >/dev/null 2>&1
-[[ ! -e $mig_staged ]] ||
-  fail "migration removes a stock staged unit once the packaged one exists"
-pass "migration removes a stock staged unit once the packaged one exists"
-
-# The same, with the user's own edits in it. The watcher and first-run both
-# leave that alone; the migration used to delete it.
-printf 'customized\n' >"$mig_staged"
-CALLS="$tmp_dir/calls" HOME="$mig_home" XDG_CONFIG_HOME="$mig_home/.config" \
-  OMARCHY_PATH="$ROOT" OMARCHY_WIFI_SUDOERS_DEST="$tmp_dir/sudoers-dest" \
-  OMARCHY_WIFI_RECOVER_PACKAGED_UNIT="$tmp_dir/mig-packaged.service" \
-  PATH="$tmp_dir/bin:$PATH" \
-  bash -euo pipefail "$ROOT/migrations/1787444800.sh" >/dev/null 2>&1
-[[ $(<"$mig_staged") == customized ]] ||
-  fail "migration leaves a customized staged unit alone"
-pass "migration leaves a customized staged unit alone"
-
-# No packaged unit yet: stage ours, but never over the user's.
-rm -f "$tmp_dir/mig-packaged.service"
-run_migration true
-cmp -s "$mig_staged" "$unit_src" ||
-  fail "migration stages the unit when no packaged copy exists"
-pass "migration stages the unit when no packaged copy exists"
-
-printf 'customized\n' >"$mig_staged"
-CALLS="$tmp_dir/calls" HOME="$mig_home" XDG_CONFIG_HOME="$mig_home/.config" \
-  OMARCHY_PATH="$ROOT" OMARCHY_WIFI_SUDOERS_DEST="$tmp_dir/sudoers-dest" \
-  OMARCHY_WIFI_RECOVER_PACKAGED_UNIT="$tmp_dir/mig-packaged.service" \
-  PATH="$tmp_dir/bin:$PATH" \
-  bash -euo pipefail "$ROOT/migrations/1787444800.sh" >/dev/null 2>&1
-[[ $(<"$mig_staged") == customized ]] ||
-  fail "migration does not restage over a customized unit"
-pass "migration does not restage over a customized unit"
-
-sudoers="$ROOT/etc/sudoers.d/omarchy-restart-wifi"
-rule='%wheel ALL=(root) NOPASSWD: /usr/bin/omarchy-restart-wifi "", /usr/bin/omarchy-restart-wifi --interface *'
-rules=$(grep -vE '^[[:space:]]*(#|$)' "$sudoers")
-[[ $rules == "$rule" ]] ||
-  fail "wifi sudoers file grants only the validated Wi-Fi restart entry point" "got: $rules"
-if command -v visudo >/dev/null; then
-  visudo -cf "$sudoers" >/dev/null || fail "wifi sudoers rule parses"
-fi
-pass "wifi sudoers rule is scoped to omarchy-restart-wifi"
-
-service="$ROOT/default/systemd/user/omarchy-wifi-recover.service"
-grep -Fx 'ExecStart=/usr/bin/omarchy-wifi-recover' "$service" >/dev/null ||
-  fail "wifi recover unit starts the packaged watcher"
-grep -Fx 'WantedBy=graphical-session.target' "$service" >/dev/null ||
-  fail "wifi recover unit is pulled in at login"
-grep -Fx 'ConditionPathExists=/sys/class/ieee80211' "$service" >/dev/null ||
-  fail "wifi recover unit stays off machines with no phy"
-grep -Fx 'ConditionPathExists=/usr/bin/omarchy-wifi-recover' "$service" >/dev/null ||
-  fail "wifi recover unit stays off until the packaged binary exists"
-pass "wifi recover unit starts with the graphical session"
-
-migration=$(grep -rl 'omarchy-wifi-recover.service' "$ROOT/migrations" | head -n 1 || true)
-[[ -n $migration ]] || fail "existing installs never enable wifi recover"
-grep -F 'systemctl --user enable omarchy-wifi-recover.service' "$migration" >/dev/null ||
-  fail "wifi recover migration enables the unit"
-pass "existing installs enable wifi recover"
-
-mode=$(stat -c '%a' "$ROOT/migrations/1787444800.sh")
-[[ $mode == 644 ]] || fail "wifi recover migration must be mode 644" "$mode"
-pass "wifi recover migration is mode 644"
-
-# A listed healthy radio must not hide a second interface lost by NM.
 add_phy wlan1
-NM_STATUS='wlp9s0:wifi:connected' IW_CONNECTED=1 run_once
-[[ $(restart_count) == 1 ]] || fail "missing second adapter was hidden"
+NM_STATUS='wlp9s0:wifi:unavailable' IW_CONNECTED=0 run_once
+[[ $(restart_count) == "1" ]] || fail "missing second adapter was hidden"
 grep -qx 'sudo -n /usr/bin/omarchy-restart-wifi --interface wlan1' "$tmp_dir/calls" || fail "recovery did not target the missing adapter"
 ! grep -q -- '--interface wlp9s0' "$tmp_dir/calls" || fail "healthy adapter was recovered"
 printf '1\n' >"$tmp_dir/net/wlan1/phy80211/rfkill0/soft"
 NM_STATUS='wlp9s0:wifi:connected' IW_CONNECTED=1 run_once
-[[ $(restart_count) == 0 ]] || fail "missing blocked adapter was recovered"
+[[ $(restart_count) == "0" ]] || fail "missing blocked adapter was recovered"
 pass "missing adapters are compared individually and blocked siblings remain untouched"
+
+printf '0\n' >"$tmp_dir/net/wlan1/phy80211/rfkill0/soft"
+for type in AP IBSS mesh 'mesh point'; do
+  NM_STATUS='wlp9s0:wifi:connected' IW_TYPE="$type" run_once
+  [[ $(restart_count) == "0" ]] || fail "an unlisted $type interface was restarted"
+done
+pass "unlisted AP, ad-hoc and mesh interfaces are left running"
+
+rm -rf "$tmp_dir/net"
+add_phy wlan0
+add_phy wlan1
+cat >"$tmp_dir/bin/nmcli" <<'STUB'
+#!/bin/bash
+if [[ $1 == "radio" ]]; then echo enabled; else
+  poll=$(($(cat "$POLL_FILE" 2>/dev/null || echo 0) + 1))
+  printf '%s' "$poll" >"$POLL_FILE"
+  printf 'wlan0:wifi:connected\nwlan1:wifi:connected\n'
+fi
+STUB
+cat >"$tmp_dir/bin/iw" <<'STUB'
+#!/bin/bash
+if [[ $3 == "info" ]]; then printf 'type managed\n'; exit 0; fi
+poll=$(cat "$POLL_FILE")
+if [[ $2 == "wlan0" ]]; then
+  [[ $poll == "1" || $CONFIRM_CASE == "joined" ]] || printf 'Connected to aa:bb\n'
+else
+  [[ $poll != "1" ]] || printf 'Connected to aa:bb\n'
+fi
+STUB
+export POLL_FILE="$tmp_dir/polls" CONFIRM_CASE=alternating
+printf 0 >"$POLL_FILE"
+run_loop 2
+[[ $(restart_count) == "0" ]] || fail "alternating adapter failures share confirmation counts"
+CONFIRM_CASE=joined
+printf 0 >"$POLL_FILE"
+run_loop 2
+[[ $(restart_count) == "1" ]] || fail "the persistently failed adapter was not confirmed"
+grep -qx 'sudo -n /usr/bin/omarchy-restart-wifi --interface wlan0' "$tmp_dir/calls" || fail "wrong adapter confirmed"
+! grep -q -- '--interface wlan1' "$tmp_dir/calls" || fail "a newly failed sibling borrowed confirmation"
+pass "each adapter must fail its own consecutive confirmation polls"

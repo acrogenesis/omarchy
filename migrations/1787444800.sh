@@ -3,9 +3,7 @@ echo "Reload a wedged Wi-Fi radio without waiting for the user"
 # first-run only runs once, so existing installs need the unit enabled here.
 
 src="$OMARCHY_PATH/default/systemd/user/omarchy-wifi-recover.service"
-sudoers_src="$OMARCHY_PATH/etc/sudoers.d/omarchy-restart-wifi"
-# Overridable only so the test can exercise both halves of every branch here;
-# the watcher already reads its packaged unit the same way.
+sudoers_src="$OMARCHY_PATH/default/sudoers/omarchy-restart-wifi"
 sudoers_dest=${OMARCHY_WIFI_SUDOERS_DEST:-/etc/sudoers.d/omarchy-restart-wifi}
 packaged_unit=${OMARCHY_WIFI_RECOVER_PACKAGED_UNIT:-/usr/lib/systemd/user/omarchy-wifi-recover.service}
 config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
