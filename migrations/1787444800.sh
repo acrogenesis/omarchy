@@ -2,8 +2,8 @@ echo "Reload a wedged Wi-Fi radio without waiting for the user"
 
 # first-run only runs once, so existing installs need the unit enabled here.
 
-src="$OMARCHY_PATH/default/systemd/user/omarchy-wifi-recover.service"
-sudoers_src="$OMARCHY_PATH/default/sudoers/omarchy-restart-wifi"
+src="$OMARCHY_PATH/install/helpers/wifi-recover.service"
+sudoers_src="$OMARCHY_PATH/install/helpers/wifi-restart.sudoers"
 sudoers_dest=${OMARCHY_WIFI_SUDOERS_DEST:-/etc/sudoers.d/omarchy-restart-wifi}
 packaged_unit=${OMARCHY_WIFI_RECOVER_PACKAGED_UNIT:-/usr/lib/systemd/user/omarchy-wifi-recover.service}
 config_home="${XDG_CONFIG_HOME:-$HOME/.config}"

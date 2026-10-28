@@ -19,6 +19,9 @@ omarchy-input-method configure --defaults || echo "Input method defaults deferre
 stage_user_unit() {
   local name=$1
   local src="$OMARCHY_PATH/default/systemd/user/$name"
+  if [[ $name == "omarchy-wifi-recover.service" ]]; then
+    src="$OMARCHY_PATH/install/helpers/wifi-recover.service"
+  fi
   local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
   local staged="$config_home/systemd/user/$name"
   if [[ -f /usr/lib/systemd/user/$name ]]; then

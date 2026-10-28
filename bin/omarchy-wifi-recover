@@ -44,7 +44,7 @@ unstage_if_packaged() {
   local config="${XDG_CONFIG_HOME:-$HOME/.config}"
   local staged="$config/systemd/user/omarchy-wifi-recover.service"
   local wants="$config/systemd/user/graphical-session.target.wants/omarchy-wifi-recover.service"
-  local source="$OMARCHY_PATH/default/systemd/user/omarchy-wifi-recover.service"
+  local source="$OMARCHY_PATH/install/helpers/wifi-recover.service"
 
   [[ -f $PACKAGED_UNIT && -f $staged ]] || return 0
   cmp -s "$staged" "$PACKAGED_UNIT" || cmp -s "$staged" "$source" || return 0
