@@ -10,4 +10,4 @@ if [[ ! -S $XDG_RUNTIME_DIR/podman/podman.sock ]]; then
   systemctl --user restart podman.socket || exit 1
 fi
 
-PATH="$OMARCHY_PATH/default/podman/desktop:$PATH" exec /usr/bin/podman-desktop "$@"
+PATH="$OMARCHY_PATH/default/podman/desktop:$PATH" exec setsid uwsm-app -- /usr/bin/podman-desktop "$@"

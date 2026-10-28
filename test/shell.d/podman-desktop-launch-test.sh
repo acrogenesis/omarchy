@@ -29,6 +29,12 @@ if [[ $* == '--user restart podman.socket' ]]; then
   python3 -c 'import os,socket; s=socket.socket(socket.AF_UNIX); s.bind(os.environ["XDG_RUNTIME_DIR"]+"/podman/podman.sock")'
 fi
 ''')
+    script(binary / 'uwsm-app', '''#!/bin/bash
+printf "app-scope %s\\n" "$*" >>"$TEST_LOG"
+[[ $1 == "--" && $PATH == "$OMARCHY_PATH/default/podman/desktop:"* ]] || exit 91
+shift
+exec "$@"
+''')
     script(binary / 'real-podman', '#!/bin/bash\nprintf "backend %s\\n" "$*" >>"$TEST_LOG"\n')
     script(binary / 'desktop', '#!/bin/bash\nprintf "desktop %s\\n" "$*" >>"$TEST_LOG"\npodman system service --time=0\npodman version\n')
     script(adapter / 'podman', (root / 'default/podman/desktop/podman').read_text().replace('/usr/bin/podman', str(binary / 'real-podman')))
@@ -42,6 +48,7 @@ fi
         assert endpoint.stat().st_ino == inode
     calls = log.read_text()
     assert 'desktop --test-argument' in calls and 'backend version' in calls
+    assert 'app-scope -- ' in calls and calls.index('app-scope ') < calls.index('desktop ')
     assert 'backend system service' not in calls
     assert 'stop podman.service' not in calls
     endpoint.unlink();log.write_text('')
