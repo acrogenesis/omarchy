@@ -648,6 +648,7 @@ const apis = {'plugin@wide': {pluginId: 'plugin', destroy() { destroyed.push('wi
               'other@wide': {pluginId: 'other', destroy() { destroyed.push('other') }}}
 const state = {pluginBarApis: apis, activePopout: null, clickTargets: [], pluginObjectOwners: new Map(),
                publicLayoutConfig() { return {} },
+               targetWindow(item) { return item ? {screen: item.screen} : null },
                requestPopout(item) { state.activePopout = item },
                releasePopout(item) { if (state.activePopout === item) state.activePopout = null },
                unregisterClickTarget(item) { state.clickTargets = state.clickTargets.filter(x => x !== item) }}

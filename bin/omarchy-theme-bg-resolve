@@ -459,15 +459,15 @@ fi
 # Edge backdrops preserve a fitted composition over the dominant colour around
 # the resolved asset's perimeter. Sampling happens after per-screen variant
 # selection and SVG rasterization, so each monitor measures the pixels it will
-# actually display. The result is cached by path, mtime, and alpha fallback;
+# actually display. The result is cached by path, precise file identity, and alpha fallback;
 # an unreadable or mixed-edge image simply keeps the declared fill_color.
 sample_edge_color() {
   local image="$1"
   local cache_dir="$HOME/.cache/omarchy/background-edge-colors"
-  local mtime cache_key cache_file cache_tmp line
+  local identity cache_key cache_file cache_tmp line
 
-  mtime=$(stat -c %Y "$image" 2>/dev/null) || return 1
-  cache_key=$(printf '%s\t%s\t%s' "$image" "$mtime" "$FILL_COLOR" | md5sum)
+  identity=$(stat -Lc '%d:%i:%s:%y:%z' "$image" 2>/dev/null) || return 1
+  cache_key=$(printf '%s\t%s\t%s' "$image" "$identity" "$FILL_COLOR" | md5sum)
   cache_key=${cache_key%% *}
   cache_file="$cache_dir/$cache_key"
 

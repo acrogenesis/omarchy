@@ -426,3 +426,23 @@ try {
 } finally { fs.rmSync(temporary,{recursive:true,force:true}) }
 JS
 )
+
+# A current SVG theme keeps its selected row in the theme picker.
+(
+  task_tmp=$(mktemp -d)
+  trap 'rm -rf "$task_tmp"' EXIT
+  mkdir -p "$task_tmp/home/.config/omarchy/themes/zeta/backgrounds" "$task_tmp/home/.local/state/omarchy/current" "$task_tmp/bin" "$task_tmp/source/themes"
+  printf '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>\n' >"$task_tmp/home/.config/omarchy/themes/zeta/backgrounds/art.svg"
+  printf 'zeta\n' >"$task_tmp/home/.local/state/omarchy/current/theme.name"
+  cat >"$task_tmp/bin/omarchy-menu-images" <<'STUB'
+#!/bin/bash
+while (( $# )); do
+  if [[ $1 == "--selected" ]]; then printf '%s' "$2" >"$SELECTED_LOG"; break; fi
+  shift
+done
+STUB
+  chmod +x "$task_tmp/bin/omarchy-menu-images"
+  HOME="$task_tmp/home" OMARCHY_PATH="$task_tmp/source" PATH="$task_tmp/bin:$PATH" SELECTED_LOG="$task_tmp/selected" bash "$ROOT/bin/omarchy-theme-switcher"
+  [[ $(<"$task_tmp/selected") == "$task_tmp/home/.cache/omarchy/theme-selector/previews/zeta.svg" ]] || fail "the picker loses its current SVG theme selection"
+  pass "the theme picker selects the current SVG preview"
+)

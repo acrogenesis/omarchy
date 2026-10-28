@@ -110,7 +110,7 @@ fi
 
 current_theme=$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null)
 selected_preview=""
-for extension in png jpg jpeg webp gif bmp mp4 m4v mov webm mkv avi; do
+for extension in png jpg jpeg webp gif bmp svg mp4 m4v mov webm mkv avi; do
   if [[ -e $preview_dir/$current_theme.$extension ]]; then
     selected_preview="$preview_dir/$current_theme.$extension"
     break

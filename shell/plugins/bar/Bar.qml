@@ -271,7 +271,7 @@ Item {
     var record = root.pluginObjectRecord(target)
     if (record && record.pluginId !== key) return false
     if (!record) {
-      record = { target: target, pluginId: key, clickTarget: false, popout: false }
+      record = { target: target, pluginId: key, screen: root.targetWindow(target)?.screen, clickTarget: false, popout: false }
       pluginObjectOwners.set(target, record)
     }
     record[role] = true
@@ -412,19 +412,19 @@ Item {
     return api
   }
 
-  function pluginBarApiUsed(pluginId) {
+  function pluginBarApiUsed(pluginId, screen) {
     for (var i = 0; i < widgetHosts.length; i++) {
       var host = widgetHosts[i]
-      if (host && host.pluginApiId === pluginId) return true
+      if (host && host.pluginApiId === pluginId && (screen === undefined || root.targetWindow(host.activeItem)?.screen === screen)) return true
     }
     return false
   }
 
-  function releasePluginObjects(pluginId) {
+  function releasePluginObjects(pluginId, screen) {
     var owned = Array.from(pluginObjectOwners.values())
     for (var i = 0; i < owned.length; i++) {
       var record = owned[i]
-      if (!record || record.pluginId !== pluginId) continue
+      if (!record || record.pluginId !== pluginId || (screen !== undefined && record.screen !== screen)) continue
       if (record.clickTarget) root.unregisterClickTarget(record.target)
       if (record.popout && root.activePopout === record.target) root.releasePopout(record.target)
       pluginObjectOwners.delete(record.target)
@@ -435,11 +435,11 @@ Item {
     var next = ({})
     for (var id in pluginBarApis) {
       var api = pluginBarApis[id]
-      if (root.pluginBarApiUsed(api.pluginId)) {
+      if (root.pluginBarApiUsed(api.pluginId, api.sampleScreen)) {
         next[id] = api
         continue
       }
-      root.releasePluginObjects(api.pluginId)
+      root.releasePluginObjects(api.pluginId, api.sampleScreen)
       if (api && typeof api.destroy === "function") api.destroy()
     }
     pluginBarApis = next
