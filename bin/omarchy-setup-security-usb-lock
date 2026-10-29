@@ -18,7 +18,6 @@ case "$mode" in
 esac
 omarchy-shell lock status >/dev/null
 omarchy-pkg-add usbguard
-sudo install -Dm644 "$OMARCHY_PATH/default/polkit/org.omarchy.usb-lock.policy" /usr/share/polkit-1/actions/org.omarchy.usb-lock.policy
 # Start the packaged watcher before enabling the approval mode. A missing UI
 # must not leave USBGuard denying new devices without a way to review them.
 systemctl --user daemon-reload

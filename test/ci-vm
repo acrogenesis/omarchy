@@ -103,6 +103,10 @@ until ssh_vm 'systemctl --user show-environment | grep -q ^HYPRLAND_INSTANCE_SIG
 done
 echo "test/ci-vm: sources copied and desktop up after $(seconds) s"
 
+# The release image can predate this checkout's USB protection. Its policy
+# tests use USBGuard's real rule parser, not a fixture that accepts every rule.
+ssh_vm 'export OMARCHY_PATH=~/src/omarchy PATH=~/src/omarchy/bin:$PATH; omarchy-pkg-add usbguard'
+
 # Nobody touches this machine, and after a few minutes without input Omarchy
 # turns the screen off. The tests that read the screen then read black.
 if ! ssh_vm 'systemd-run --user --quiet --collect --wait omarchy-toggle-idle stay-awake' >/dev/null; then

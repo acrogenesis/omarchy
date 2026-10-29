@@ -78,7 +78,23 @@ USB_LOCK_POLKIT=$scratch/package/etc/polkit-1/rules.d/40-omarchy-usb-lock.rules
 USB_LOCK_WATCH=$scratch/package/etc/systemd/user/omarchy-usb-lock-watch.service
 [[ -f $USB_LOCK_UNIT && -f $USB_LOCK_POLKIT ]] || fail "the settings package needs the service and Polkit rule"
 grep -Fq 'ExecStartPre=/usr/bin/omarchy-usb-lock-admin prepare' "$USB_LOCK_UNIT" || fail "the installed unit must prepare its policy"
-grep -Fq 'org.omarchy.usb-lock.state' "$USB_LOCK_POLKIT" || fail "the shipped rule must grant the state action"
+run_node_test <<'JS'
+const vm = require('vm')
+const fs = require('fs')
+let rule
+vm.runInNewContext(fs.readFileSync(path.join(root, 'etc/polkit-1/rules.d/40-omarchy-usb-lock.rules'), 'utf8'), {
+  polkit: {addRule(fn) {rule = fn}, Result: {YES: 'yes', NO: 'no'}}
+})
+const subject = {local: true, active: true, isInGroup: group => group === 'wheel'}
+const action = {id: 'org.freedesktop.policykit.exec', lookup: key => key === 'program' ? '/usr/bin/omarchy-usb-lock-state' : ''}
+assert(rule(action, subject) === 'yes', 'active local wheel users can request a policy transition through pkexec')
+assert(rule({...action, id: 'org.omarchy.usb-lock.state'}, subject) === 'yes', 'preview action compatibility retains the same boundary')
+assert(rule(action, {...subject, active: false}) === 'no', 'inactive sessions cannot request a transition')
+assert(rule(action, {...subject, local: false}) === 'no', 'remote sessions cannot request a transition')
+assert(rule(action, {...subject, isInGroup: () => false}) === 'no', 'non-administrators cannot request a transition')
+assert(rule({...action, lookup: () => '/usr/bin/omarchy-usb-lock-admin'}, subject) === undefined, 'the rule cannot elevate the administrative helper')
+assert(rule({...action, id: 'another.action'}, subject) === undefined, 'unrelated actions receive no grant')
+JS
 for path in "$USB_LOCK_UNIT" "$USB_LOCK_POLKIT" "$USB_LOCK_WATCH"; do
   mv "$path" "$path.saved"
   if usb_lock_enable >"$scratch/setup-error" 2>&1; then fail "missing package support must reject enable"; fi
