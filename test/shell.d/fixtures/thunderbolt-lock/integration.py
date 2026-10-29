@@ -1,12 +1,16 @@
 """Upstream Bolt UMockdev hardware only; assertions run in exercise.sh."""
 import importlib.machinery
 import importlib.util
+import ctypes
 import os
+import select
 import signal
+import struct
 from pathlib import Path
 import subprocess
 import sys
 import time
+import threading
 import unittest
 
 root = Path(sys.argv.pop(1))
@@ -116,5 +120,116 @@ class LockIntegration(u.BoltTest):
     def test_user(self): self.exercise('user')
     def test_secure(self): self.exercise('secure')
 
-result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(LockIntegration(name) for name in ('test_user','test_secure')))
+    def test_temporary_secure(self):
+        self.user_config(AuthMode='disabled', DefaultPolicy='manual')
+        _, host = self.add_domain_host(security='secure', iommu='1')
+        env = os.environ | {'ROOT':str(root), 'UMOCKDEV_DIR':self.testbed.get_root_dir(), 'TB_TEST_DIR':self.rundir, 'TB_TEST_SECURITY':'secure', 'TB_TEST_KEYS':str(Path(self.dbpath, 'keys'))}
+        command = ['bash', str(root / 'test/shell.d/fixtures/thunderbolt-lock/exercise.sh')]
+        # A real kernel emits a change uevent after a sysfs authorization write.
+        # Mirror that hardware event for the regular files supplied by UMockdev.
+        libc = ctypes.CDLL(None, use_errno=True)
+        notify = libc.inotify_init1(os.O_CLOEXEC)
+        self.assertGreaterEqual(notify, 0)
+        stop_read, stop_write = os.pipe()
+        watches = {}
+        def changes():
+            while True:
+                ready, _, _ = select.select([notify, stop_read], [], [])
+                if stop_read in ready: return
+                data = os.read(notify, 65536)
+                offset = 0
+                while offset < len(data):
+                    wd, mask, _, length = struct.unpack_from('iIII', data, offset)
+                    offset += 16 + length
+                    path = watches.get(wd)
+                    if mask & 8 and path is not None and Path(self.testbed.get_root_dir(), path.lstrip('/')).exists():
+                        self.testbed.uevent(path, 'change')
+        events = threading.Thread(target=changes)
+        events.start()
+        def add(uid=None, name='Input Dock', key=''):
+            if uid is None:
+                path, uid = self.add_device(host, 1, name, 'Example', authorized=0, key=key, boot='0')
+            else:
+                attrs = ['device_name',name,'device','0x23','vendor_name','Example','vendor','0x23','authorized','0','unique_id',uid,'boot','0']
+                if key is not None: attrs += ['key', '\n']
+                path = self.testbed.add_device('thunderbolt', '0-1', host, attrs, ['DEVTYPE','thunderbolt_device'])
+            actual = str(Path(self.testbed.get_root_dir(), path.lstrip('/'), 'authorized'))
+            wd = libc.inotify_add_watch(notify, actual.encode(), 8)
+            self.assertGreaterEqual(wd, 0)
+            watches[wd] = path
+            return path, uid
+        def remove(path):
+            self.testbed.uevent(path, 'remove')
+            self.testbed.remove_device(path)
+            time.sleep(.2)
+        def run(action, wait=False):
+            deadline = time.monotonic() + (20 if wait else 0)
+            while True:
+                result = subprocess.run(command + [action], env=env | {'TB_TEST_UID':uid}, capture_output=True, text=True)
+                if result.returncode == 0:
+                    print('PASS temporary-secure', action, flush=True)
+                    return
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(action + ': ' + result.stdout + result.stderr)
+                time.sleep(.15)
+        daemon = None
+        try:
+            device, uid = add()
+            self.daemon_start()
+            self.polkitd_start()
+            self.polkitd.SetAllowed(['org.freedesktop.bolt.authorize', 'org.freedesktop.bolt.enroll', 'org.freedesktop.bolt.manage'])
+            run('initial', True)
+            run('temporary-key')
+            run('lock')
+            remove(device)
+            device, _ = add(uid)
+            run('lock')
+            run('allowed', True)
+            run('temporary-key')
+            run('temporary-secure')
+            daemon = subprocess.Popen(command + ['daemon'], env=env, start_new_session=True)
+            run('snapshot', True)
+            remove(device)
+            device, _ = add(uid)
+            run('allowed', True)
+            run('temporary-key')
+            run('temporary-secure')
+            remove(device)
+            device, _ = add(uid, name='Different dock')
+            run('lock')
+            run('blocked')
+            remove(device)
+            device, _ = add(uid, key=None)
+            run('lock')
+            run('blocked')
+            remove(device)
+            os.killpg(daemon.pid, signal.SIGTERM)
+            daemon.wait(timeout=15)
+            daemon = None
+            run('restart-policy')
+            run('lock')
+            device, _ = add(uid)
+            run('lock')
+            run('blocked')
+            run('unlock')
+            run('allowed', True)
+            run('temporary-key')
+            run('optional')
+            run('approve')
+            remove(device)
+            run('lock')
+            device, _ = add(uid)
+            run('lock')
+            run('allowed', True)
+            run('secure')
+        finally:
+            if daemon is not None:
+                os.killpg(daemon.pid, signal.SIGTERM)
+                daemon.wait(timeout=15)
+            os.write(stop_write, b'x')
+            events.join(timeout=5)
+            for fd in (notify, stop_read, stop_write): os.close(fd)
+            self.daemon_stop()
+
+result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(LockIntegration(name) for name in ('test_user','test_secure','test_temporary_secure')))
 sys.exit(not result.wasSuccessful())

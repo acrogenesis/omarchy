@@ -28,6 +28,10 @@ case $1 in
     tb_inventory | jq -e --arg uid "$TB_TEST_UID" '.devices[] | select(.Uid==$uid) | .Stored and .Policy=="manual" and (.Status | startswith("authorized"))' >/dev/null
     if [[ $TB_TEST_SECURITY == "secure" ]]; then
       tb_inventory | jq -e --arg uid "$TB_TEST_UID" '.devices[] | select(.Uid==$uid) | .Key=="have"' >/dev/null
+      if [[ -e $TB_TEST_DIR/temporary-key-checksum ]]; then
+        jq -Rr . "$TB_TEST_KEYS/$TB_TEST_UID" | sha256sum >"$TB_TEST_DIR/promoted-key"
+        cmp "$TB_TEST_DIR/promoted-key" "$TB_TEST_DIR/temporary-key-checksum"
+      fi
       if [[ ! -e $TB_TEST_DIR/key-checksum ]]; then sha256sum "$TB_TEST_KEYS/$TB_TEST_UID" >"$TB_TEST_DIR/key-checksum"; fi
     fi
     ;;
@@ -47,6 +51,22 @@ case $1 in
   temporary)
     jq -e --arg uid "$TB_TEST_UID" '.trusted[$uid]==null' "$TB_STATE" >/dev/null
     ;;
+  temporary-key)
+    device=$(tb_inventory | jq -ce --arg uid "$TB_TEST_UID" '.devices[] | select(.Uid==$uid)')
+    jq -e '.Secure and (.Stored | not)' <<<"$device" >/dev/null
+    binding=$(jq -cS '{Uid,Name,Vendor,Secure}' <<<"$device")
+    digest=$(printf '%s' "$binding" | sha256sum)
+    key_file=$TB_RUNTIME/keys/${digest%% *}.json
+    jq -e --argjson identity "$binding" '.identity==$identity and .ready and (.key | test("^[0-9a-f]{64}$"))' "$key_file" >/dev/null
+    [[ $(stat -c %a "$TB_RUNTIME/keys") == "700" && $(stat -c %a "$key_file") == "600" ]]
+    jq -r .key "$key_file" | sha256sum >"$TB_TEST_DIR/current-temporary-key"
+    if [[ ! -e $TB_TEST_DIR/temporary-key-checksum ]]; then cp "$TB_TEST_DIR/current-temporary-key" "$TB_TEST_DIR/temporary-key-checksum"; fi
+    cmp "$TB_TEST_DIR/current-temporary-key" "$TB_TEST_DIR/temporary-key-checksum"
+    jq -e --arg uid "$TB_TEST_UID" '.trusted[$uid]==null and .enrolled[$uid]==null' "$TB_STATE" >/dev/null
+    ;;
+  temporary-secure)
+    tb_inventory | jq -e --arg uid "$TB_TEST_UID" '.devices[] | select(.Uid==$uid) | (.Stored | not) and (.AuthFlags | contains("secure"))' >/dev/null
+    ;;
   runtime-trusted)
     tb_inventory | jq -e --arg uid "$TB_TEST_UID" --argjson runtime "$(tb_runtime)" '
       .devices[] | select(.Uid==$uid) | $runtime.trusted[$uid]=={Uid,Name,Vendor,Secure}' >/dev/null
@@ -56,7 +76,8 @@ case $1 in
     jq -e --arg owner "$(tb_owner)" '.owner==$owner' <<<"$snapshot" >/dev/null
     ;;
   restart-policy)
-    rm "$TB_RUNTIME/policy.json"
+    rm -rf "$TB_RUNTIME/policy.json" "$TB_RUNTIME/keys"
+    rm -f "$TB_TEST_DIR/temporary-key-checksum"
     tb_runtime_prepare
     tb_lock_change unlock
     ;;

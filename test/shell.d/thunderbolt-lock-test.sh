@@ -94,6 +94,44 @@ pass 'boot/unlocked devices are allowed without permanent consent'
   check '.trusted.dock!=null and .trusted.manual==null' "$TB_RUNTIME/policy.json"
   pass 'default runtime trust requires successful admission and preserves independent manual restrictions'
 )
+(
+  mkdir "$T/secure-temporary"
+  T=$T/secure-temporary
+  TB_STATE=$T/state.json TB_RUNTIME=$T/runtime TB_MARKER=$T/enabled TB_APPROVAL=$T/approval
+  printf '%s\n' '{"version":1,"enabled":true,"trusted":{},"enrolled":{}}' >"$TB_STATE"
+  printf '%s\n' '{"owner":":1.5","manager":{"AuthMode":"disabled"},"domains":[],"devices":[]}' >"$T/inventory"
+  touch "$TB_MARKER"
+  tb_runtime_prepare
+  add input
+  mkdir "$T/device"
+  printf 'input\n' >"$T/device/unique_id"
+  printf '0\n' >"$T/device/authorized"
+  : >"$T/device/key"
+  edit --arg path "$T/device" --arg inode "$(stat -Lc '%i' "$T/device")" '.devices[0] |= (.Secure=true | .SysfsPath=$path | .inode=$inode)'
+  tb_lock_publish
+  [[ $(cat "$T/device/authorized") == "1" && $(cat "$T/device/key") =~ ^[0-9a-f]{64}$ ]] || fail 'temporary secure admission did not provision a key'
+  key=$(cat "$T/device/key")
+  edit '.devices[0].Status="authorized"'
+  tb_lock_change lock
+  printf '0\n' >"$T/device/authorized"
+  : >"$T/device/key"
+  edit '.devices[0] |= (.Status="connected" | .ConnectTime=2)'
+  tb_lock_publish
+  [[ $(cat "$T/device/authorized") == "2" && $(cat "$T/device/key") == $key ]] || fail 'locked temporary reconnect did not challenge with the original key'
+  check '.trusted=={} and .enrolled=={}' "$TB_STATE"
+  printf '0\n' >"$T/device/authorized"
+  edit '.devices[0].Name="Different dock"'
+  tb_lock_publish
+  [[ $(cat "$T/device/authorized") == "0" ]] || fail 'temporary key admitted a changed identity'
+  edit '.devices[0] |= (.Name="Dock" | .Secure=false)'
+  tb_lock_publish
+  [[ $(cat "$T/device/authorized") == "0" ]] || fail 'temporary key permitted a capability downgrade'
+  edit '.devices[0].Secure=true'
+  rm -r "$TB_RUNTIME/keys"
+  tb_lock_publish
+  [[ $(cat "$T/device/authorized") == "0" && ! -e $TB_RUNTIME/keys ]] || fail 'locked reconnect initialized a missing temporary key'
+  pass 'temporary secure input reconnects with its boot key without permanent enrollment or key replacement'
+)
 tb_lock_change lock
 add locked
 tb_lock_publish
@@ -198,14 +236,30 @@ check '.trusted.manual==null' "$TB_RUNTIME/policy.json"
 pass 'automatic admission preserves independently restricted manual devices'
 tb_lock_change lock
 tb_config_write "$TB_CONFIG" disabled
+mkdir -p "$TB_RUNTIME/keys"
+key_file=$TB_RUNTIME/keys/$(printf recovery | sha256sum)
+key_file=${key_file%% *}.json
+printf '{"key":"boot-secret"}\n' >"$key_file"
+chmod 600 "$key_file"
 tb_config_checkpoint
 cp "$TB_RUNTIME/policy.json" "$T/frozen"
+cp "$key_file" "$T/key-before-recovery"
+rm -r "$TB_RUNTIME/keys"
 jq '.mode="unlocked" | .trusted={}' "$TB_RUNTIME/policy.json" | tb_json_write "$TB_RUNTIME/policy.json"
 rm "$TB_MARKER"
 tb_config_restore
 cmp -s "$TB_RUNTIME/policy.json" "$T/frozen" || fail 'rollback widened the frozen runtime policy'
+cmp -s "$key_file" "$T/key-before-recovery" || fail 'rollback lost the boot key for trusted input'
+[[ $(stat -c %a "$TB_RUNTIME/keys") == "700" ]] || fail 'recovered boot keys are not private'
 [[ -e $TB_MARKER && ! -e ${TB_STATE%/*}/setup-recovery.json ]] || fail 'rollback did not restore ownership'
 pass 'setup/removal recovery restores the frozen policy along with configuration'
+tb_config_checkpoint
+jq '.boot_id="previous-boot"' "${TB_STATE%/*}/setup-recovery.json" | tb_json_write "${TB_STATE%/*}/setup-recovery.json"
+tb_config_restore
+tb_runtime_prepare
+check '.mode=="unlocked" and .trusted=={}' "$TB_RUNTIME/policy.json"
+[[ ! -e $TB_RUNTIME/keys ]] || fail 'recovery revived keys from another boot'
+pass 'recovery after reboot expires temporary consent and keys'
 (
   tb_runtime_prepare() {
     if ! flock -n "$TB_LOCK" true; then touch "$T/startup-serialized"; fi

@@ -150,6 +150,52 @@ tb_prepare_key() (
   fi
 )
 
+# Bolt cannot keep a key for an unstored device. Keep temporary keys in /run
+# and use the same kernel provisioning (1) and secure challenge (2) interface.
+# Never enroll these devices or replace a failed challenge with a new key.
+tb_temporary_authorize() (
+  local identity=$1 initialize=$2 current binding digest path record key level key_fd auth_fd
+  current=$(tb_current "$identity") || return 1
+  jq -e '.device.Secure and (.device.Stored | not)' <<<"$current" >/dev/null || return 1
+  binding=$(jq -cS '{Uid,Name,Vendor,Secure}' <<<"$identity") || return 1
+  digest=$(printf '%s' "$binding" | sha256sum) || return 1
+  path=$TB_RUNTIME/keys/${digest%% *}.json
+  if [[ -e $path ]]; then
+    record=$(jq -ce --argjson identity "$binding" 'select(.identity==$identity and (.ready | type=="boolean"))' "$path") || return 1
+    key=$(jq -er .key <<<"$record") || return 1
+    if jq -e .ready <<<"$record" >/dev/null; then
+      level=2
+    else
+      [[ $initialize == "true" ]] || return 1
+      level=1
+    fi
+  else
+    [[ $initialize == "true" ]] || return 1
+    key=$(openssl rand -hex 32) || return 1
+    record=$(printf '%s' "$key" | jq -Rsc --argjson identity "$binding" '{identity:$identity,key:.,ready:false}') || return 1
+    install -d -m 700 "$TB_RUNTIME/keys" || return 1
+    tb_json_write "$path" <<<"$record" || return 1
+    level=1
+  fi
+  [[ $key =~ ^[0-9a-f]{64}$ ]] || return 1
+  cd -- "$(jq -r .device.SysfsPath <<<"$current")" || return 1
+  [[ $(stat -Lc '%i' .) == $(jq -r .device.inode <<<"$current") &&
+    $(cat unique_id) == "$(jq -r .device.Uid <<<"$current")" ]] || return 1
+  # Pin both attributes to this connection before writing either one. A
+  # disconnect cannot redirect the challenge to a replacement directory.
+  exec {key_fd}<>key {auth_fd}<>authorized || return 1
+  [[ $(cat authorized) == "0" ]] || return 1
+  tb_current "$identity" >/dev/null || return 1
+  printf '%s' "$key" >&"$key_fd" || return 1
+  [[ $(cat key) == $key ]] || return 1
+  tb_current "$identity" >/dev/null || return 1
+  printf '%s' "$level" >&"$auth_fd" || return 1
+  [[ $(cat authorized) == "1" || $(cat authorized) == "2" ]] || return 1
+  # A pending provision may be retried only with unlocked admission. Once
+  # confirmed, every later connection must challenge the original boot key.
+  jq '.ready=true' <<<"$record" | tb_json_write "$path"
+)
+
 tb_approve() {
   local identity=$1 permanent=$2 initialize=${3:-false} current owner path status state
   state=$(tb_state) || return 1
@@ -267,7 +313,7 @@ tb_snapshot() {
 }
 
 tb_lock_reconcile() {
-  local state runtime inventory owner generation device identity error=""
+  local state runtime inventory owner generation device identity authorize initialize error=""
   state=$(tb_state) || return 1
   jq -e .enabled <<<"$state" >/dev/null || return 1
   inventory=$(tb_read_inventory) || return 1
@@ -279,7 +325,14 @@ tb_lock_reconcile() {
       $failed == {owner:$owner,generation:$generation,path,inode,Uid,Name,Vendor,Parent,SysfsPath,ConnectTime,Secure}))]' <<<"$runtime") || return 1
   while IFS= read -r device; do
     identity=$(tb_identity "$owner" "$generation" <<<"$device") || return 1
-    if tb_approve "$identity" false >/dev/null; then
+    authorize=tb_approve initialize=false
+    # Unstored secure devices authenticate with their private boot key.
+    if jq -e '.Secure and (.Stored | not)' <<<"$device" >/dev/null; then
+      authorize=tb_temporary_authorize
+      initialize=$(jq -c --argjson identity "$identity" '.mode=="unlocked" or
+        (.mode=="approval" and any(.admit[]; .==$identity))' <<<"$runtime") || return 1
+    fi
+    if "$authorize" "$identity" "$initialize" >/dev/null; then
       # Remember successful automatic admissions before the device disappears.
       # Later locks retain this runtime consent even while the dock is absent.
       runtime=$(jq -c --argjson device "$device" 'if .mode=="unlocked" then
@@ -297,6 +350,7 @@ tb_lock_reconcile() {
       $state.enrolled[.Uid]=={Uid,Name,Vendor,StoreTime})) or
       ($d | trusted($state)) or
       ($d | trusted({trusted:$runtime.trusted})) or
+      (.Secure and (.Stored | not) and $runtime.trusted[.Uid]=={Uid,Name,Vendor,Secure}) or
       ($runtime.mode=="approval" and any($runtime.admit[];
         . == ($d | {owner:$owner,generation:$generation,path,inode,Uid,Name,Vendor,Parent,SysfsPath,ConnectTime,Secure}))))' <<<"$inventory")
   # Failed secure challenges must not spin on their own PropertiesChanged

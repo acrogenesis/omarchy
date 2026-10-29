@@ -72,23 +72,27 @@ tb_handoff_policies() {
 
 tb_config_checkpoint() {
   local backup="${TB_STATE%/*}/setup-recovery.json" path original files='{}' units='{}' unit value saved inventory data mode state
+  local -a paths=("$TB_STATE" "$TB_CONFIG" "$TB_MARKER" "$TB_RUNTIME/policy.json" "$TB_RUNTIME/generation" "$TB_RUNTIME/snapshot.json")
   [[ ! -e $backup && ! -e ${TB_STATE%/*}/boot-recovery.json ]] || {
     tb_fail 'A previous setup change needs recovery before continuing'; return 1;
   }
-  for path in "$TB_STATE" "$TB_CONFIG" "$TB_MARKER" "$TB_RUNTIME/policy.json" "$TB_RUNTIME/generation" "$TB_RUNTIME/snapshot.json"; do
+  for path in "$TB_RUNTIME"/keys/*.json; do
+    if [[ -f $path ]]; then paths+=("$path"); fi
+  done
+  for path in "${paths[@]}"; do
     original=null
     if [[ -e $path ]]; then
       data=$(base64 -w0 -- "$path") || return 1
       mode=$(stat -c '%a' -- "$path") || return 1
-      original=$(jq -cn --arg data "$data" --arg mode "$mode" '{data:$data,mode:$mode}') || return 1
+      original=$(printf '%s' "$data" | jq -Rsc --arg mode "$mode" '{data:.,mode:$mode}') || return 1
     fi
-    files=$(jq -c --arg path "$path" --argjson original "$original" '.[$path]=$original' <<< "$files") || return 1
+    files=$(printf '%s\n%s\n' "$files" "$original" | jq -sc --arg path "$path" '.[0] + {($path):.[1]}') || return 1
   done
   for unit in bolt.service "$TB_SERVICE"; do
     value=$(tb_unit_state "$unit") || return 1
     units=$(jq -c --arg unit "$unit" --argjson value "$value" '.[$unit]=$value' <<< "$units") || return 1
   done
-  saved=$(jq -cn --argjson files "$files" --argjson units "$units" '{files:$files,units:$units}') || return 1
+  saved=$(printf '%s\n%s\n' "$files" "$units" | jq -sc --arg boot "$(cat /proc/sys/kernel/random/boot_id)" '{files:.[0],units:.[1],boot_id:$boot}') || return 1
   state='{}'
   if [[ -f $TB_STATE ]]; then state=$(tb_state) || return 1; fi
   # A handoff to auto also changes Bolt's firmware allowlists. Checkpoint the
@@ -105,14 +109,25 @@ tb_config_checkpoint() {
 }
 
 tb_config_restore() {
-  local backup="${TB_STATE%/*}/setup-recovery.json" saved path original temporary unit
+  local backup="${TB_STATE%/*}/setup-recovery.json" saved path original temporary unit boot
+  local -a paths=("$TB_STATE" "$TB_CONFIG" "$TB_MARKER" "$TB_RUNTIME/policy.json" "$TB_RUNTIME/generation" "$TB_RUNTIME/snapshot.json")
   saved=$(jq -ce . "$backup") || return 1
   systemctl stop "$TB_SERVICE" bolt.service || return 1
-  for path in "$TB_STATE" "$TB_CONFIG" "$TB_MARKER" "$TB_RUNTIME/policy.json" "$TB_RUNTIME/generation" "$TB_RUNTIME/snapshot.json"; do
+  boot=$(jq -r '.boot_id // empty' <<<"$saved") || return 1
+  while IFS= read -r path; do paths+=("$path"); done < <(jq -r --arg prefix "$TB_RUNTIME/keys/" '
+    .files | keys[] | select(startswith($prefix) and (ltrimstr($prefix) | test("^[0-9a-f]{64}\\.json$")))' <<<"$saved")
+  rm -rf "$TB_RUNTIME/keys" || return 1
+  for path in "${paths[@]}"; do
     original=$(jq -c --arg path "$path" '.files[$path]' <<< "$saved") || return 1
+    # Recovery can be retried after reboot. Restore durable configuration,
+    # but never revive another boot's temporary consent or challenge keys.
+    if [[ -n $boot && $boot != $(cat /proc/sys/kernel/random/boot_id) ]]; then
+      case $path in "$TB_RUNTIME"/*) original=null ;; esac
+    fi
     if [[ $original == "null" ]]; then
       rm -f -- "$path" || return 1
     else
+      case $path in "$TB_RUNTIME"/keys/*) install -d -m 700 "$TB_RUNTIME/keys" || return 1 ;; esac
       mkdir -p -- "${path%/*}" || return 1
       temporary=$(mktemp "${path%/*}/.restore.XXXXXX") || return 1
       if jq -r .data <<< "$original" | base64 -d > "$temporary" &&
@@ -233,6 +248,7 @@ tb_lock_disable_apply() {
     .manager.AuthMode==$mode and (([.stored[] | {key:.Uid,value:.Policy}] | from_entries) as $actual |
       all($policies.policies | to_entries[]; $actual[.key]==.value))' >/dev/null || return 1
   rm -f "$TB_RUNTIME/policy.json" "$TB_RUNTIME/snapshot.json" "$TB_RUNTIME/generation"
+  rm -rf "$TB_RUNTIME/keys"
 }
 
 tb_lock_disable() {
