@@ -987,6 +987,7 @@ blocked = (
     ("DeviceRequests", [{"Driver": "nvidia"}]),
     ("DeviceCgroupRules", ["a *:* rwm"]), ("NetworkMode", "host"),
     ("Runtime", "nvidia"), ("CgroupnsMode", "host"),
+    ("LogConfig", {"Type": "json-file", "Config": {}}),
     ("SecurityOpt", ["seccomp=unconfined"]),
     ("Binds", ["/home/example/project:/data:rw"]),
     ("Mounts", [{"Type": "bind", "Source": "/home/example", "Target": "/data"}]),
@@ -1012,14 +1013,16 @@ for networks in ({"bridge": {}, "project": {}}, {"project": {}}, {}):
         pass
     else:
         raise AssertionError(f"unsupported networks passed: {networks}")
-print("ok - privileged, device, host-path, custom-network and unknown settings fail closed")
+print("ok - privileged, device, host-path, logging, custom-network and unknown settings fail closed")
 
 records = {}
-for index, field in enumerate(("Privileged", "Runtime"), 1):
+for index, (field, value) in enumerate((
+        ("Privileged", True), ("Runtime", "nvidia"),
+        ("LogConfig", {"Type": "json-file", "Config": {}})), 1):
     changed = copy.deepcopy(container)
     changed["Name"] = f"/blocked-{index}"
     changed["Id"] = str(index) * 64
-    changed["HostConfig"][field] = True if field == "Privileged" else "nvidia"
+    changed["HostConfig"][field] = value
     records[changed["Name"].lstrip("/")] = changed
 migration.daemon_security = lambda engine: source_security if engine == migration.SOURCE else target_security
 migration.inspect = lambda engine, kind, name: records[name]

@@ -675,9 +675,9 @@ def validate_security(container):
         # device, namespace, runtime, mount and resource options.
         raise ValueError(f"{name}: custom {key} needs an explicit rootless Docker configuration")
     log = host.get("LogConfig") or {}
-    if (log.get("Type") not in (None, "", "json-file") or
-            (log.get("Config") or {}) not in ({}, {"max-size": "10m", "max-file": "5"})):
-        raise ValueError(f"{name}: custom logging needs an explicit migration")
+    if (log.get("Type") != TARGET_DAEMON_CONFIG["log-driver"] or
+            log.get("Config") != TARGET_DAEMON_CONFIG["log-opts"]):
+        raise ValueError(f"{name}: logging differs from rootless Docker defaults; use an explicit migration")
 
 
 def runtime_arguments(container, source_nofile):
