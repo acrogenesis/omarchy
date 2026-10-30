@@ -187,9 +187,8 @@ screen="${screen_width}x${screen_height}"
 sample_format='%[fx:int(255*r)],%[fx:int(255*g)],%[fx:int(255*b)]'
 
 # Compose the same viewport as WallpaperImage before extracting the bar strip.
-# Crop offsets are fractions of the cover overflow, matching its focal bindings.
-cover=(-define jpeg:size="$screen" "$sample_path[0]" -auto-orient -scale "${screen}^"
-  -gravity NorthWest -crop "${screen}+%[fx:max(0,round((w-$screen_width)*$focal_x))]+%[fx:max(0,round((h-$screen_height)*$focal_y))]" +repage)
+# Only the crop foreground uses focal offsets; the blurred cover stays centered.
+cover=(-define jpeg:size="$screen" "$sample_path[0]" -auto-orient -scale "${screen}^")
 composition=()
 if [[ $fill != "crop" ]]; then
   composition=(-size "$screen" "xc:$fill_color")
@@ -197,7 +196,7 @@ if [[ $fill != "crop" ]]; then
     # Qt uses a subdued cover copy over the solid tint. Approximate its blur
     # for contrast sampling; retain the same 35% opacity and full geometry.
     blur_radius=$(awk -v ratio="$sample_scale" 'BEGIN { print 40 * ratio }')
-    composition+=(\( "${cover[@]}" -blur "0x$blur_radius" -alpha set -channel A -evaluate multiply 0.35 +channel \) -compose Over -composite)
+    composition+=(\( "${cover[@]}" -gravity center -extent "$screen" -blur "0x$blur_radius" -alpha set -channel A -evaluate multiply 0.35 +channel \) -compose Over -composite)
   fi
 fi
 
@@ -214,7 +213,8 @@ tile)
   composition+=(\( "$sample_path[0]" -auto-orient -resize "$native_percent" -write mpr:tile +delete -size "$screen" tile:mpr:tile \) -compose Over -composite)
   ;;
 *)
-  composition=("${cover[@]}")
+  composition=("${cover[@]}" -gravity NorthWest
+    -crop "${screen}+%[fx:max(0,round((w-$screen_width)*$focal_x))]+%[fx:max(0,round((h-$screen_height)*$focal_y))]" +repage)
   ;;
 esac
 pixel=$(MAGICK_MEMORY_LIMIT=512MiB \

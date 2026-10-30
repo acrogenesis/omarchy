@@ -92,6 +92,15 @@ pass "transparent bar text samples one frame of a video wallpaper"
   [[ $(sample) == "#000000" ]] || fail "blur letterbox samples the subdued cover"
   pass "bar sampling includes the blurred cover behind fitted images"
 
+  # Focal affects crop foregrounds, but the shell centers its blurred cover.
+  # Its black center keeps the padded bar dark even when the left edge is white.
+  magick -size 1000x100 xc:black -fill white -draw 'rectangle 0,0 199,99' "$backgrounds/test.png"
+  for focal in "0 0.5" "1 0.5"; do
+    printf '[defaults]\nfill = "fit"\nbackdrop = "blur"\nfill_color = "#555555"\nfocal = "%s"\n' "$focal" >"$backgrounds/backgrounds.toml"
+    [[ $(sample) == "#ffffff" ]] || fail "blurred letterbox keeps its centered crop with focal $focal"
+  done
+  pass "blurred bar sampling stays centered independently of the foreground focal"
+
   # Same canonical, two geometries, independent variants and contrast results.
   magick -size 100x100 xc:black "$backgrounds/test.png"
   magick -size 200x100 xc:white "$backgrounds/test@wide.png"
