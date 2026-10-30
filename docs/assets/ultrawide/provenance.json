@@ -5,9 +5,9 @@
     "height": 1440
   },
   "generator": "Codex built-in image generation",
-  "original_policy": "Original source files are unchanged and referenced directly by the SVG. Normal proportional display scaling applies. Generated source context is discarded.",
-  "panel_encoding": "Generated scenery: WebP quality 95, method 6. Source-derived edge fields, registered dot-grid extensions, and the chromatic-grain-matched right sky panel of Last Horizon 4: lossless WebP.",
-  "finishing": "Only generated panels receive exposure and boundary-color matching. The canonical source is drawn last above both panels.",
+  "original_policy": "All original source files are byte unchanged and referenced directly. Normal proportional display scaling applies. Six photo compositions blend only the documented 64-display-pixel source-edge strips with registered generated context; the protected core remains pixel-exact. All other compositions retain the complete original rectangle.",
+  "panel_encoding": "Generated scenery generally uses WebP quality 95. Revised Gruvbox panels use quality 98; revised Last Horizon and Ristretto panels use lossless WebP. Dotted forearms are native SVG circles.",
+  "finishing": "Source-aligned generated panels receive palette, local color-continuity and narrow seam corrections. Only the six explicitly documented photo variants mask the original edge strips; all protected source interiors remain opaque.",
   "backgrounds": [
     {
       "source": "themes/catppuccin/backgrounds/1-totoro.webp",
@@ -185,20 +185,38 @@
       "panels": [
         {
           "path": "themes/gruvbox/backgrounds/ultrawide/1-the-backwater-left.webp",
-          "sha256": "4a392471d2b6681abf898658e1a809ba4615e4ece59cf6e220d82625595cfc3c"
+          "sha256": "38201c1d880aa397475b0dd13c16c0f0f75155c8f481fbb5ac68dd6e7859c7f9"
         },
         {
           "path": "themes/gruvbox/backgrounds/ultrawide/1-the-backwater-right.webp",
-          "sha256": "79911fd340b87360a144a036f8ca200093c268fd0f090fcfad2741cad02b82da"
+          "sha256": "3b2c97179453dc543961837580cc2393bc8bf5bbac87ac77a0b440184dd70585"
         }
       ],
-      "finishing": "Original generated scenery geometry retained. Source-interior color fields matched independently from the narrow, source-exact boundary correction.",
+      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged.",
       "prompts": {
-        "left": "Precise generative outpainting. Fill ONLY the transparent LEFT half of this canvas. The opaque right half is a locked original painting: keep its framing, scale, positions and colors unchanged. Continue the existing partial tree trunk and roots exactly where they meet the left boundary, with adjoining shaded undergrowth and riverbank. The extension must use the SAME soft grainy impressionistic oil-painted brushwork: tiny scumbled green, ochre, brown and yellow strokes, with indistinct foliage and matching muted exposure. No separate new tree trunk, sharp photographic leaves, new person, animal, boat, architecture, text, mirror or tile. The purpose is a seamless quiet landscape continuation, not a new focal object. Do not zoom, crop or enhance the source. Output one opaque 16:9 image at maximum resolution.",
-        "right": "Precise generative outpainting. Fill ONLY the transparent RIGHT half of this canvas. The opaque left half is a locked original painting: keep its framing, scale, positions and colors unchanged. Continue the existing shaded pond and dark green riverbank at their exact heights, including fine reeds and low irregular vegetation where they touch the boundary. Match the SAME soft grainy impressionistic oil-painted brushwork: tiny scumbled green, ochre and brown strokes, indistinct foliage and reflections, muted exposure and soft contours. No dominant new tree trunk, sharp photographic leaves, new person, animal, boat, architecture, text, mirror or tile. The extension must be quiet scenery continuous with the painting. Do not zoom, crop or enhance the source. Output one opaque 16:9 image at maximum resolution."
+        "left": "Repair this 2560x1440 wallpaper HALF. Reference 1 contains a vertical join at x=1345: the RIGHT region is original source artwork, and the LEFT region is its extension. Reference 2 is the unedited complete source and the authority for paint, optical blur, exact subdued colors and texture. Preserve the original-source region's scale, coordinates and composition precisely. Keep the canvas 2560x1440, no reframing, no zoom, no crop or text. Correct ONLY the LEFT extension so it flows naturally through the join, with no rectangular seam, exposure step, different blur or different color cast. The existing outer scene arrangement is already right: keep its geometry and brushwork. Match the source's restrained, muted palette, exposure, black level, highlight rolloff, optical softness and pigment texture across all of the extension. Do not brighten, saturate, add yellow cast, add gradients or introduce dark strips next to the source. The original scan's dark edge is not the palette of the whole scene. Color-grade only the extension, with natural continuous lighting at the join.",
+        "right": "Repair this 2560x1440 wallpaper HALF. Reference 1 contains a vertical join at x=1215: the LEFT region is original source artwork, and the RIGHT region is its extension. Reference 2 is the unedited complete source and the authority for paint, optical blur, exact subdued colors and texture. Preserve the original-source region's scale, coordinates and composition precisely. Keep the canvas 2560x1440, no reframing, no zoom, no crop or text. Correct ONLY the RIGHT extension so it flows naturally through the join, with no rectangular seam, exposure step, different blur or different color cast. The existing outer scene arrangement is already right: keep its geometry and brushwork. Match the source's restrained, muted palette, exposure, black level, highlight rolloff, optical softness and pigment texture across all of the extension. Do not brighten, saturate, add yellow cast, add gradients or introduce dark strips next to the source. The original scan's dark edge is not the palette of the whole scene. Color-grade only the extension, with natural continuous lighting at the join."
       },
-      "revision_reference_prompt": "COLOR CORRECTION ONLY. Preserve every tree, plant, brush stroke and all existing scenery geometry in reference 1. The complete source painting in reference 2 is the color authority. The left and right outer extensions in reference 1 are too dark and differently colored compared with its central original painting. Color grade ONLY the two outer extensions to the original's luminous, softly warm yellow-green and olive woodland, pale olive river, natural light ochre ground, with matching paint texture and contrast. Remove the darker rectangular edge around the central original. Extend the EXACT local colors at both vertical joins into the side scenery, particularly the dark patch on the right, without broad exposure gradients or a visible vertical boundary. Do not redraw, rearrange or add anything. Keep the original central painting strictly unchanged. Return the exact same panoramic 32:9 composition, without crop, borders, labels or text.",
-      "revision_reference_sha256": "d2149c42fbfcace91fe457a229868632cc92cfd5f03f2bf7625eff4de9bdcf14"
+      "edge_blend_pixels": {
+        "left": 64,
+        "right": 64
+      },
+      "registration": {
+        "left": {
+          "sift_inliers": 536,
+          "ecc": 0.9890842063220808,
+          "context_rmse_before": 0.02485985154131677,
+          "context_rmse_after": 0.022332303602223547,
+          "reference_sha256": "cdce0422b176d91831435b02fe08ce7d788ebc10881265520eb67edaeb105416"
+        },
+        "right": {
+          "sift_inliers": 750,
+          "ecc": 0.980117104833873,
+          "context_rmse_before": 0.030347755379964238,
+          "context_rmse_after": 0.02478278426795058,
+          "reference_sha256": "47c2c9bad6662bfc62cbebacf891d2c9d167653c2445854a5bab068992600049"
+        }
+      }
     },
     {
       "source": "themes/gruvbox/backgrounds/2-flower-basket.webp",
@@ -208,20 +226,38 @@
       "panels": [
         {
           "path": "themes/gruvbox/backgrounds/ultrawide/2-flower-basket-left.webp",
-          "sha256": "db85ffcd532b4c6fa09981e62bd29fd7abb7edd342c55e6d372bbb2f1d38781a"
+          "sha256": "cb00b7b92a23324d07029a0c0c736728ba5ce5d450a7dfb0d999928bb7fff153"
         },
         {
           "path": "themes/gruvbox/backgrounds/ultrawide/2-flower-basket-right.webp",
-          "sha256": "266d1d21dd971780d20e31d6c86fd9832e7f22c616fe75bd030c7ea0ec0a37fb"
+          "sha256": "d713e9e954438c5c69e940e8b93bc88d0b8b0006a47998f59fb004ac7c1af662"
         }
       ],
-      "finishing": "Original generated scenery geometry retained. Source-interior color fields matched independently from the narrow, source-exact boundary correction.",
+      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged.",
       "prompts": {
-        "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1389 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend the old-master floral still life's quiet dark brown painted backdrop and muted stone tabletop at their exact original height; continue only stems and flowers that cross the boundary. Do not add another basket or vase. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
-        "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1390 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend the old-master floral still life's quiet dark brown painted backdrop and muted stone tabletop at their exact original height; continue only stems and flowers that cross the boundary. Do not add another basket or vase. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
+        "left": "Repair this 2560x1440 wallpaper HALF. Reference 1 contains a vertical join at x=1390: the RIGHT region is original source artwork, and the LEFT region is its extension. Reference 2 is the unedited complete source and the authority for paint, optical blur, exact subdued colors and texture. Preserve the original-source region's scale, coordinates and composition precisely. Keep the canvas 2560x1440, no reframing, no zoom, no crop or text. Correct ONLY the LEFT extension so it flows naturally through the join, with no rectangular seam, exposure step, different blur or different color cast. The existing outer scene arrangement is already right: keep its geometry and brushwork. Match the source's restrained, muted palette, exposure, black level, highlight rolloff, optical softness and pigment texture across all of the extension. Do not brighten, saturate, add yellow cast, add gradients or introduce dark strips next to the source. The original scan's dark edge is not the palette of the whole scene. Color-grade only the extension, with natural continuous lighting at the join.",
+        "right": "Repair this 2560x1440 wallpaper HALF. Reference 1 contains a vertical join at x=1170: the LEFT region is original source artwork, and the RIGHT region is its extension. Reference 2 is the unedited complete source and the authority for paint, optical blur, exact subdued colors and texture. Preserve the original-source region's scale, coordinates and composition precisely. Keep the canvas 2560x1440, no reframing, no zoom, no crop or text. Correct ONLY the RIGHT extension so it flows naturally through the join, with no rectangular seam, exposure step, different blur or different color cast. The existing outer scene arrangement is already right: keep its geometry and brushwork. Match the source's restrained, muted palette, exposure, black level, highlight rolloff, optical softness and pigment texture across all of the extension. Do not brighten, saturate, add yellow cast, add gradients or introduce dark strips next to the source. The original scan's dark edge is not the palette of the whole scene. Color-grade only the extension, with natural continuous lighting at the join."
       },
-      "revision_reference_prompt": "COLOR CORRECTION ONLY. Preserve all existing geometry, paint texture, flowers, basket, vase, table horizon and surface details in reference 1. Reference 2 is the exact original center and is the COLOR AUTHORITY. Color match ONLY the left and right outer extensions to the adjoining original. Continue the original warm dark charcoal-brown wall and desaturated pale warm gray stone tabletop at precisely the same exposure and hue. Eliminate the vertical brightness/color jumps where the center meets each side, across wall, tabletop and bottom wooden edge. Do not reinterpret or move any object; only exposure and color of the extensions should change. Keep the original center strictly unchanged. Return the exact same panoramic 32:9 composition, without crop, borders, labels or text.",
-      "revision_reference_sha256": "7decc28049e54bcfc9c1c8822386b6ac5e22bf163da4e1d791a758026900f092"
+      "edge_blend_pixels": {
+        "left": 64,
+        "right": 64
+      },
+      "registration": {
+        "left": {
+          "sift_inliers": 936,
+          "ecc": 0.9970243395852431,
+          "context_rmse_before": 0.015592702406062121,
+          "context_rmse_after": 0.013906816483380935,
+          "reference_sha256": "a1e48b3f5f5b28b164b05d67f21154bf1bfd8003c4dbec760af831f62bbca6dc"
+        },
+        "right": {
+          "sift_inliers": 571,
+          "ecc": 0.9979971763295755,
+          "context_rmse_before": 0.020604487013747785,
+          "context_rmse_after": 0.010633136043312738,
+          "reference_sha256": "32746ce1e8f15e9950c9b175a095554190ab8fe56d9687984dfcf6ea4dce365a"
+        }
+      }
     },
     {
       "source": "themes/gruvbox/backgrounds/3-village-square.jpg",
@@ -456,23 +492,37 @@
       "panels": [
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/2-blink-left.webp",
-          "sha256": "1cda98281d194ce1c5d3525493e44b6d6532ac9357c941541e473a45151a5d57"
+          "sha256": "a3032d26d74329f0a1dd5e3db369698c7e7be40adeecfe9887c3093bb4ec5be3"
         },
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/2-blink-right.webp",
-          "sha256": "8b17e12cc0e627f9c776cc4f089744890104d8d5d8e5503283f2bff9d986d349"
+          "sha256": "bd15b5ad2a7286499a054b0c4b3142473fca297dac81aa1e969c72f39be92a72"
         }
       ],
       "prompts": {
-        "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1280 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend the dark monumental interior, distant shadowy stone walls, steps and ground. Do not add eyes, portals or people. Keep the one giant eye and lone figure centered, continue only their ambient illumination at the boundary. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
-        "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1281 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend the dark monumental interior, distant shadowy stone walls, steps and ground. Do not add eyes, portals or people. Keep the one giant eye and lone figure centered, continue only their ambient illumination at the boundary. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
+        "left": "Edit this EXACT 2560x1440 image without changing framing, scale or positions. This is a HALF of a wider panorama. Any eye, human or light circle cut off at the left or right edge is INTENTIONALLY CROPPED: DO NOT complete, recenter, zoom out or bring the missing portion into the canvas. Preserve the input crop exactly. The original-source region is the RIGHT part, and the only editable extension is the LEFT part across the vertical join at x=1280. Keep all original-source geometry and subdued original colors exactly. Only repair the extension's straight rectangular exposure/texture seam. Match the source's hazy, soft, very dark blue-black stone and original step contours. Do not add or rearrange columns, stairs, eye or figure. This is an exposure, texture and continuity correction only. Return the exact same half-image crop and 2560x1440 canvas. No borders or added text.",
+        "right": "Edit this EXACT 2560x1440 image without changing framing, scale or positions. This is a HALF of a wider panorama. Any eye, human or light circle cut off at the left or right edge is INTENTIONALLY CROPPED: DO NOT complete, recenter, zoom out or bring the missing portion into the canvas. Preserve the input crop exactly. The original-source region is the LEFT part, and the only editable extension is the RIGHT part across the vertical join at x=1280. Keep all original-source geometry and subdued original colors exactly. Only repair the extension's straight rectangular exposure/texture seam. Match the source's hazy, soft, very dark blue-black stone and original step contours. Do not add or rearrange columns, stairs, eye or figure. This is an exposure, texture and continuity correction only. Return the exact same half-image crop and 2560x1440 canvas. No borders or added text."
       },
-      "finishing": "Existing outer scenery retained. Narrow generative join repair, source-side color continuity, and a gradual blend into the existing outer panel. Original center is referenced unchanged.",
-      "revision_reference_prompt": "Repair ONLY the outer extensions and their two vertical joins in reference 1. Reference 2 is the untouched original center. The 32:9 extension currently shows dark vertical rectangles around the centered source. Continue the original dark cathedral architecture, stone steps and floor naturally through each join. Match exact exposure, blue-black hue, stone texture, perspective, step heights, haze and lighting from the source edge. The eye and person in the central source must remain strictly untouched. The stairs should run continuously from the original center to the outer image, with no exposure shift, black wall band, double columns, rectangular halo or seam. Keep the existing outer composition faithful; repair the transition into the center. Return one seamless full-width 32:9 image at the same framing. No crop, border or added text.",
-      "revision_reference_sha256": "88bac42dce3f00a97572718658e8447464f26b39137e908960a7203724c8dc1e",
-      "join_repair_prompts": {
-        "left": "This is a narrowly cropped 1024x1440 section of a wider wallpaper, centered on a bad vertical join at EXACTLY x=512. Repair ONLY the LEFT HALF (x 0..511), which is generated extension. The RIGHT HALF is the original artwork and is LOCKED: its pixels, positions, geometry and exact colors are the authority and must be preserved unchanged. Keep this precise crop, scale and coordinate system: do not zoom, crop, move, stretch, shift the source, or change aspect ratio. Continue the dark stone columns, stair treads and floor with EXACT original step heights, architecture perspective, black/blue-gray exposure and stone grain. Remove the straight vertical black-band transition, while preserving ALL existing stone structures and lighting. Make the join invisible with value, first-derivative and texture continuity at x=512. Keep the composition and outer edge of the edited half faithful to the input, so it can join the existing wider extension. No added text, borders or watermark. Return one image at the same 1024x1440 framing.",
-        "right": "This is a narrowly cropped 1024x1440 section of a wider wallpaper, centered on a bad vertical join at EXACTLY x=512. Repair ONLY the RIGHT HALF (x 512..1023), which is generated extension. The LEFT HALF is the original artwork and is LOCKED: its pixels, positions, geometry and exact colors are the authority and must be preserved unchanged. Keep this precise crop, scale and coordinate system: do not zoom, crop, move, stretch, shift the source, or change aspect ratio. Continue the dark stone columns, stair treads and floor with EXACT original step heights, architecture perspective, black/blue-gray exposure and stone grain. Remove the straight vertical black-band transition, while preserving ALL existing stone structures and lighting. Make the join invisible with value, first-derivative and texture continuity at x=512. Keep the composition and outer edge of the edited half faithful to the input, so it can join the existing wider extension. No added text, borders or watermark. Return one image at the same 1024x1440 framing."
+      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged.",
+      "edge_blend_pixels": {
+        "left": 64,
+        "right": 64
+      },
+      "registration": {
+        "left": {
+          "sift_inliers": 259,
+          "ecc": 0.9970100810107604,
+          "context_rmse_before": 0.02618028996413785,
+          "context_rmse_after": 0.014350862150328374,
+          "reference_sha256": "389989a5e7814493978452123ed9367046b76fac0f8be06fc23271a1b1370541"
+        },
+        "right": {
+          "sift_inliers": 177,
+          "ecc": 0.9940044593737908,
+          "context_rmse_before": 0.022497279944706874,
+          "context_rmse_after": 0.016311312244828364,
+          "reference_sha256": "f44f816df5c5192f232ca9fb95fdf4f55ae5b5ffc5a2d6d36740f348b1bbe9aa"
+        }
       }
     },
     {
@@ -483,23 +533,37 @@
       "panels": [
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/3-bokeh-left.webp",
-          "sha256": "0af7dfa10d041a724151c9c9b65bfdc308ecff37395601e0cac4fe489d4de285"
+          "sha256": "19542857576f87c8451cb8f015195736a50c9cc200c67763e7f7bf632efc2962"
         },
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/3-bokeh-right.webp",
-          "sha256": "03f9121c5994aa06bcccad38ddd61b25c567bbd9f5b3638378c388432734a301"
+          "sha256": "cc4fbb5fd08fa19d7af642ed9ab43e3215987c4b4b64de7144e3dc3ee9c8af23"
         }
       ],
       "prompts": {
-        "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1279 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the soft photographic colored bokeh circles with the same size range, translucent overlap, warm yellow pink green palette and dark gray field. No sharply focused objects, bright new center or vignette seam. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
-        "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1279 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the soft photographic colored bokeh circles with the same size range, translucent overlap, warm yellow pink green palette and dark gray field. No sharply focused objects, bright new center or vignette seam. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
+        "left": "Edit this EXACT 2560x1440 image without changing framing, scale or positions. This is a HALF of a wider panorama. Any eye, human or light circle cut off at the left or right edge is INTENTIONALLY CROPPED: DO NOT complete, recenter, zoom out or bring the missing portion into the canvas. Preserve the input crop exactly. The original-source region is the RIGHT part, and the only editable extension is the LEFT part across the vertical join at x=1279. Keep all original-source geometry and subdued original colors exactly. Only repair the extension's rectangle edge, optical softness and palette. Continue every source bokeh circle across the join along its exact existing contour. Match the source's grayish haze, muted olive gold/pastel pink and VERY soft original focus, with no sharpened or saturated green/red outer circles, black bands or clipped contours. Return the exact same half-image crop and 2560x1440 canvas. No borders or added text.",
+        "right": "Repair this 2560x1440 wallpaper HALF. Reference 1 contains a vertical join at x=1281: the LEFT region is original source artwork, and the RIGHT region is its extension. Reference 2 is the unedited complete source and the authority for paint, optical blur, exact subdued colors and texture. Preserve the original-source region's scale, coordinates and composition precisely. Keep the canvas 2560x1440, no reframing, no zoom, no crop or text. Correct ONLY the RIGHT extension so it flows naturally through the join, with no rectangular seam, exposure step, different blur or different color cast. Continue the clipped bokeh circles naturally through the join. Match the source's very SOFT, low-contrast and subdued gray/olive/gold/pastel-pink optical bokeh. The extension must be just as defocused, hazy and restrained as the original, never sharper or more saturated. Complete partially clipped circles on their existing contours at the join. Avoid green/red neon circles, black bands, rectangular gray fog and smaller sharper circles near the join."
       },
-      "finishing": "Existing outer scenery retained. Narrow generative join repair, source-side color continuity, and a gradual blend into the existing outer panel. Original center is referenced unchanged.",
-      "revision_reference_prompt": "Repair ONLY the outer left and right extensions of reference 1, especially the vertical joins at the central source. Reference 2 is the exact original center: it must remain unchanged. Match the center's soft defocused bokeh circles, muted olive gold, pastel warm pink and dark blue-green palette, blur radius, grain and exposure. Some circles are clipped abruptly at the join and there is a dark rectangular band. Complete EACH partially clipped circle continuously through the join into the extensions; remove any rectangular color/brightness/blur boundary. Keep the outer scenery's current composition as much as possible, with no new bright focal area. Seamless optical defocus throughout, no sharp features. Return the same full panoramic 32:9 framing, with no crop, border or text.",
-      "revision_reference_sha256": "5946e4f379dadecc18274295a3b58960090f20fd31a0ebd4d1dc1f44dbec8a22",
-      "join_repair_prompts": {
-        "left": "This is a narrowly cropped 1024x1440 section of a wider wallpaper, centered on a bad vertical join at EXACTLY x=512. Repair ONLY the LEFT HALF (x 0..511), which is generated extension. The RIGHT HALF is the original artwork and is LOCKED: its pixels, positions, geometry and exact colors are the authority and must be preserved unchanged. Keep this precise crop, scale and coordinate system: do not zoom, crop, move, stretch, shift the source, or change aspect ratio. Several soft bokeh circles are CUT OFF at the vertical join. Complete each partially cut original bokeh circle continuously across that join into the edited half. Match exact circle contours, soft focus, pastel olive/gold/pink/blue-gray palette and exposure. Remove the dark rectangle/band and any vertical color or blur boundary. Make the join invisible with value, first-derivative and texture continuity at x=512. Keep the composition and outer edge of the edited half faithful to the input, so it can join the existing wider extension. No added text, borders or watermark. Return one image at the same 1024x1440 framing.",
-        "right": "This is a narrowly cropped 1024x1440 section of a wider wallpaper, centered on a bad vertical join at EXACTLY x=512. Repair ONLY the RIGHT HALF (x 512..1023), which is generated extension. The LEFT HALF is the original artwork and is LOCKED: its pixels, positions, geometry and exact colors are the authority and must be preserved unchanged. Keep this precise crop, scale and coordinate system: do not zoom, crop, move, stretch, shift the source, or change aspect ratio. Several soft bokeh circles are CUT OFF at the vertical join. Complete each partially cut original bokeh circle continuously across that join into the edited half. Match exact circle contours, soft focus, pastel olive/gold/pink/blue-gray palette and exposure. Remove the dark rectangle/band and any vertical color or blur boundary. Make the join invisible with value, first-derivative and texture continuity at x=512. Keep the composition and outer edge of the edited half faithful to the input, so it can join the existing wider extension. No added text, borders or watermark. Return one image at the same 1024x1440 framing."
+      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged.",
+      "edge_blend_pixels": {
+        "left": 64,
+        "right": 64
+      },
+      "registration": {
+        "left": {
+          "sift_inliers": 19,
+          "ecc": 0.991982000283077,
+          "context_rmse_before": 0.045510627834627476,
+          "context_rmse_after": 0.03061081889787876,
+          "reference_sha256": "d49e79d5af4ab24cea0dc0395aab2eca3c805bd1153198db953b07790da9924c"
+        },
+        "right": {
+          "sift_inliers": 13,
+          "ecc": 0.9894509110754667,
+          "context_rmse_before": 0.04530923872946316,
+          "context_rmse_after": 0.03566686588567222,
+          "reference_sha256": "74da6b4f2e5995a27c200c8e0f2201f2e45e2ecbdb9dd73c59ca7d14787c4cb2"
+        }
       }
     },
     {
@@ -514,19 +578,25 @@
         },
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/4-new-horizons-right.webp",
-          "sha256": "c66edd85763d4ab263b2d96371400cb907978fce942326c0a9875a417c1ec0b7"
+          "sha256": "bc96a1b025055ac7422352c55c14df4b0209800dd130eb6c6e383473076f839a"
         }
       ],
-      "finishing": "Existing outer scenery retained. Narrow generative join repair, source-side color continuity, and a gradual blend into the existing outer panel. Original center is referenced unchanged. Row-dependent chromatic grain matched to source channel covariance with reproducible noise (seeds 9312, 9313, 9314). The right sky panel uses lossless WebP to preserve this color grain.",
+      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged. Only the right join changed. The previous left panel is retained byte-for-byte; the outer right scenery and its grain are retained beyond the 160-pixel transition. Missing grain in the transition is matched to source covariance.",
       "prompts": {
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1280 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend the atmospheric coral-purple dusk sky and dark blue mountain slopes in the same illustration style and perspective. Keep the existing two enormous glowing discs and lone figure only, add no new celestial body or person. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
-        "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1281 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend the atmospheric coral-purple dusk sky and dark blue mountain slopes in the same illustration style and perspective. Keep the existing two enormous glowing discs and lone figure only, add no new celestial body or person. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
+        "right": "Repair this 2560x1440 wallpaper HALF. Reference 1 contains a vertical join at x=1280: the LEFT region is original source artwork, and the RIGHT region is its extension. Reference 2 is the unedited complete source and the authority for paint, optical blur, exact subdued colors and texture. Preserve the original-source region's scale, coordinates and composition precisely. Keep the canvas 2560x1440, no reframing, no zoom, no crop or text. Correct ONLY the RIGHT extension so it flows naturally through the join, with no rectangular seam, exposure step, different blur or different color cast. Continue the source's precise sky color gradient through the join: it should remain subdued and smoothly transition from purple/muted gray-pink to blue. Match its fine CHROMATIC grain and star density throughout the extension, without introducing an overly clean or blue block. Connect the existing dune ridge at exactly the original position and slope. No new planets, figures, bright focal objects or different dune forms."
       },
-      "revision_reference_prompt": "Repair ONLY the outer scenery and the two vertical joins of reference 1. Reference 2 is the exact original center and must stay unchanged, including the orange planet, figure, birds and dune. On both sides continue the center's smooth blue/purple star-filled sky at EXACT matching exposure, hue, fine grain and density; continue dune ridge heights and fine sand contours. Remove the visible vertical rectangular source edge, large color shift, and overly clean/smooth or differently noisy strip next to the source. Match the existing original grain seamlessly. Do not add planets, people or other focal objects. Preserve the scene composition outside wherever possible. Return the same full 32:9 panoramic frame, no cropping, no borders or text.",
-      "revision_reference_sha256": "f02dc30bd6da020ec610e1d57cbe9c00ce002d690b2ff023b0653ace64011da2",
-      "join_repair_prompts": {
-        "left": "This is a narrowly cropped 1024x1440 section of a wider wallpaper, centered on a bad vertical join at EXACTLY x=512. Repair ONLY the LEFT HALF (x 0..511), which is generated extension. The RIGHT HALF is the original artwork and is LOCKED: its pixels, positions, geometry and exact colors are the authority and must be preserved unchanged. Keep this precise crop, scale and coordinate system: do not zoom, crop, move, stretch, shift the source, or change aspect ratio. Continue the starry blue/purple sky and lower dune ridge across the vertical join. Match original fine noise grain, star density, gradual sky hue and brightness PRECISELY. Remove the vertical color/grain step. The dune ridge must meet at exactly the same height and slope at the join, without introducing a new hill, shape or bright focal object. Make the join invisible with value, first-derivative and texture continuity at x=512. Keep the composition and outer edge of the edited half faithful to the input, so it can join the existing wider extension. No added text, borders or watermark. Return one image at the same 1024x1440 framing.",
-        "right": "This is a narrowly cropped 1024x1440 section of a wider wallpaper, centered on a bad vertical join at EXACTLY x=512. Repair ONLY the RIGHT HALF (x 512..1023), which is generated extension. The LEFT HALF is the original artwork and is LOCKED: its pixels, positions, geometry and exact colors are the authority and must be preserved unchanged. Keep this precise crop, scale and coordinate system: do not zoom, crop, move, stretch, shift the source, or change aspect ratio. Continue the starry blue/purple sky and lower dune ridge across the vertical join. Match original fine noise grain, star density, gradual sky hue and brightness PRECISELY. Remove the vertical color/grain step. The dune ridge must meet at exactly the same height and slope at the join, without introducing a new hill, shape or bright focal object. Make the join invisible with value, first-derivative and texture continuity at x=512. Keep the composition and outer edge of the edited half faithful to the input, so it can join the existing wider extension. No added text, borders or watermark. Return one image at the same 1024x1440 framing."
+      "edge_blend_pixels": {
+        "right": 64
+      },
+      "registration": {
+        "right": {
+          "sift_inliers": 7,
+          "ecc": 0.9960610087004766,
+          "context_rmse_before": 0.026658133836337843,
+          "context_rmse_after": 0.011267765194630878,
+          "reference_sha256": "d162b46d7adfadd4aa95c4a526fb383d2c5f3460af30e7719951290326eb7409"
+        }
       }
     },
     {
@@ -721,24 +791,22 @@
       "source": "themes/matte-black/backgrounds/2-dot-hands.webp",
       "source_sha256": "a51e0dc5406d054ddfe16dc732ada4061c733a9e6f985a3ff773ba1e803ad3a0",
       "variant": "themes/matte-black/backgrounds/2-dot-hands@32x9.svg",
-      "method": "registered-dot-grid-extension",
-      "panels": [
-        {
-          "path": "themes/matte-black/backgrounds/ultrawide/2-dot-hands-left.webp",
-          "sha256": "5d45e36f213cadf94b43960710394be10132f4e15659822f14d3659a7a1edd79"
-        },
-        {
-          "path": "themes/matte-black/backgrounds/ultrawide/2-dot-hands-right.webp",
-          "sha256": "1f915bdfac5121bb3bd153b3e17efb514d5d042cb5491d303334215b6e9b3b11"
-        }
-      ],
+      "method": "native-vector-dot-grid-extension",
       "prior_generation_prompts": {
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
         "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
       },
-      "finishing": "Source-derived dot grid registered to original per-row centers and radii; only outer forearm silhouettes extended. Original hands, fingertip gap and credit remain unchanged. Side panels are lossless WebP.",
-      "revision_reference_prompt": "Repair ONLY the left and right OUTER FOREARMS of reference 1 so that they connect perfectly to the unchanged hands of reference 2 in the center. The original center, hands, finger positions, gap between fingers, dot grid and tiny original credit must remain untouched. Current generated forearms are misaligned at the two vertical joins and their dots do not line up. Reposition or redraw the OUTER forearms only: connect silhouettes and every horizontal row of dots at the original edges, with exactly matching regular dot size, horizontal/vertical spacing, white brightness and pure black background. Continue realistic tapering forearms toward the outer edges, no bulge or detached wrist, no diagonal jump at either join. The original source stays full-height and centered in a 5120x1440 canvas. Keep the original central fingertips at the existing coordinates. Return same 32:9 full-width image, no crop, text or new watermark.",
-      "revision_reference_sha256": "94e5b3be2183bad24052f6dc64e799821eea8cc727ff841e5f5229b101b49d25"
+      "finishing": "Native SVG circles on the 5120\u00d71440 canvas, registered to source dot rows and radii, with full-size body dots and a narrow silhouette falloff. No bitmap scaling, filters or blur. Original hands, gap and credit are referenced unchanged.",
+      "vector_grid": {
+        "circles": 3494,
+        "pitch_x": 12.53715308863026,
+        "pitch_y": 23.591763652641003,
+        "renderer": "Native SVG circles, single antialias pass, no bitmap scaling or blur.",
+        "body_radius_range": [
+          3.6,
+          3.9
+        ]
+      }
     },
     {
       "source": "themes/matte-black/backgrounds/omarchy.webp",
@@ -1069,16 +1137,37 @@
       "panels": [
         {
           "path": "themes/ristretto/backgrounds/ultrawide/2-coffee-beans-left.webp",
-          "sha256": "2a8a9cc41ba9307af90b9b81b185041f17abc1412b68ebb663df1c51bc0efd47"
+          "sha256": "e61422e4ff1fd955f648106d08c4ed2560b26c426dfda3be39ef230338a239f8"
         },
         {
           "path": "themes/ristretto/backgrounds/ultrawide/2-coffee-beans-right.webp",
-          "sha256": "a312a50783cbbd939d1f0698eca0ae5f5c6a97b60c059522fbb57598454c4950"
+          "sha256": "8a0ebd0ee4bedfb8079c204325e8c7d28544d0bd6414e2b98dad02748b3f6273"
         }
       ],
       "prompts": {
-        "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1275 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the photographic dark coffee plant foliage, with organically varied glossy green leaves and occasional existing-scale coffee cherries, matching shallow focus and subdued green-brown lighting. No separate bunch or cloned leaves. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
-        "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1276 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the photographic dark coffee plant foliage, with organically varied glossy green leaves and occasional existing-scale coffee cherries, matching shallow focus and subdued green-brown lighting. No separate bunch or cloned leaves. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
+        "left": "Edit this exact 2560x1440 HALF of a wider coffee-plant wallpaper. The original photograph is on the RIGHT side of the vertical boundary x=1275; the generated extension is on the LEFT. Keep the original-source region's composition, coordinates, crop, lighting and colors fixed. Any coffee cluster cut off at a canvas edge is INTENTIONALLY cropped: do not move, complete or recenter it. Correct ONLY the extension. Its current leaves and berries are much too sharp and too close to camera. They need to be SOFT OUT-OF-FOCUS BACKGROUND at exactly the same depth of field as the original beside the boundary. Continue distant coffee foliage and warm brown/green bokeh as heavily defocused, smooth low-contrast shapes, with no readable leaf veins, crisp bean textures or new sharp foreground subject. The whole left extension should be as defocused as the original's left background. Preserve the original sharp central coffee branch and leaves in their existing original positions. Match the original dark desaturated teal/olive palette and photographic exposure. The boundary must disappear, without a square of different blur, saturation or brightness. Return exactly the same 2560x1440 framing. No zoom, crop, borders, lettering or watermark.",
+        "right": "Edit this exact 2560x1440 HALF of a wider coffee-plant wallpaper. The original photograph is on the LEFT side of the vertical boundary x=1285; the generated extension is on the RIGHT. Keep the original-source region's composition, coordinates, crop, lighting and colors fixed. Any coffee cluster cut off at a canvas edge is INTENTIONALLY cropped: do not move, complete or recenter it. Correct ONLY the extension. Its current leaves and berries are much too sharp and too close to camera. They need to be SOFT OUT-OF-FOCUS BACKGROUND at exactly the same depth of field as the original beside the boundary. Continue distant coffee foliage and warm brown/green bokeh as heavily defocused, smooth low-contrast shapes, with no readable leaf veins, crisp bean textures or new sharp foreground subject. The right extension should remain dim, low contrast and defocused like the original's dark right edge. Preserve the original sharp central coffee branch and leaves in their existing original positions. Match the original dark desaturated teal/olive palette and photographic exposure. The boundary must disappear, without a square of different blur, saturation or brightness. Return exactly the same 2560x1440 framing. No zoom, crop, borders, lettering or watermark."
+      },
+      "edge_blend_pixels": {
+        "left": 64,
+        "right": 64
+      },
+      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged. New outer foliage follows the original depth of field; only missing fine grain is restored with source channel covariance and reproducible noise seeds 9312, 9313, 9314.",
+      "registration": {
+        "left": {
+          "sift_inliers": 462,
+          "ecc": 0.9983280996888569,
+          "context_rmse_before": 0.013819865119902495,
+          "context_rmse_after": 0.008191991736119472,
+          "reference_sha256": "6c25f2f9212b88dae5eff508fac488477f4737a5f288368c7375e1df7b3ecb08"
+        },
+        "right": {
+          "sift_inliers": 543,
+          "ecc": 0.9903356359174398,
+          "context_rmse_before": 0.0174816487283255,
+          "context_rmse_after": 0.011802584784274575,
+          "reference_sha256": "555cde0d8e99a6d9a5e118bce803c19360184e8174b953f620e727a73e43b917"
+        }
       }
     },
     {
@@ -1516,22 +1605,22 @@
       "source": "themes/vantablack/backgrounds/0-dot-hands.webp",
       "source_sha256": "a51e0dc5406d054ddfe16dc732ada4061c733a9e6f985a3ff773ba1e803ad3a0",
       "variant": "themes/vantablack/backgrounds/0-dot-hands@32x9.svg",
-      "method": "registered-dot-grid-extension",
-      "panels": [
-        {
-          "path": "themes/vantablack/backgrounds/ultrawide/0-dot-hands-left.webp",
-          "sha256": "5d45e36f213cadf94b43960710394be10132f4e15659822f14d3659a7a1edd79"
-        },
-        {
-          "path": "themes/vantablack/backgrounds/ultrawide/0-dot-hands-right.webp",
-          "sha256": "1f915bdfac5121bb3bd153b3e17efb514d5d042cb5491d303334215b6e9b3b11"
-        }
-      ],
+      "method": "native-vector-dot-grid-extension",
       "prior_generation_prompts": {
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
         "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
       },
-      "finishing": "Canonical raster is byte-identical to Matte Black 2. Reuse its exact source-registered opaque, lossless forearm extensions; original hands, finger gap and credit remain unchanged."
+      "finishing": "Native SVG circles on the 5120\u00d71440 canvas, registered to source dot rows and radii, with full-size body dots and a narrow silhouette falloff. No bitmap scaling, filters or blur. Original hands, gap and credit are referenced unchanged.",
+      "vector_grid": {
+        "circles": 3494,
+        "pitch_x": 12.53715308863026,
+        "pitch_y": 23.591763652641003,
+        "renderer": "Native SVG circles, single antialias pass, no bitmap scaling or blur.",
+        "body_radius_range": [
+          3.6,
+          3.9
+        ]
+      }
     },
     {
       "source": "themes/vantablack/backgrounds/1-twisted-stairs.webp",

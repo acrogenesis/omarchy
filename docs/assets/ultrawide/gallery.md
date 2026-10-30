@@ -1,10 +1,10 @@
 # 32:9 background gallery
 
-All 98 compositions, rendered at 5120×1440 and reduced for this review gallery. The runtime assets retain their full original source images.
+All 98 compositions, rendered at 5120×1440 and reduced for this gallery. Original source files remain unchanged. Six photo compositions use an approved 64-pixel blend at the affected source edges; their protected centers remain pixel-exact after normal display scaling.
 
-[Before and after: Gruvbox 1–2, Last Horizon 2–4, and Matte Black 2](revision-comparison.webp). All original center artwork remains unchanged.
+[Before and after: all eight revised backgrounds](revision-comparison.webp).
 
-[Vantablack 0: before and after the arm correction](vantablack-arms.webp).
+[Seam details at native display resolution](seam-details.webp) · [Matte Black and Vantablack arm details at native display resolution](dot-details.webp) · [Vantablack full composition comparison](vantablack-arms.webp).
 
 ## catppuccin, catppuccin-latte, ethereal, everforest
 
