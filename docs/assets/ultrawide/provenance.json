@@ -1516,21 +1516,22 @@
       "source": "themes/vantablack/backgrounds/0-dot-hands.webp",
       "source_sha256": "a51e0dc5406d054ddfe16dc732ada4061c733a9e6f985a3ff773ba1e803ad3a0",
       "variant": "themes/vantablack/backgrounds/0-dot-hands@32x9.svg",
-      "method": "generated-sides",
+      "method": "registered-dot-grid-extension",
       "panels": [
         {
           "path": "themes/vantablack/backgrounds/ultrawide/0-dot-hands-left.webp",
-          "sha256": "31af2690608de2abfd9b6ac554a2af7c73785deb3cf57cb697b18ae37a77cff0"
+          "sha256": "5d45e36f213cadf94b43960710394be10132f4e15659822f14d3659a7a1edd79"
         },
         {
           "path": "themes/vantablack/backgrounds/ultrawide/0-dot-hands-right.webp",
-          "sha256": "9fc716523c3b1b88f8be8e98d763c4ac77751932b279ecb240a8302bd8093963"
+          "sha256": "1f915bdfac5121bb3bd153b3e17efb514d5d042cb5491d303334215b6e9b3b11"
         }
       ],
-      "prompts": {
+      "prior_generation_prompts": {
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
         "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
-      }
+      },
+      "finishing": "Canonical raster is byte-identical to Matte Black 2. Reuse its exact source-registered opaque, lossless forearm extensions; original hands, finger gap and credit remain unchanged."
     },
     {
       "source": "themes/vantablack/backgrounds/1-twisted-stairs.webp",

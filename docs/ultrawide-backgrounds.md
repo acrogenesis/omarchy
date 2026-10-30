@@ -16,6 +16,8 @@ Uniform backgrounds behind wordmarks and isolated motifs use the original field 
 
 The dotted forearm extensions use a grid registered to the original dot positions and sizes. The original hands, fingertip spacing, and credit remain in the unchanged center raster. These source-derived panels use lossless WebP.
 
+Matte Black and Vantablack share the same canonical hand drawing and the same source-registered forearm extensions.
+
 Painted scenery matches the original interior palette separately from its darker scan edges. Corrections at the joins affect the side panels only.
 
 [The provenance manifest](assets/ultrawide/provenance.json) records the source hashes, extension methods, and generation prompts. [The gallery](assets/ultrawide/gallery.md) shows all complete 32:9 compositions for review. Boot intro videos retain their existing framing.

@@ -4,6 +4,8 @@ All 98 compositions, rendered at 5120×1440 and reduced for this review gallery.
 
 [Before and after: Gruvbox 1–2, Last Horizon 2–4, and Matte Black 2](revision-comparison.webp). All original center artwork remains unchanged.
 
+[Vantablack 0: before and after the arm correction](vantablack-arms.webp).
+
 ## catppuccin, catppuccin-latte, ethereal, everforest
 
 ![32:9 background review sheet 1](gallery-1.webp)
