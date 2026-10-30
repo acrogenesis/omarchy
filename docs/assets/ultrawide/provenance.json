@@ -5,9 +5,9 @@
     "height": 1440
   },
   "generator": "Codex built-in image generation",
-  "original_policy": "All original source files are byte unchanged and referenced directly. Normal proportional display scaling applies. Six photo compositions blend only the documented 64-display-pixel source-edge strips with registered generated context; the protected core remains pixel-exact. All other compositions retain the complete original rectangle.",
-  "panel_encoding": "Generated scenery generally uses WebP quality 95. Revised Gruvbox panels use quality 98; revised Last Horizon and Ristretto panels use lossless WebP. Dotted forearms are native SVG circles.",
-  "finishing": "Source-aligned generated panels receive palette, local color-continuity and narrow seam corrections. Only the six explicitly documented photo variants mask the original edge strips; all protected source interiors remain opaque.",
+  "original_policy": "All 98 source rasters are byte unchanged and referenced directly. Six photo variants have documented source-edge blends: 64 display pixels for Gruvbox1/2 and Ristretto2 on both sides and Last Horizon4 on the right; 256 pixels on both sides of Last Horizon2/3 to cover their original vignette. Protected interiors remain pixel-exact. Other92 variants retain their full original rectangle.",
+  "panel_encoding": "Scenery generally uses WebP quality95; revised Gruvbox uses quality98; revised Last Horizon and Ristretto use lossless WebP. Anatomical stippling is drawn at native coordinates in SVG.",
+  "finishing": "Photo context is registered and palette matched; source-edge masks have explicit user-space coordinates and cover only documented edge strips. Dotted arm silhouettes, elbows and shading come from new image generation, then are rendered with the original stipple scale and curved rows.",
   "backgrounds": [
     {
       "source": "themes/catppuccin/backgrounds/1-totoro.webp",
@@ -492,36 +492,36 @@
       "panels": [
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/2-blink-left.webp",
-          "sha256": "a3032d26d74329f0a1dd5e3db369698c7e7be40adeecfe9887c3093bb4ec5be3"
+          "sha256": "54756676802ba59f402d142049b05565a9ddf5315a05c0aeca170d299e48a88e"
         },
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/2-blink-right.webp",
-          "sha256": "bd15b5ad2a7286499a054b0c4b3142473fca297dac81aa1e969c72f39be92a72"
+          "sha256": "d15a251bdbe62bdb6730df57dd15651717009475e8706a04e432331546b33cce"
         }
       ],
       "prompts": {
-        "left": "Edit this EXACT 2560x1440 image without changing framing, scale or positions. This is a HALF of a wider panorama. Any eye, human or light circle cut off at the left or right edge is INTENTIONALLY CROPPED: DO NOT complete, recenter, zoom out or bring the missing portion into the canvas. Preserve the input crop exactly. The original-source region is the RIGHT part, and the only editable extension is the LEFT part across the vertical join at x=1280. Keep all original-source geometry and subdued original colors exactly. Only repair the extension's straight rectangular exposure/texture seam. Match the source's hazy, soft, very dark blue-black stone and original step contours. Do not add or rearrange columns, stairs, eye or figure. This is an exposure, texture and continuity correction only. Return the exact same half-image crop and 2560x1440 canvas. No borders or added text.",
-        "right": "Edit this EXACT 2560x1440 image without changing framing, scale or positions. This is a HALF of a wider panorama. Any eye, human or light circle cut off at the left or right edge is INTENTIONALLY CROPPED: DO NOT complete, recenter, zoom out or bring the missing portion into the canvas. Preserve the input crop exactly. The original-source region is the LEFT part, and the only editable extension is the RIGHT part across the vertical join at x=1280. Keep all original-source geometry and subdued original colors exactly. Only repair the extension's straight rectangular exposure/texture seam. Match the source's hazy, soft, very dark blue-black stone and original step contours. Do not add or rearrange columns, stairs, eye or figure. This is an exposure, texture and continuity correction only. Return the exact same half-image crop and 2560x1440 canvas. No borders or added text."
+        "left": "Precise local seam repair of this exact 2560x1440 wallpaper HALF. The RIGHT region is original artwork and the LEFT region is generated extension. The vertical join is at x=1280.4. The original ends with a DARK VIGNETTE, making a dark vertical rectangular edge. Fix that mismatch as one continuous scene: dark monumental stone hall surrounding a single giant eye, with existing stone steps and floor. Continue the actual columns, wall shadows and step lines where they cross the seam, with no extra eye or person. You MAY repaint the 256 pixels INSIDE the original edge at the join, and the adjacent extension, to remove the dark vertical vignette band and make the lighting and every intersecting contour continuous. Treat x=1024..1536 as the main repair area; blend naturally into its surrounding pixels. Keep the original context beyond the 256-pixel allowance completely fixed in crop, position, scale, colors and features. Across the outer extension, keep the existing scene arrangement but grade its exposure down as needed to maintain the same original mood and a gradual whole-canvas vignette at the distant outer edge. There must be no dark wall-like strip, box, cropped bokeh circles, brightness step or straight vertical division at x=1280.4. No global blur, new subjects, added text, panel dividers, mirroring or change of framing. Return the exact same 2560x1440 composition and aspect ratio at maximum resolution.",
+        "right": "Precise local seam repair of this exact 2560x1440 wallpaper HALF. The LEFT region is original artwork and the RIGHT region is generated extension. The vertical join is at x=1279.6. The original ends with a DARK VIGNETTE, making a dark vertical rectangular edge. Fix that mismatch as one continuous scene: dark monumental stone hall surrounding a single giant eye, with existing stone steps and floor. Continue the actual columns, wall shadows and step lines where they cross the seam, with no extra eye or person. You MAY repaint the 256 pixels INSIDE the original edge at the join, and the adjacent extension, to remove the dark vertical vignette band and make the lighting and every intersecting contour continuous. Treat x=1023..1535 as the main repair area; blend naturally into its surrounding pixels. Keep the original context beyond the 256-pixel allowance completely fixed in crop, position, scale, colors and features. Across the outer extension, keep the existing scene arrangement but grade its exposure down as needed to maintain the same original mood and a gradual whole-canvas vignette at the distant outer edge. There must be no dark wall-like strip, box, cropped bokeh circles, brightness step or straight vertical division at x=1279.6. No global blur, new subjects, added text, panel dividers, mirroring or change of framing. Return the exact same 2560x1440 composition and aspect ratio at maximum resolution."
       },
-      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged.",
+      "finishing": "Regenerated the vignetted edge and adjacent extension as a continuous scene, then registered to protected source context and palette matched. A256px smooth source-edge blend removes the dark rectangular vignette while preserving the central artwork.",
       "edge_blend_pixels": {
-        "left": 64,
-        "right": 64
+        "left": 256,
+        "right": 256
       },
       "registration": {
         "left": {
-          "sift_inliers": 259,
-          "ecc": 0.9970100810107604,
-          "context_rmse_before": 0.02618028996413785,
-          "context_rmse_after": 0.014350862150328374,
-          "reference_sha256": "389989a5e7814493978452123ed9367046b76fac0f8be06fc23271a1b1370541"
+          "sift_inliers": 283,
+          "ecc": 0.9704051402696986,
+          "context_rmse_before": 0.04869045943232653,
+          "context_rmse_after": 0.03953544373725437,
+          "reference_sha256": "88692cdfda5931c3233fe7aa5c584068acccf64cdc997170836eb8f23ded5d98"
         },
         "right": {
-          "sift_inliers": 177,
-          "ecc": 0.9940044593737908,
-          "context_rmse_before": 0.022497279944706874,
-          "context_rmse_after": 0.016311312244828364,
-          "reference_sha256": "f44f816df5c5192f232ca9fb95fdf4f55ae5b5ffc5a2d6d36740f348b1bbe9aa"
+          "sift_inliers": 170,
+          "ecc": 0.96702109138986,
+          "context_rmse_before": 0.04457109853954981,
+          "context_rmse_after": 0.038845544663371624,
+          "reference_sha256": "e8a1ba79e2262cebc0098c53859d5d061313f8a8f062c8d270b42c3be03d2fad"
         }
       }
     },
@@ -533,36 +533,36 @@
       "panels": [
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/3-bokeh-left.webp",
-          "sha256": "19542857576f87c8451cb8f015195736a50c9cc200c67763e7f7bf632efc2962"
+          "sha256": "ed14930ecf8eb48f4d449912e733c53357dac6caeb747fd0e83ab5898d3ec052"
         },
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/3-bokeh-right.webp",
-          "sha256": "cc4fbb5fd08fa19d7af642ed9ab43e3215987c4b4b64de7144e3dc3ee9c8af23"
+          "sha256": "ea792a900d61336e213e3498a897a2dac4ebd016d627b1663e99f5994ac26998"
         }
       ],
       "prompts": {
-        "left": "Edit this EXACT 2560x1440 image without changing framing, scale or positions. This is a HALF of a wider panorama. Any eye, human or light circle cut off at the left or right edge is INTENTIONALLY CROPPED: DO NOT complete, recenter, zoom out or bring the missing portion into the canvas. Preserve the input crop exactly. The original-source region is the RIGHT part, and the only editable extension is the LEFT part across the vertical join at x=1279. Keep all original-source geometry and subdued original colors exactly. Only repair the extension's rectangle edge, optical softness and palette. Continue every source bokeh circle across the join along its exact existing contour. Match the source's grayish haze, muted olive gold/pastel pink and VERY soft original focus, with no sharpened or saturated green/red outer circles, black bands or clipped contours. Return the exact same half-image crop and 2560x1440 canvas. No borders or added text.",
-        "right": "Repair this 2560x1440 wallpaper HALF. Reference 1 contains a vertical join at x=1281: the LEFT region is original source artwork, and the RIGHT region is its extension. Reference 2 is the unedited complete source and the authority for paint, optical blur, exact subdued colors and texture. Preserve the original-source region's scale, coordinates and composition precisely. Keep the canvas 2560x1440, no reframing, no zoom, no crop or text. Correct ONLY the RIGHT extension so it flows naturally through the join, with no rectangular seam, exposure step, different blur or different color cast. Continue the clipped bokeh circles naturally through the join. Match the source's very SOFT, low-contrast and subdued gray/olive/gold/pastel-pink optical bokeh. The extension must be just as defocused, hazy and restrained as the original, never sharper or more saturated. Complete partially clipped circles on their existing contours at the join. Avoid green/red neon circles, black bands, rectangular gray fog and smaller sharper circles near the join."
+        "left": "Precise local seam repair of this exact 2560x1440 wallpaper HALF. The RIGHT region is original artwork and the LEFT region is generated extension. The vertical join is at x=1278.9. The original ends with a DARK VIGNETTE, making a dark vertical rectangular edge. Fix that mismatch as one continuous scene: photographic bokeh with softly overlapping pastel circles. Continue each actual partial circle smoothly through the join; keep circles circular, with matched defocus, dark gray base and subtle warm yellow, green and pink colors. You MAY repaint the 256 pixels INSIDE the original edge at the join, and the adjacent extension, to remove the dark vertical vignette band and make the lighting and every intersecting contour continuous. Treat x=1022..1534 as the main repair area; blend naturally into its surrounding pixels. Keep the original context beyond the 256-pixel allowance completely fixed in crop, position, scale, colors and features. Across the outer extension, keep the existing scene arrangement but grade its exposure down as needed to maintain the same original mood and a gradual whole-canvas vignette at the distant outer edge. There must be no dark wall-like strip, box, cropped bokeh circles, brightness step or straight vertical division at x=1278.9. No global blur, new subjects, added text, panel dividers, mirroring or change of framing. Return the exact same 2560x1440 composition and aspect ratio at maximum resolution.",
+        "right": "Precise local seam repair of this exact 2560x1440 wallpaper HALF. The LEFT region is original artwork and the RIGHT region is generated extension. The vertical join is at x=1281.1. The original ends with a DARK VIGNETTE, making a dark vertical rectangular edge. Fix that mismatch as one continuous scene: photographic bokeh with softly overlapping pastel circles. Continue each actual partial circle smoothly through the join; keep circles circular, with matched defocus, dark gray base and subtle warm yellow, green and pink colors. You MAY repaint the 256 pixels INSIDE the original edge at the join, and the adjacent extension, to remove the dark vertical vignette band and make the lighting and every intersecting contour continuous. Treat x=1025..1537 as the main repair area; blend naturally into its surrounding pixels. Keep the original context beyond the 256-pixel allowance completely fixed in crop, position, scale, colors and features. Across the outer extension, keep the existing scene arrangement but grade its exposure down as needed to maintain the same original mood and a gradual whole-canvas vignette at the distant outer edge. There must be no dark wall-like strip, box, cropped bokeh circles, brightness step or straight vertical division at x=1281.1. No global blur, new subjects, added text, panel dividers, mirroring or change of framing. Return the exact same 2560x1440 composition and aspect ratio at maximum resolution."
       },
-      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged.",
+      "finishing": "Regenerated the vignetted edge and adjacent extension as a continuous scene, then registered to protected source context and palette matched. A256px smooth source-edge blend removes the dark rectangular vignette while preserving the central artwork.",
       "edge_blend_pixels": {
-        "left": 64,
-        "right": 64
+        "left": 256,
+        "right": 256
       },
       "registration": {
         "left": {
-          "sift_inliers": 19,
-          "ecc": 0.991982000283077,
-          "context_rmse_before": 0.045510627834627476,
-          "context_rmse_after": 0.03061081889787876,
-          "reference_sha256": "d49e79d5af4ab24cea0dc0395aab2eca3c805bd1153198db953b07790da9924c"
+          "sift_inliers": 14,
+          "ecc": 0.9862846455395303,
+          "context_rmse_before": 0.04570746584863647,
+          "context_rmse_after": 0.0382569907878317,
+          "reference_sha256": "3ff9c72cd1ed9864414cf49c428d85013d5b2aba5b58d4260d478b2887efe0e8"
         },
         "right": {
-          "sift_inliers": 13,
-          "ecc": 0.9894509110754667,
-          "context_rmse_before": 0.04530923872946316,
-          "context_rmse_after": 0.03566686588567222,
-          "reference_sha256": "74da6b4f2e5995a27c200c8e0f2201f2e45e2ecbdb9dd73c59ca7d14787c4cb2"
+          "sift_inliers": 11,
+          "ecc": 0.980301922660956,
+          "context_rmse_before": 0.05219096742761736,
+          "context_rmse_after": 0.049384032761693834,
+          "reference_sha256": "09a4c0e0da1a95a36cdb05eefd11764c773b2eff83a91efcce96282cf8e09c85"
         }
       }
     },
@@ -578,13 +578,13 @@
         },
         {
           "path": "themes/last-horizon/backgrounds/ultrawide/4-new-horizons-right.webp",
-          "sha256": "bc96a1b025055ac7422352c55c14df4b0209800dd130eb6c6e383473076f839a"
+          "sha256": "f8389ff9b25dcf6a039728f8ce894375cfeb33820fccbf36eb9b4be8efbe0649"
         }
       ],
-      "finishing": "Generated context registered to the adjacent source, palette calibrated, paired local color bias corrected, coherent scan-edge seam healed, then blended only inside the documented source-edge strips. Core artwork remains unchanged. Only the right join changed. The previous left panel is retained byte-for-byte; the outer right scenery and its grain are retained beyond the 160-pixel transition. Missing grain in the transition is matched to source covariance.",
+      "finishing": "Removed the disconnected right-side mountain. The original dune descends out of the bottom of the frame; the new right extension is uninterrupted sky. Registered to original context, palette calibrated and source covariance grain matched across the panel. Right64px source-edge blend retained; entire left half unchanged.",
       "prompts": {
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1280 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend the atmospheric coral-purple dusk sky and dark blue mountain slopes in the same illustration style and perspective. Keep the existing two enormous glowing discs and lone figure only, add no new celestial body or person. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
-        "right": "Repair this 2560x1440 wallpaper HALF. Reference 1 contains a vertical join at x=1280: the LEFT region is original source artwork, and the RIGHT region is its extension. Reference 2 is the unedited complete source and the authority for paint, optical blur, exact subdued colors and texture. Preserve the original-source region's scale, coordinates and composition precisely. Keep the canvas 2560x1440, no reframing, no zoom, no crop or text. Correct ONLY the RIGHT extension so it flows naturally through the join, with no rectangular seam, exposure step, different blur or different color cast. Continue the source's precise sky color gradient through the join: it should remain subdued and smoothly transition from purple/muted gray-pink to blue. Match its fine CHROMATIC grain and star density throughout the extension, without introducing an overly clean or blue block. Connect the existing dune ridge at exactly the original position and slope. No new planets, figures, bright focal objects or different dune forms."
+        "right": "Edit this EXACT 2560x1440 RIGHT HALF of a wider wallpaper. The LEFT region x=0..1280 is the original source context: keep its framing, positions, colors, grain and every feature unchanged. Correct only the generated RIGHT region x=1280..2560. There is currently a disconnected floating dune/mountain ridge at the bottom of that right extension. REMOVE THAT ENTIRE DISCONNECTED RIDGE. The original dune slopes downward and leaves the bottom of the canvas at the source boundary. Therefore the extension must be uninterrupted SKY to the far right and down to the bottom edge, with NO mountains, NO hills, NO ground, NO new horizon or ridge. Continue the same smooth dusty blue/lavender dusk sky, softly mottled coral tint near the original boundary, fine chromatic print grain, and sparse tiny stars. Reference 2 shows the complete unchanged original for geometry and color. Preserve exact source coordinates, grain and palette. No new celestial bodies, birds, people, text, borders or vignette strips. Return exactly the same 2560x1440 framing at maximum resolution."
       },
       "edge_blend_pixels": {
         "right": 64
@@ -592,10 +592,10 @@
       "registration": {
         "right": {
           "sift_inliers": 7,
-          "ecc": 0.9960610087004766,
-          "context_rmse_before": 0.026658133836337843,
-          "context_rmse_after": 0.011267765194630878,
-          "reference_sha256": "d162b46d7adfadd4aa95c4a526fb383d2c5f3460af30e7719951290326eb7409"
+          "ecc": 0.998130849278586,
+          "context_rmse_before": 0.019996240169823924,
+          "context_rmse_after": 0.007764072652719166,
+          "reference_sha256": "e04682c5d34979cacbbff2dace78d286e77799a08d1a81dc11f35d1c8adb83a5"
         }
       }
     },
@@ -791,21 +791,43 @@
       "source": "themes/matte-black/backgrounds/2-dot-hands.webp",
       "source_sha256": "a51e0dc5406d054ddfe16dc732ada4061c733a9e6f985a3ff773ba1e803ad3a0",
       "variant": "themes/matte-black/backgrounds/2-dot-hands@32x9.svg",
-      "method": "native-vector-dot-grid-extension",
+      "method": "generated-anatomical-stipple-extension",
       "prior_generation_prompts": {
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
         "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
       },
-      "finishing": "Native SVG circles on the 5120\u00d71440 canvas, registered to source dot rows and radii, with full-size body dots and a narrow silhouette falloff. No bitmap scaling, filters or blur. Original hands, gap and credit are referenced unchanged.",
-      "vector_grid": {
-        "circles": 3494,
+      "finishing": "New generated forearms, bent elbows and partial shoulders based on the preferred first anatomical generations. Source silhouette registration and smooth wrist attachment preserve the original hand pose. Variable native dot area follows generated light and shadow, and dot rows follow the anatomical centerline. Original source dots guide wrist spacing and sizes. No canonical source pixels are changed.",
+      "prompts": {
+        "left": "Continue the anatomy of this original Creation-of-Adam-style stippled hand drawing. This is an exact 2560x1440 HALF of a 32:9 wallpaper. Keep the original hand region at exactly the same scale, crop, coordinates and pose. Reference 2 is the unchanged original hand artwork and the authority for stippling style. Reference 1 includes the earlier generated extension whose sculptural shading and organic contours are preferred, but its arm attachment and anatomy need correction. Replace ONLY the outer extension LEFT of x=1446; the RIGHT source region is locked. The left hand reaches rightward. Its wrist must flow down-left into a realistically tapered forearm, a gently bent elbow toward the far left, and a short upper arm or cropped shoulder/torso if needed to make the reach physically plausible. Follow the EXACT wrist contour and tangent where it enters the original source, with no step, bulge, rotation of the hand, disconnected wrist or additional hand. Render genuine three-dimensional anatomical form with changing dot sizes/density: muscles, subtle tendons, natural rounded contours, underside in sparse dark stippling, a brighter top plane. Use crisp pale monochrome dots and short horizontal dash-like dots on PURE BLACK. Match the original rows and bright ivory-white highlights near the join, but preserve rich organic volumetric shading across the arm. It must read as an anatomical drawing, not a flat straight tube of repeated dots, not a rectangular grid strip, not a mechanical wireframe. No broad uniform rows through the arm body. No new fingers, faces, heads, lettering, watermarks, borders or decorations. Keep the hands as the focal subject; any necessary body stays subtly cropped at the outer edge. Return the same exact 2560x1440 framing at maximum resolution.",
+        "right": "Continue the anatomy of this original Creation-of-Adam-style stippled hand drawing. This is an exact 2560x1440 HALF of a 32:9 wallpaper. Keep the original hand region at exactly the same scale, crop, coordinates and pose. Reference 2 is the unchanged original hand artwork and the authority for stippling style. Reference 1 includes the earlier generated extension whose sculptural shading and organic contours are preferred, but its arm attachment and anatomy need correction. Replace ONLY the outer extension RIGHT of x=1114; the LEFT source region is locked. The right hand reaches leftward. Its wrist must flow up-right into a realistically tapered forearm, a gently bent elbow toward the far right, and a short upper arm or cropped shoulder/torso if needed to make the reach physically plausible. Follow the EXACT wrist contour and tangent where it enters the original source, with no step, bulge, rotation of the hand, disconnected wrist or additional hand. Render genuine three-dimensional anatomical form with changing dot sizes/density: muscles, subtle tendons, natural rounded contours, underside in sparse dark stippling, a brighter top plane. Use crisp pale monochrome dots and short horizontal dash-like dots on PURE BLACK. Match the original rows and bright ivory-white highlights near the join, but preserve rich organic volumetric shading across the arm. It must read as an anatomical drawing, not a flat straight tube of repeated dots, not a rectangular grid strip, not a mechanical wireframe. No broad uniform rows through the arm body. No new fingers, faces, heads, lettering, watermarks, borders or decorations. Keep the hands as the focal subject; any necessary body stays subtly cropped at the outer edge. Return the same exact 2560x1440 framing at maximum resolution."
+      },
+      "anatomical_stippling": {
+        "method": "Generated anatomical forearms/elbows/partial shoulders, re-stippled at native display coordinates using original dot spacing. Variable dot area follows the generated volumetric light and shadow; dot rows curve with the generated anatomy. Original source wrist grid is blended into the new stippling over256 outer pixels. No source pixels changed.",
+        "dots": 4153,
         "pitch_x": 12.53715308863026,
         "pitch_y": 23.591763652641003,
-        "renderer": "Native SVG circles, single antialias pass, no bitmap scaling or blur.",
-        "body_radius_range": [
-          3.6,
-          3.9
-        ]
+        "sides": {
+          "left": {
+            "dots": 1989,
+            "anatomy_from": "registered generated forearm, elbow and shoulder shading",
+            "curvature": "dot rows follow the generated anatomical centerline away from the source wrist"
+          },
+          "right": {
+            "dots": 2164,
+            "anatomy_from": "registered generated forearm, elbow and shoulder shading",
+            "curvature": "dot rows follow the generated anatomical centerline away from the source wrist"
+          }
+        }
+      },
+      "registration": {
+        "left": {
+          "ecc": 0.9971797215371138,
+          "reference_sha256": "c8e95c97f13141a51def2b155569c2189222368c96f3136847b0def372914af5"
+        },
+        "right": {
+          "ecc": 0.9731752578261893,
+          "reference_sha256": "ff0250a39aa68d11b200f782ec70d88367297eb94f4ae0da3606ad85ca2cfcb4"
+        }
       }
     },
     {
@@ -1605,21 +1627,43 @@
       "source": "themes/vantablack/backgrounds/0-dot-hands.webp",
       "source_sha256": "a51e0dc5406d054ddfe16dc732ada4061c733a9e6f985a3ff773ba1e803ad3a0",
       "variant": "themes/vantablack/backgrounds/0-dot-hands@32x9.svg",
-      "method": "native-vector-dot-grid-extension",
+      "method": "generated-anatomical-stipple-extension",
       "prior_generation_prompts": {
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
         "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
       },
-      "finishing": "Native SVG circles on the 5120\u00d71440 canvas, registered to source dot rows and radii, with full-size body dots and a narrow silhouette falloff. No bitmap scaling, filters or blur. Original hands, gap and credit are referenced unchanged.",
-      "vector_grid": {
-        "circles": 3494,
+      "finishing": "New generated forearms, bent elbows and partial shoulders based on the preferred first anatomical generations. Source silhouette registration and smooth wrist attachment preserve the original hand pose. Variable native dot area follows generated light and shadow, and dot rows follow the anatomical centerline. Original source dots guide wrist spacing and sizes. No canonical source pixels are changed.",
+      "prompts": {
+        "left": "Continue the anatomy of this original Creation-of-Adam-style stippled hand drawing. This is an exact 2560x1440 HALF of a 32:9 wallpaper. Keep the original hand region at exactly the same scale, crop, coordinates and pose. Reference 2 is the unchanged original hand artwork and the authority for stippling style. Reference 1 includes the earlier generated extension whose sculptural shading and organic contours are preferred, but its arm attachment and anatomy need correction. Replace ONLY the outer extension LEFT of x=1446; the RIGHT source region is locked. The left hand reaches rightward. Its wrist must flow down-left into a realistically tapered forearm, a gently bent elbow toward the far left, and a short upper arm or cropped shoulder/torso if needed to make the reach physically plausible. Follow the EXACT wrist contour and tangent where it enters the original source, with no step, bulge, rotation of the hand, disconnected wrist or additional hand. Render genuine three-dimensional anatomical form with changing dot sizes/density: muscles, subtle tendons, natural rounded contours, underside in sparse dark stippling, a brighter top plane. Use crisp pale monochrome dots and short horizontal dash-like dots on PURE BLACK. Match the original rows and bright ivory-white highlights near the join, but preserve rich organic volumetric shading across the arm. It must read as an anatomical drawing, not a flat straight tube of repeated dots, not a rectangular grid strip, not a mechanical wireframe. No broad uniform rows through the arm body. No new fingers, faces, heads, lettering, watermarks, borders or decorations. Keep the hands as the focal subject; any necessary body stays subtly cropped at the outer edge. Return the same exact 2560x1440 framing at maximum resolution.",
+        "right": "Continue the anatomy of this original Creation-of-Adam-style stippled hand drawing. This is an exact 2560x1440 HALF of a 32:9 wallpaper. Keep the original hand region at exactly the same scale, crop, coordinates and pose. Reference 2 is the unchanged original hand artwork and the authority for stippling style. Reference 1 includes the earlier generated extension whose sculptural shading and organic contours are preferred, but its arm attachment and anatomy need correction. Replace ONLY the outer extension RIGHT of x=1114; the LEFT source region is locked. The right hand reaches leftward. Its wrist must flow up-right into a realistically tapered forearm, a gently bent elbow toward the far right, and a short upper arm or cropped shoulder/torso if needed to make the reach physically plausible. Follow the EXACT wrist contour and tangent where it enters the original source, with no step, bulge, rotation of the hand, disconnected wrist or additional hand. Render genuine three-dimensional anatomical form with changing dot sizes/density: muscles, subtle tendons, natural rounded contours, underside in sparse dark stippling, a brighter top plane. Use crisp pale monochrome dots and short horizontal dash-like dots on PURE BLACK. Match the original rows and bright ivory-white highlights near the join, but preserve rich organic volumetric shading across the arm. It must read as an anatomical drawing, not a flat straight tube of repeated dots, not a rectangular grid strip, not a mechanical wireframe. No broad uniform rows through the arm body. No new fingers, faces, heads, lettering, watermarks, borders or decorations. Keep the hands as the focal subject; any necessary body stays subtly cropped at the outer edge. Return the same exact 2560x1440 framing at maximum resolution."
+      },
+      "anatomical_stippling": {
+        "method": "Generated anatomical forearms/elbows/partial shoulders, re-stippled at native display coordinates using original dot spacing. Variable dot area follows the generated volumetric light and shadow; dot rows curve with the generated anatomy. Original source wrist grid is blended into the new stippling over256 outer pixels. No source pixels changed.",
+        "dots": 4153,
         "pitch_x": 12.53715308863026,
         "pitch_y": 23.591763652641003,
-        "renderer": "Native SVG circles, single antialias pass, no bitmap scaling or blur.",
-        "body_radius_range": [
-          3.6,
-          3.9
-        ]
+        "sides": {
+          "left": {
+            "dots": 1989,
+            "anatomy_from": "registered generated forearm, elbow and shoulder shading",
+            "curvature": "dot rows follow the generated anatomical centerline away from the source wrist"
+          },
+          "right": {
+            "dots": 2164,
+            "anatomy_from": "registered generated forearm, elbow and shoulder shading",
+            "curvature": "dot rows follow the generated anatomical centerline away from the source wrist"
+          }
+        }
+      },
+      "registration": {
+        "left": {
+          "ecc": 0.9971797215371138,
+          "reference_sha256": "c8e95c97f13141a51def2b155569c2189222368c96f3136847b0def372914af5"
+        },
+        "right": {
+          "ecc": 0.9731752578261893,
+          "reference_sha256": "ff0250a39aa68d11b200f782ec70d88367297eb94f4ae0da3606ad85ca2cfcb4"
+        }
       }
     },
     {

@@ -8,7 +8,7 @@ The SVG references the original raster directly, centers its complete compositio
 
 The surrounding scenery lives in separate WebP side panels under each theme's `backgrounds/ultrawide/` directory. Generated scenery generally uses quality 95; revised Gruvbox panels use quality 98, and revised Last Horizon and Ristretto panels use lossless encoding. Keep these relative resources together when copying a theme. The dotted forearms use native SVG circles instead of raster side panels.
 
-Six photo compositions blend the original's edge strips with registered generated context to remove visible scan edges and rectangular joins: Gruvbox 1 and 2, Last Horizon 2 and 3, and Ristretto 2 on both sides; Last Horizon 4 on the right only. Each blend is limited to 64 display pixels inside the original rectangle at 5120×1440, with a smooth opacity ramp. Panels extend underneath the complete fade, with integer placement and additional coverage at fractional boundaries. The protected interior is opaque and pixel-exact against a source-only render. Last Horizon 4's left panel and left half are unchanged by this correction. The remaining 92 compositions preserve the complete original rectangle.
+Six photo compositions blend the original's edge strips with registered generated context to remove visible scan edges and rectangular joins. Gruvbox 1 and 2 and Ristretto 2 use 64 display pixels on both sides; Last Horizon 4 uses 64 pixels on the right only. Last Horizon 2 and 3 use 256 pixels on both sides to cover the broader vignette in their original images. All widths refer to the 5120×1440 canvas. The masks use smooth opacity ramps and explicit canvas coordinates. Panels extend underneath the complete fade, with integer placement and additional coverage at fractional boundaries. The protected interior is opaque and pixel-exact against a source-only render. Last Horizon 4's left panel and left half are unchanged by this correction. The remaining 92 compositions preserve the complete original rectangle.
 
 ## Extensions
 
@@ -16,11 +16,11 @@ Scenery, photography, textures, and complex illustrations use generative outpain
 
 Uniform backgrounds behind wordmarks and isolated motifs use the original field color. Designs with horizontal color bands continue their source edge colors by row. This preserves the existing typography, symbols, and line work without regenerating them.
 
-The dotted forearm extensions use a grid registered to the original dot positions and sizes. Circles are drawn directly at final canvas coordinates, avoiding bitmap rescaling and blurred dots. Dot size stays consistent through the arm body, with falloff confined to its silhouette. The original hands, fingertip spacing, and credit remain in the unchanged center raster.
+The dotted extensions use generated anatomical forearms, bent elbows and partial shoulders, guided by the first generations. Their contours, changing dot sizes, highlights and underside shadows come from the generated anatomy. Stippling is rendered directly at final canvas coordinates using the original dot scale; rows curve with the anatomical centerline. A gradual transition outside the source joins matches the original wrist rows and dot sizes. The original hands, fingertip spacing, and credit remain in the unchanged center raster.
 
-Matte Black and Vantablack share the same canonical hand drawing and the same source-registered forearm extensions.
+Matte Black and Vantablack share the same canonical hand drawing and anatomical extensions.
 
-Painted scenery matches the original interior palette separately from its darker scan edges. Coffee foliage follows the original depth of field. Missing fine grain in the coffee extensions and the right sky transition of Last Horizon 4 is matched to the source's channel covariance with reproducible noise.
+Painted scenery matches the original interior palette separately from its darker scan edges. Coffee foliage follows the original depth of field. Last Horizon 2 and 3 regenerate the vignetted joins as continuous scenery and bokeh, retaining their protected central compositions. Last Horizon 4's dune descends out of the bottom of the original frame; its right extension continues the sky without adding a disconnected ridge. Missing fine grain in the coffee extensions and Last Horizon 4's right sky is matched to the source's channel covariance with reproducible noise.
 
 [The provenance manifest](assets/ultrawide/provenance.json) records the source hashes, extension methods, and generation prompts. [The gallery](assets/ultrawide/gallery.md) shows all complete 32:9 compositions for review. Boot intro videos retain their existing framing.
 

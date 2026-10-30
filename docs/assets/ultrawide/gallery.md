@@ -1,10 +1,10 @@
 # 32:9 background gallery
 
-All 98 compositions, rendered at 5120×1440 and reduced for this gallery. Original source files remain unchanged. Six photo compositions use an approved 64-pixel blend at the affected source edges; their protected centers remain pixel-exact after normal display scaling.
+All 98 compositions, rendered at 5120×1440 and reduced for this gallery. Original source files are byte unchanged. Six photographic variants blend only documented edge strips: 256 display pixels for Last Horizon 2/3, 64 for Gruvbox 1/2, Ristretto 2 and the right edge of Last Horizon 4. Protected centers remain pixel-exact after normal display scaling.
 
-[Before and after: all eight revised backgrounds](revision-comparison.webp).
+[Current before/after: Last Horizon 2–4, Matte Black 2 and Vantablack 0](revision-comparison.webp). Gruvbox retains the accepted revision; coffee is unchanged from the preceding correction.
 
-[Seam details at native display resolution](seam-details.webp) · [Matte Black and Vantablack arm details at native display resolution](dot-details.webp) · [Vantablack full composition comparison](vantablack-arms.webp).
+[Native-resolution Last Horizon edge details](seam-details.webp) · [Native-resolution anatomical arm details](dot-details.webp) · [Vantablack full composition comparison](vantablack-arms.webp).
 
 ## catppuccin, catppuccin-latte, ethereal, everforest
 
