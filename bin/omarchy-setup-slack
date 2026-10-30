@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# omarchy:summary=Make Slack follow Omarchy themes live
+
+set -euo pipefail
+
+if (( EUID == 0 )); then
+  echo "Run this command as your desktop user, without sudo." >&2
+  exit 1
+fi
+
+[[ -f /usr/lib/slack/resources/app.asar ]] || { echo "Install Slack Desktop first." >&2; exit 1; }
+
+if [[ ! -f $HOME/.local/state/omarchy/current/theme/slack.json ]]; then
+  omarchy-theme-refresh
+fi
+
+python "$OMARCHY_PATH/default/slack/integration.py" setup
+omarchy-theme-set-slack

@@ -1,0 +1,7 @@
+#!/bin/bash
+
+# omarchy:summary=Launch Slack with live Omarchy theme support
+# omarchy:args=[slack-arguments...]
+# omarchy:hidden=true
+
+exec python "$OMARCHY_PATH/default/slack/integration.py" launch "$@"

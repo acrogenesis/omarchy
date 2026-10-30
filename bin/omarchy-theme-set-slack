@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# omarchy:summary=Sync the generated Omarchy theme to running Slack windows
+# omarchy:hidden=true
+
+set -euo pipefail
+
+[[ -f $HOME/.local/state/omarchy/slack/enabled ]] || exit 0
+[[ -f $HOME/.local/state/omarchy/current/theme/slack.json ]] || exit 0
+
+python "$OMARCHY_PATH/default/slack/integration.py" theme
