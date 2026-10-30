@@ -4,7 +4,9 @@ Each built-in still background has a same-stem `@32x9.svg` variant for a 5120×1
 
 ## Original artwork
 
-The SVG references the original raster directly, centers its complete composition, and scales it proportionally to the canvas height. All 98 original source files are byte unchanged. Normal display resampling applies.
+The SVG references its source raster directly, centers its complete composition, and scales it proportionally to the canvas height. All 98 composition source rasters are byte unchanged. Normal display resampling applies.
+
+Ethereal's Roadster variant keeps its approved center in `backgrounds/ultrawide/3-roadster-starlight-source.webp`. The canonical Roadster uses the updated image from `quattro`; the companion source keeps the complete 32:9 composition pixel-identical to the reviewed artwork. The provenance manifest records both hashes.
 
 The surrounding scenery lives in separate WebP side panels under each theme's `backgrounds/ultrawide/` directory. Generated scenery generally uses quality 95; revised Gruvbox panels use quality 98, and revised Last Horizon and Ristretto panels use lossless encoding. Keep these relative resources together when copying a theme. The dotted forearms use native SVG circles instead of raster side panels.
 

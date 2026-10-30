@@ -56,6 +56,7 @@ const outgoing = vm.createContext({
   revealAnimation: { stop() {} },
   preparedBackgroundTimer: { stop() {} }, requestNativeSize() {}
 })
+outgoing.root = outgoing
 vm.runInContext(blockAfter(backgroundQml, 'function transitionBackground(', 'transition function exists') + '\n}', outgoing)
 outgoing.transitionBackground('/snapshots/canonical.svg', '/snapshots/new.png', '/new/art.svg', false, true)
 assertEqual(outgoing.displayedBackground, '/old/art.svg', 'theme snapshots leave the per-panel base source intact during reveal')

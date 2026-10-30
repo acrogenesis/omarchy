@@ -5,7 +5,7 @@
     "height": 1440
   },
   "generator": "Codex built-in image generation",
-  "original_policy": "All 98 source rasters are byte unchanged. Six photo variants have documented 64px/256px edge blends. Two dotted-hand variants preserve every original foreground pixel and protected interior; completed boundary dots may fill only empty black pixels in a 4px source-edge margin. Other 90 variants retain their complete original rectangle.",
+  "original_policy": "All 98 composition source rasters are byte unchanged; the Roadster composition pins its reviewed source under ultrawide while its canonical follows quattro. Six photo variants have documented 64px/256px edge blends. Two dotted-hand variants preserve every original foreground pixel and protected interior; completed boundary dots may fill only empty black pixels in a 4px source-edge margin. Other 90 variants retain their complete original rectangle.",
   "panel_encoding": "Scenery generally uses WebP quality95; revised Gruvbox uses quality98; revised Last Horizon and Ristretto use lossless WebP. Anatomical stippling is drawn at native coordinates in SVG.",
   "finishing": "Photo context is registered and palette matched; source-edge masks have explicit user-space coordinates and cover only documented edge strips. Dotted arm silhouettes, elbows and shading come from new image generation, then are rendered with the original stipple scale and curved rows.",
   "backgrounds": [
@@ -115,7 +115,7 @@
     },
     {
       "source": "themes/ethereal/backgrounds/3-roadster-starlight.webp",
-      "source_sha256": "1b916b5296e543ab2224970cbceb3266efc1694e6eef59a4218c588a673fd88b",
+      "source_sha256": "c9ab5ddc623da4f648418a37fa48e5026727af3e1a841343d022209307b70e97",
       "variant": "themes/ethereal/backgrounds/3-roadster-starlight@32x9.svg",
       "method": "generated-sides",
       "panels": [
@@ -131,6 +131,11 @@
       "prompts": {
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1280 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend only the existing dark starfield, distant low mountain horizon and wet blue-purple reflective ground. Keep the lone car and bright Milky Way in their original center. Do not add any vehicle, building, planet or other focal subject. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
         "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1280 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Extend only the existing dark starfield, distant low mountain horizon and wet blue-purple reflective ground. Keep the lone car and bright Milky Way in their original center. Do not add any vehicle, building, planet or other focal subject. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
+      },
+      "composition_source": {
+        "path": "themes/ethereal/backgrounds/ultrawide/3-roadster-starlight-source.webp",
+        "sha256": "1b916b5296e543ab2224970cbceb3266efc1694e6eef59a4218c588a673fd88b",
+        "reason": "Keep the approved 32:9 composition pixel-identical while the canonical Roadster follows the updated quattro artwork."
       }
     },
     {

@@ -210,7 +210,9 @@ center)
   ;;
 tile)
   # Resize the source tile to physical pixels before tiling on HiDPI screens.
-  composition+=(\( "$sample_path[0]" -auto-orient -resize "$native_percent" -write mpr:tile +delete -size "$screen" tile:mpr:tile \) -compose Over -composite)
+  # Define hidden RGB values without changing alpha before the texture step.
+  composition+=(\( "$sample_path[0]" -auto-orient -resize "$native_percent"
+    -background "$fill_color" -alpha background -write mpr:tile +delete -size "$screen" tile:mpr:tile \) -compose Over -composite)
   ;;
 *)
   composition=("${cover[@]}" -gravity NorthWest
