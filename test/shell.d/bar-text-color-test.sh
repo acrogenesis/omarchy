@@ -92,6 +92,20 @@ pass "transparent bar text samples one frame of a video wallpaper"
   [[ $(sample) == "#000000" ]] || fail "blur letterbox samples the subdued cover"
   pass "bar sampling includes the blurred cover behind fitted images"
 
+  # Resolver colors use CSS RGBA, including transparent padding over the
+  # compositor's black background. Alpha must affect the sampled brightness.
+  while read -r color expected; do
+    printf '[defaults]\nfill = "fit"\nfill_color = "%s"\n' "$color" >"$backgrounds/backgrounds.toml"
+    [[ $(sample) == $expected ]] || fail "RGBA padding $color selects $expected"
+  done <<'COLORS'
+#ffffffff #000000
+#000000ff #ffffff
+#ff0000ff #000000
+#ffffff40 #ffffff
+#ffffff00 #ffffff
+COLORS
+  pass "bar sampling respects RGBA channel order and padding opacity"
+
   # Focal affects crop foregrounds, but the shell centers its blurred cover.
   # Its black center keeps the padded bar dark even when the left edge is white.
   magick -size 1000x100 xc:black -fill white -draw 'rectangle 0,0 199,99' "$backgrounds/test.png"
