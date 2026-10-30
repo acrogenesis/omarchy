@@ -552,7 +552,10 @@ Item {
         screenHeight: panel.modelData.height
         refreshToken: panel.incomingAbandoned ? root.backgroundVersion : root.displayedVersion
         onResolveVersionChanged: {
-          if (ready && resolvedPath !== "") {
+          if (ready && resolvedPath === "" && canonicalPath !== "" && screenWidth > 0 && screenHeight > 0) {
+            // A failed SVG resolution has no Qt image to emit a decode error.
+            root.recoverBackground(canonicalPath)
+          } else if (ready && resolvedPath !== "") {
             root.requestNativeSize(resolvedPath)
             panel.lastDisplayedCanonical = canonicalPath
             panel.lastDisplayedPath = resolvedPath
