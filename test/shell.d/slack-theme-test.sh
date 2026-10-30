@@ -8,9 +8,11 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 # No installed Slack or desktop session is needed.
 PATH="$ROOT/bin:$PATH" python - <<'PY'
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
+import re
 import struct
 import shutil
 import subprocess
@@ -32,10 +34,12 @@ def render_palette(colors_file):
         return json.loads((staged / 'slack.json').read_text())
 
 modes = set()
+palettes = []
 for theme in sorted((root / 'themes').glob('*/colors.toml')):
     colors = render_palette(theme)
     modes.add(colors['mode'])
     css = palette.build(colors)
+    palettes.append({'name': theme.parent.name, 'css': css})
     assert '{{' not in css and 'color-scheme: ' + colors['mode'] in css, theme
     background, foreground = map(palette.rgb, (colors['background'], colors['foreground']))
     if palette.contrast(background, foreground) >= 4.5:
@@ -49,6 +53,23 @@ print('ok - stock dark and light palettes produce readable secondary text, links
 
 with tempfile.TemporaryDirectory() as scratch:
     scratch = Path(scratch)
+    # Exercise the CSS cascade over Slack's accent backdrop and translucent
+    # chrome, which can disagree with otherwise readable semantic tokens.
+    fixture = (root / 'test/shell.d/fixtures/slack-theme-header.html').read_text()
+    page = scratch / 'header.html'
+    page.write_text(fixture.replace('PALETTES_JSON', json.dumps(palettes)))
+    browser = subprocess.run(['chromium', '--headless', '--disable-gpu', '--no-first-run',
+                              '--disable-background-networking', '--disable-extensions',
+                              *(['--no-sandbox'] if os.geteuid() == 0 else []),
+                              '--user-data-dir=' + str(scratch / 'chromium'),
+                              '--dump-dom', page.as_uri()], capture_output=True, text=True, timeout=45)
+    assert browser.returncode == 0, browser.stderr
+    result = re.search(r'<pre id="result">(.*?)</pre>', browser.stdout, re.S)
+    assert result, browser.stdout[-2000:]
+    failures = json.loads(html.unescape(result[1]))
+    assert failures == [], failures[:10]
+    print('ok - rendered headers and workspace names retain contrast across stock themes')
+
     # A legacy theme still goes through Omarchy's resolver before CSS generation.
     legacy = scratch / 'colors.toml'
     legacy.write_text('bg = "#101010"\nfg = "#eeeeee"\n' + '\n'.join(
