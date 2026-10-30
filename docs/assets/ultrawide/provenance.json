@@ -796,14 +796,14 @@
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
         "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
       },
-      "finishing": "Generated anatomical forearms, elbows and shoulders retained. Each actual boundary dot row supplies its own position, radius, brightness and local horizontal spacing. Order-preserving correspondence joins the source wrist contour to the existing anatomy within 384 outer pixels; a source hold and smooth contour transition prevent row collisions and detached underside dots. Boundary circles complete over at most 4px of empty black source edge. Original foreground, protected core and all outer anatomy beyond 384px compare pixel-exact to their respective controls.",
+      "finishing": "Generated anatomical forearms retained, with accepted source-matched wrist attachments. Removed the hanging lower lobe at the far-left edge by tapering/removing 117 individual dots beneath a smooth underside envelope. No hard clipping. Both wrist patches, the right arm, original source foreground and every pixel outside the local far-left underside region are unchanged from 3a7256004.",
       "prompts": {
         "left": "Continue the anatomy of this original Creation-of-Adam-style stippled hand drawing. This is an exact 2560x1440 HALF of a 32:9 wallpaper. Keep the original hand region at exactly the same scale, crop, coordinates and pose. Reference 2 is the unchanged original hand artwork and the authority for stippling style. Reference 1 includes the earlier generated extension whose sculptural shading and organic contours are preferred, but its arm attachment and anatomy need correction. Replace ONLY the outer extension LEFT of x=1446; the RIGHT source region is locked. The left hand reaches rightward. Its wrist must flow down-left into a realistically tapered forearm, a gently bent elbow toward the far left, and a short upper arm or cropped shoulder/torso if needed to make the reach physically plausible. Follow the EXACT wrist contour and tangent where it enters the original source, with no step, bulge, rotation of the hand, disconnected wrist or additional hand. Render genuine three-dimensional anatomical form with changing dot sizes/density: muscles, subtle tendons, natural rounded contours, underside in sparse dark stippling, a brighter top plane. Use crisp pale monochrome dots and short horizontal dash-like dots on PURE BLACK. Match the original rows and bright ivory-white highlights near the join, but preserve rich organic volumetric shading across the arm. It must read as an anatomical drawing, not a flat straight tube of repeated dots, not a rectangular grid strip, not a mechanical wireframe. No broad uniform rows through the arm body. No new fingers, faces, heads, lettering, watermarks, borders or decorations. Keep the hands as the focal subject; any necessary body stays subtly cropped at the outer edge. Return the same exact 2560x1440 framing at maximum resolution.",
         "right": "Continue the anatomy of this original Creation-of-Adam-style stippled hand drawing. This is an exact 2560x1440 HALF of a 32:9 wallpaper. Keep the original hand region at exactly the same scale, crop, coordinates and pose. Reference 2 is the unchanged original hand artwork and the authority for stippling style. Reference 1 includes the earlier generated extension whose sculptural shading and organic contours are preferred, but its arm attachment and anatomy need correction. Replace ONLY the outer extension RIGHT of x=1114; the LEFT source region is locked. The right hand reaches leftward. Its wrist must flow up-right into a realistically tapered forearm, a gently bent elbow toward the far right, and a short upper arm or cropped shoulder/torso if needed to make the reach physically plausible. Follow the EXACT wrist contour and tangent where it enters the original source, with no step, bulge, rotation of the hand, disconnected wrist or additional hand. Render genuine three-dimensional anatomical form with changing dot sizes/density: muscles, subtle tendons, natural rounded contours, underside in sparse dark stippling, a brighter top plane. Use crisp pale monochrome dots and short horizontal dash-like dots on PURE BLACK. Match the original rows and bright ivory-white highlights near the join, but preserve rich organic volumetric shading across the arm. It must read as an anatomical drawing, not a flat straight tube of repeated dots, not a rectangular grid strip, not a mechanical wireframe. No broad uniform rows through the arm body. No new fingers, faces, heads, lettering, watermarks, borders or decorations. Keep the hands as the focal subject; any necessary body stays subtly cropped at the outer edge. Return the same exact 2560x1440 framing at maximum resolution."
       },
       "anatomical_stippling": {
         "method": "Generated anatomical light/shadow rendered as variable native stippling. Wrist attachments corrected from actual first-column source dots; original hand ink and core unchanged, with only documented black-edge infill.",
-        "dots": 4153,
+        "dots": 4079,
         "pitch_x": 12.53715308863026,
         "pitch_y": 23.591763652641003,
         "sides": {
@@ -830,7 +830,7 @@
         }
       },
       "wrist_attachment": {
-        "method": "First source-column dot positions, individual radii, local pitch and contour. Order-preserving row correspondence bridges into unchanged generated anatomy. Completed boundary circles overlap at most4px of black source edge; existing source glyphs untouched. Outside384px unchanged.",
+        "method": "Actual source boundary dot geometry and ordered row correspondence repair the wrists within384 outer pixels. Boundary circles fill only black source margins; the later far-left contour cleanup is documented separately.",
         "dots": 4189,
         "sides": {
           "left": {
@@ -980,8 +980,23 @@
         "source_hash": "a51e0dc5406d054ddfe16dc732ada4061c733a9e6f985a3ff773ba1e803ad3a0",
         "foreground_error": 0,
         "protected_core_error": 0,
-        "far_arm_error": 0,
-        "black_edge_infill_pixels": 157
+        "black_edge_infill_pixels": 157,
+        "accepted_wrists_error": 0
+      },
+      "left_edge_contour": {
+        "method": "Remove the hanging partial-shoulder lobe beneath the far-left arm; individual dots taper smoothly before a continuous underside envelope. No hard clipping, wrist edits or right-arm changes.",
+        "x_limit": 288,
+        "cap_y_start": 720,
+        "cap_y_end": 820,
+        "fade_height": 20,
+        "changed_dots": 117
+      },
+      "left_edge_validation": {
+        "foreground_error": 0,
+        "accepted_wrists_error": 0,
+        "right_arm_error": 0,
+        "outside_edit_error": 0,
+        "changed_pixels": 2124
       }
     },
     {
@@ -1786,14 +1801,14 @@
         "left": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent LEFT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels.",
         "right": "Use case: precise-object-edit. Generative outpainting of ONLY the transparent RIGHT region (1446 pixels wide on that edge of this 2560x1440 canvas). The opaque source is locked: retain its exact placement, colors, contours, texture and vertical framing. Continue the arm or wrist cut off at the outer source edge, using the EXACT existing monochrome dot/dash ASCII-like stippling style: tiny evenly spaced pale dots and short horizontal dashes on pure black. Preserve the existing hand and its direction; do not add another hand, fingers, a person, face or object. Only continue the existing forearm naturally toward the far edge, gradually fading the stippling into the same black field. Keep all unused space pure black. No literal letters, words, symbols or extra decorative patterns. Continue colors, contours and fine texture precisely at the join; preserve the original lighting and exposure. Do not repaint or enhance the opaque artwork, zoom, crop, reframe, mirror, tile, blur the sides, repeat the main subject or introduce new text/watermarks. Output one opaque 16:9 image at the highest available resolution, no borders or panels."
       },
-      "finishing": "Generated anatomical forearms, elbows and shoulders retained. Each actual boundary dot row supplies its own position, radius, brightness and local horizontal spacing. Order-preserving correspondence joins the source wrist contour to the existing anatomy within 384 outer pixels; a source hold and smooth contour transition prevent row collisions and detached underside dots. Boundary circles complete over at most 4px of empty black source edge. Original foreground, protected core and all outer anatomy beyond 384px compare pixel-exact to their respective controls.",
+      "finishing": "Generated anatomical forearms retained, with accepted source-matched wrist attachments. Removed the hanging lower lobe at the far-left edge by tapering/removing 117 individual dots beneath a smooth underside envelope. No hard clipping. Both wrist patches, the right arm, original source foreground and every pixel outside the local far-left underside region are unchanged from 3a7256004.",
       "prompts": {
         "left": "Continue the anatomy of this original Creation-of-Adam-style stippled hand drawing. This is an exact 2560x1440 HALF of a 32:9 wallpaper. Keep the original hand region at exactly the same scale, crop, coordinates and pose. Reference 2 is the unchanged original hand artwork and the authority for stippling style. Reference 1 includes the earlier generated extension whose sculptural shading and organic contours are preferred, but its arm attachment and anatomy need correction. Replace ONLY the outer extension LEFT of x=1446; the RIGHT source region is locked. The left hand reaches rightward. Its wrist must flow down-left into a realistically tapered forearm, a gently bent elbow toward the far left, and a short upper arm or cropped shoulder/torso if needed to make the reach physically plausible. Follow the EXACT wrist contour and tangent where it enters the original source, with no step, bulge, rotation of the hand, disconnected wrist or additional hand. Render genuine three-dimensional anatomical form with changing dot sizes/density: muscles, subtle tendons, natural rounded contours, underside in sparse dark stippling, a brighter top plane. Use crisp pale monochrome dots and short horizontal dash-like dots on PURE BLACK. Match the original rows and bright ivory-white highlights near the join, but preserve rich organic volumetric shading across the arm. It must read as an anatomical drawing, not a flat straight tube of repeated dots, not a rectangular grid strip, not a mechanical wireframe. No broad uniform rows through the arm body. No new fingers, faces, heads, lettering, watermarks, borders or decorations. Keep the hands as the focal subject; any necessary body stays subtly cropped at the outer edge. Return the same exact 2560x1440 framing at maximum resolution.",
         "right": "Continue the anatomy of this original Creation-of-Adam-style stippled hand drawing. This is an exact 2560x1440 HALF of a 32:9 wallpaper. Keep the original hand region at exactly the same scale, crop, coordinates and pose. Reference 2 is the unchanged original hand artwork and the authority for stippling style. Reference 1 includes the earlier generated extension whose sculptural shading and organic contours are preferred, but its arm attachment and anatomy need correction. Replace ONLY the outer extension RIGHT of x=1114; the LEFT source region is locked. The right hand reaches leftward. Its wrist must flow up-right into a realistically tapered forearm, a gently bent elbow toward the far right, and a short upper arm or cropped shoulder/torso if needed to make the reach physically plausible. Follow the EXACT wrist contour and tangent where it enters the original source, with no step, bulge, rotation of the hand, disconnected wrist or additional hand. Render genuine three-dimensional anatomical form with changing dot sizes/density: muscles, subtle tendons, natural rounded contours, underside in sparse dark stippling, a brighter top plane. Use crisp pale monochrome dots and short horizontal dash-like dots on PURE BLACK. Match the original rows and bright ivory-white highlights near the join, but preserve rich organic volumetric shading across the arm. It must read as an anatomical drawing, not a flat straight tube of repeated dots, not a rectangular grid strip, not a mechanical wireframe. No broad uniform rows through the arm body. No new fingers, faces, heads, lettering, watermarks, borders or decorations. Keep the hands as the focal subject; any necessary body stays subtly cropped at the outer edge. Return the same exact 2560x1440 framing at maximum resolution."
       },
       "anatomical_stippling": {
         "method": "Generated anatomical light/shadow rendered as variable native stippling. Wrist attachments corrected from actual first-column source dots; original hand ink and core unchanged, with only documented black-edge infill.",
-        "dots": 4153,
+        "dots": 4079,
         "pitch_x": 12.53715308863026,
         "pitch_y": 23.591763652641003,
         "sides": {
@@ -1820,7 +1835,7 @@
         }
       },
       "wrist_attachment": {
-        "method": "First source-column dot positions, individual radii, local pitch and contour. Order-preserving row correspondence bridges into unchanged generated anatomy. Completed boundary circles overlap at most4px of black source edge; existing source glyphs untouched. Outside384px unchanged.",
+        "method": "Actual source boundary dot geometry and ordered row correspondence repair the wrists within384 outer pixels. Boundary circles fill only black source margins; the later far-left contour cleanup is documented separately.",
         "dots": 4189,
         "sides": {
           "left": {
@@ -1970,8 +1985,23 @@
         "source_hash": "a51e0dc5406d054ddfe16dc732ada4061c733a9e6f985a3ff773ba1e803ad3a0",
         "foreground_error": 0,
         "protected_core_error": 0,
-        "far_arm_error": 0,
-        "black_edge_infill_pixels": 157
+        "black_edge_infill_pixels": 157,
+        "accepted_wrists_error": 0
+      },
+      "left_edge_contour": {
+        "method": "Remove the hanging partial-shoulder lobe beneath the far-left arm; individual dots taper smoothly before a continuous underside envelope. No hard clipping, wrist edits or right-arm changes.",
+        "x_limit": 288,
+        "cap_y_start": 720,
+        "cap_y_end": 820,
+        "fade_height": 20,
+        "changed_dots": 117
+      },
+      "left_edge_validation": {
+        "foreground_error": 0,
+        "accepted_wrists_error": 0,
+        "right_arm_error": 0,
+        "outside_edit_error": 0,
+        "changed_pixels": 2124
       }
     },
     {
