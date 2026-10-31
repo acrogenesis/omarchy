@@ -373,24 +373,6 @@ local active_border_color = { colors = { "rgba(33ccffee)", "rgba(00ff99ee)" }, a
 
 The input method's candidate window is drawn by Fcitx's classicui, from `default/themed/fcitx5-theme.conf.tpl`. `omarchy-theme-set-fcitx5` copies the rendered file to `~/.local/share/fcitx5/themes/omarchy/theme.conf`, links fcitx5's neutral grey page and menu glyphs beside it, and asks a running Fcitx to reload classicui without starting one. Setup and the migration run it with `--activate`, which also points `Theme` and `DarkTheme` in `~/.config/fcitx5/conf/classicui.conf` at `omarchy`, writing through a symlinked file. It replaces only fcitx5's stock `default` and `default-dark`, which a configtool save writes even when only the font changed, so a theme the user installed is kept. Theme switches never reselect it, so choosing fcitx5's own theme afterwards sticks.
 
-## Slack Desktop
-
-Run `omarchy setup slack` once to make Slack Desktop follow the current Omarchy palette. Fully quit Slack and reopen it from the application launcher after setup; subsequent theme switches recolor open windows without a reload, including windows opened later and workspace changes.
-
-The normal template renderer stages `slack.json` from `default/themed/slack.json.tpl`, alongside the editor and terminal themes. Themes and user templates can override it through the same paths as other generated files. `omarchy-theme-set-slack` runs in the standard app retint batch, under its generation and ordering guards, and translates the staged palette into Slack's CSS tokens. Text and button colours are adjusted for readable contrast. It leaves machines without Slack theme support enabled alone; there is no user hook to install.
-
-Slack installed through Omarchy's menu is set up automatically. For an existing installation, `omarchy setup slack` registers a per-user desktop launcher pointing at `omarchy-launch-slack` and enables the retint adapter in `~/.local/state/omarchy/slack/`. Runtime code is always read from `$OMARCHY_PATH/default/slack/`, so Omarchy updates apply without reinstalling copied scripts.
-
-The launcher runs the packaged `/usr/bin/slack` with Chromium's inherited debugging pipes. A helper using the system Python and Gio event loop applies the generated CSS through the DevTools CSS domain and watches the stylesheet directory for changes. It stays alive only while Slack runs, with no polling or separate service. The pipes have no listening network endpoint. Slack's package files, archive, profile and renderer sandbox remain unchanged.
-
-The adapter atomically publishes `~/.local/state/omarchy/slack/slack.css`. Existing windows receive changes live; navigating or opening another window applies the latest stylesheet. No Slack executable or archive is copied or patched, and there is no runtime cache to rebuild after a Slack update. This still uses developer-protocol CSS injection rather than a Slack theme-file API; changes to Slack's CSS tokens may require an Omarchy update.
-
-To disable support, remove `~/.local/state/omarchy/slack/enabled` and `~/.local/share/applications/slack.desktop`, then quit and reopen Slack. If setup backed up a custom launcher as `slack.desktop.before-omarchy`, restore it instead.
-
-Uninstalling Slack from the launcher removes `slack-desktop`, then cleans up the generated launcher and theme state. Slack's profile and any launcher backup are retained. If theme setup fails during installation, Omarchy opens the packaged Slack launcher so the installed app remains usable.
-
-The palette mapping is adapted from [GruperTal/omarchy-slack-theme](https://github.com/GruperTal/omarchy-slack-theme) under its MIT license, retained in `default/slack/LICENSE`.
-
 ## Adding or overriding theme files
 
 - Add palette values to `themes/<name>/colors.toml`.
