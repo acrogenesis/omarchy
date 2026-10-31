@@ -16,7 +16,7 @@ from launcher import Slack
 with tempfile.TemporaryDirectory() as directory:
     scratch = Path(directory)
     theme_file = scratch / 'theme.json'
-    theme_file.write_text('{"mode":"dark"}')
+    theme_file.write_text('{"mode":"stale"}')
     # A separate process speaks CDP on descriptors 3/4. No Slack installation,
     # socket server or simulated file watcher is involved in this transport test.
     server = scratch / 'server.py'
@@ -68,6 +68,10 @@ while True:
     binary.chmod(0o755)
     os.environ['TEST_PIPE_ROOT'] = str(scratch)
     app = Slack(scratch)
+    # A switch between construction and starting the monitor must not leave
+    # the helper serving an obsolete theme for the rest of this launch.
+    (scratch / 'theme.next').write_text('{"mode":"dark"}')
+    (scratch / 'theme.next').replace(theme_file)
     app.start(['--user-data-dir=' + str(scratch / 'profile with spaces')], str(binary))
     timed_out = []
     def deadline():

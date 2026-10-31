@@ -13,7 +13,7 @@ class Slack:
     def __init__(self, directory):
         self.directory = Path(directory)
         self.theme_file = self.directory / 'theme.json'
-        self.theme = self.theme_file.read_text() if self.theme_file.exists() else ''
+        self.theme = ''
         self.script = Path(__file__).with_name('theme.js').read_text().strip()
         self.sessions = set()
         self.callbacks = {}
@@ -37,6 +37,7 @@ class Slack:
         self.child.wait_async(None, self.exited)
         self.monitor = Gio.File.new_for_path(str(self.directory)).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
         self.monitor.connect('changed', self.changed)
+        self.theme = self.theme_file.read_text() if self.theme_file.exists() else ''
         self.send('Target.setAutoAttach', {'autoAttach': True, 'waitForDebuggerOnStart': False, 'flatten': True,
                                           'filter': [{'type': 'page'}, {'exclude': True}]})
         for number in (signal.SIGTERM, signal.SIGINT):
