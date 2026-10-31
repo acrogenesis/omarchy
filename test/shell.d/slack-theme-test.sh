@@ -4,18 +4,16 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
-node "$ROOT/test/shell.d/fixtures/slack-loader.cjs"
+/usr/bin/python "$ROOT/test/shell.d/fixtures/slack-pipe.py"
 
-# Exercise the real resolver, contrast adjustment, archive writer and cache.
+# Exercise the real resolver and contrast adjustment.
 # No installed Slack or desktop session is needed.
 PATH="$ROOT/bin:$PATH" python - <<'PY'
-import hashlib
 import html
 import json
 import os
 from pathlib import Path
 import re
-import struct
 import shutil
 import subprocess
 import sys
@@ -82,77 +80,6 @@ with tempfile.TemporaryDirectory() as scratch:
     assert '--dt_color-plt-aubergine-50: 0,170,255' in css
     print('ok - legacy theme aliases and ANSI accent colours reach Slack')
 
-    # The entry point deliberately has a different name from Slack's current
-    # bundle. A hard-coded filename would break after an upstream rename.
-    files = {
-        'package.json': json.dumps({'main': './dist/start.cjs'}).encode(),
-        'dist/start.cjs': b'console.log("original");',
-        'asset.txt': b'unchanged asset',
-    }
-    header, data = {'files': {}}, b''
-    for name, content in files.items():
-        node = header
-        parts = name.split('/')
-        for part in parts[:-1]:
-            node = node['files'].setdefault(part, {'files': {}})
-        node['files'][parts[-1]] = {'offset': str(len(data)), 'size': len(content),
-                                  'integrity': {'algorithm': 'SHA256', 'blockSize': 8}}
-        data += content
-    encoded = json.dumps(header).encode()
-    padding = -len(encoded) % 4
-    pickle = struct.pack('<II', 4 + len(encoded) + padding, len(encoded)) + encoded + b'\0' * padding
-    original = struct.pack('<II', 4, len(pickle)) + pickle + data
-    source, patched = scratch / 'source.asar', scratch / 'patched.asar'
-    source.write_bytes(original)
-    loader = b'console.log("theme loader");'
-    integration.patch_archive(source, patched, loader)
-    raw = patched.read_bytes()
-    metadata = json.loads(raw[16:16 + struct.unpack_from('<I', raw, 12)[0]])
-    body = raw[8 + struct.unpack_from('<I', raw, 4)[0]:]
-    for name, content in files.items():
-        node = metadata
-        for part in name.split('/'):
-            node = node['files'][part]
-        offset = int(node['offset'])
-        actual = body[offset:offset + node['size']]
-        if name.endswith('start.cjs'):
-            assert actual.startswith(content) and actual.count(loader) == 1
-            assert node['integrity']['hash'] == hashlib.sha256(actual).hexdigest()
-            assert node['integrity']['blocks'] == [hashlib.sha256(actual[i:i + 8]).hexdigest()
-                                                    for i in range(0, len(actual), 8)]
-        else:
-            assert actual == content
-    assert source.read_bytes() == original
-    print('ok - archive patch follows the manifest, preserves assets and updates integrity blocks')
-
-    integration.SOURCE, integration.CACHE = scratch / 'source', scratch / 'cache'
-    integration.SOURCE.mkdir()
-    (integration.SOURCE / 'loader.cjs').write_bytes(loader)
-    integration.SLACK = scratch / 'slack'
-    integration.SLACK.mkdir()
-    fuses = b'dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX\x01\x09010001001'
-    (integration.SLACK / 'slack').write_bytes(b'packaged executable' + fuses)
-    resources = integration.SLACK / 'resources'
-    resources.mkdir()
-    (resources / 'app.asar').write_bytes(original)
-    (resources / 'app.asar.unpacked').mkdir()
-    first = integration.runtime()
-    assert first.exists() and integration.runtime() == first
-    (integration.SLACK / 'slack').write_bytes(b'updated packaged executable' + fuses)
-    second = integration.runtime()
-    assert second != first and first.exists()
-    assert second.read_bytes() == b'updated packaged executable' + fuses
-    assert (second.parent / 'resources/app.asar.unpacked').resolve() == resources / 'app.asar.unpacked'
-    print('ok - Slack upgrades rebuild the private runtime and retain the running version')
-
-    (integration.SLACK / 'slack').write_bytes(b'package with archive integrity enabled' + fuses.replace(b'010001001', b'010011001'))
-    try:
-        integration.runtime()
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError('archive integrity policy was ignored')
-    print('ok - a Slack build requiring archive integrity is left unmodified')
 
 PY
 
@@ -222,17 +149,17 @@ with tempfile.TemporaryDirectory() as directory:
     override.write_text('[Desktop Entry]\nExec=omarchy-launch-slack %U\n')
     backup = override.with_suffix('.desktop.before-omarchy')
     backup.write_text('original launcher')
-    state, cache, profile = (home / relative for relative in (
-        '.local/state/omarchy/slack', '.cache/omarchy/slack', '.config/Slack'))
-    for target in (state, cache, profile):
+    state, profile = (home / relative for relative in (
+        '.local/state/omarchy/slack', '.config/Slack'))
+    for target in (state, profile):
         target.mkdir(parents=True)
         (target / 'keep').touch()
     (state / 'enabled').touch()
     remove = [root / 'bin/omarchy-remove-service-slack']
     assert subprocess.run(remove, env={**env, 'TEST_PACKAGE_EXIT': '1'}).returncode != 0
-    assert override.exists() and (state / 'enabled').exists() and (cache / 'keep').exists()
+    assert override.exists() and (state / 'enabled').exists()
     subprocess.run(remove, env=env, check=True)
-    assert not override.exists() and not state.exists() and not cache.exists()
+    assert not override.exists() and not state.exists()
     assert (profile / 'keep').exists() and backup.read_text() == 'original launcher'
     assert log.read_text().splitlines()[-2:] == ['drop:slack-desktop'] * 2
     override.write_text('[Desktop Entry]\nExec=custom-slack\n')

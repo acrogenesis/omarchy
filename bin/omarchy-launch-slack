@@ -4,4 +4,4 @@
 # omarchy:args=[slack-arguments...]
 # omarchy:hidden=true
 
-exec python "$OMARCHY_PATH/default/slack/integration.py" launch "$@"
+exec /usr/bin/python "$OMARCHY_PATH/default/slack/integration.py" launch "$@"

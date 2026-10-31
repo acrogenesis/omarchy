@@ -9,7 +9,7 @@ if (( EUID == 0 )); then
   exit 1
 fi
 
-[[ -f /usr/lib/slack/resources/app.asar ]] || { echo "Install Slack Desktop first." >&2; exit 1; }
+[[ -f /usr/bin/slack ]] || { echo "Install Slack Desktop first." >&2; exit 1; }
 
 if [[ ! -f $HOME/.local/state/omarchy/current/theme/slack.json ]]; then
   omarchy-theme-refresh
