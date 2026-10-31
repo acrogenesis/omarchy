@@ -12,8 +12,9 @@ theme="$HOME/.local/state/omarchy/current/theme/slack.json"
 pending=$(mktemp "$state/theme.XXXXXX")
 trap 'rm -f "$pending"' EXIT
 if jq -e 'select(.mode == "light" or .mode == "dark") |
-  select([.background, .accent, .green, .red] | all(type == "string" and test("^#[0-9a-fA-F]{6}$"))) |
-  {mode, background, accent, green, red}' "$theme" >"$pending"; then
+  select([.background, .accent, .green, .red] | all(type == "string" and test("^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"))) |
+  {mode, background, accent, green, red} |
+  with_entries(if .key == "mode" then . else .value |= .[0:7] end)' "$theme" >"$pending"; then
   mv "$pending" "$state/theme.json"
 else
   echo "Skipping invalid Slack theme." >&2

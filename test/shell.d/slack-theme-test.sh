@@ -24,6 +24,12 @@ printf '%s\n' '{"mode":"light","background":"#eff1f5","accent":"#1e66f5","green"
 jq -se '.[0] == .[1]' "$theme" "$state/theme.json" >/dev/null || fail "theme sync publishes the staged colors"
 pass "theme sync publishes the staged colors"
 
+jq '.background = "#112233" | .green = "#445566" | .red = "#778899"' "$state/theme.json" >"$scratch/rgb.json"
+jq 'with_entries(if .key == "mode" then . else .value += "80" end)' "$scratch/rgb.json" >"$theme"
+"$ROOT/bin/omarchy-theme-set-slack"
+jq -se '.[0] == .[1]' "$scratch/rgb.json" "$state/theme.json" >/dev/null || fail "RGBA colors publish their RGB values"
+pass "RGBA colors publish their RGB values"
+
 cp "$state/theme.json" "$scratch/before.json"
 jq '.background = "invalid"' "$state/theme.json" >"$theme"
 "$ROOT/bin/omarchy-theme-set-slack" 2>"$scratch/skip.log"
