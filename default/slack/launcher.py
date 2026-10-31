@@ -1,4 +1,4 @@
-"""Apply Omarchy CSS to packaged Slack over inherited DevTools pipes."""
+"""Apply native theme preferences to packaged Slack over inherited pipes."""
 
 import json
 import os
@@ -12,9 +12,10 @@ from gi.repository import Gio, GLib
 class Slack:
     def __init__(self, directory):
         self.directory = Path(directory)
-        self.stylesheet = self.directory / 'slack.css'
-        self.css = self.stylesheet.read_text() if self.stylesheet.exists() else ''
-        self.sessions = {}
+        self.theme_file = self.directory / 'theme.json'
+        self.theme = self.theme_file.read_text() if self.theme_file.exists() else ''
+        self.script = Path(__file__).with_name('theme.js').read_text().strip()
+        self.sessions = set()
         self.callbacks = {}
         self.next_id = 0
         self.buffer = b''
@@ -84,66 +85,28 @@ class Slack:
         params, session = message.get('params', {}), message.get('sessionId')
         if message.get('method') == 'Target.attachedToTarget':
             session = params['sessionId']
-            self.send('Page.enable', session=session)
-            self.send('DOM.enable', session=session)
-            self.send('CSS.enable', session=session)
-            self.send('Page.getFrameTree', session=session, callback=lambda m: self.frame(session, m.get('result', {}).get('frameTree', {}).get('frame')))
+            self.sessions.add(session)
+            self.send('Runtime.enable', session=session)
         elif message.get('method') == 'Target.detachedFromTarget':
-            self.sessions.pop(params['sessionId'], None)
-        elif message.get('method') == 'Page.domContentEventFired':
-            self.apply(session)
-        elif message.get('method') == 'Page.frameNavigated':
-            self.frame(session, params['frame'])
-
-    def frame(self, session, frame):
-        if frame and not frame.get('parentId'):
-            # Replacing the document also invalidates its outstanding replies.
-            self.sessions[session] = {'frame': frame['id'], 'sheet': None, 'busy': False}
-            self.apply(session)
-
-    def apply(self, session):
-        state = self.sessions.get(session)
-        if not state or not self.css:
-            return
-        if state['busy']:
-            state['dirty'] = True
-            return
-        state['busy'] = True
-        state['dirty'] = False
-        css = self.css
-
-        def finished(message):
-            if self.sessions.get(session) is not state:
-                return
-            state['busy'] = False
-            if 'error' in message:
-                state['sheet'] = None
-                print('Slack theme:', message['error']['message'], file=sys.stderr)
-            if state['dirty'] or css != self.css:
+            self.sessions.discard(params['sessionId'])
+        elif message.get('method') == 'Runtime.executionContextCreated':
+            if params['context'].get('auxData', {}).get('isDefault'):
                 self.apply(session)
 
-        def write_sheet(message):
-            if self.sessions.get(session) is not state:
-                return
-            if 'error' in message:
-                finished(message)
-            else:
-                state['sheet'] = message['result']['styleSheetId']
-                self.send('CSS.setStyleSheetText', {'styleSheetId': state['sheet'], 'text': css}, session, finished)
-
-        if state['sheet']:
-            self.send('CSS.setStyleSheetText', {'styleSheetId': state['sheet'], 'text': css}, session, finished)
-        else:
-            self.send('CSS.createStyleSheet', {'frameId': state['frame']}, session, write_sheet)
+    def apply(self, session):
+        if self.theme and session in self.sessions:
+            # Native preference actions are synchronous. Pipe ordering keeps
+            # rapid changes in order, without stylesheet or navigation handles.
+            self.send('Runtime.evaluate', {'expression': self.script + '(' + self.theme + ')'}, session)
 
     def changed(self, monitor, file, other, event):
-        if any(item and item.get_basename() == 'slack.css' for item in (file, other)):
+        if any(item and item.get_basename() == 'theme.json' for item in (file, other)):
             try:
-                css = self.stylesheet.read_text()
+                theme = self.theme_file.read_text()
             except OSError:
                 return
-            if css != self.css:
-                self.css = css
+            if theme != self.theme:
+                self.theme = theme
                 for session in self.sessions:
                     self.apply(session)
 
@@ -160,3 +123,8 @@ class Slack:
         self.start(arguments)
         self.loop.run()
         return self.child.get_exit_status() if self.child.get_if_exited() else 128 + self.child.get_term_sig()
+
+
+if __name__ == '__main__':
+    directory = Path.home() / '.local/state/omarchy/slack'
+    sys.exit(Slack(directory).run(sys.argv[1:]))

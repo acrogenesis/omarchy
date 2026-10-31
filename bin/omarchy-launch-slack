@@ -4,4 +4,8 @@
 # omarchy:args=[slack-arguments...]
 # omarchy:hidden=true
 
-exec /usr/bin/python "$OMARCHY_PATH/default/slack/integration.py" launch "$@"
+if [[ -f $HOME/.local/state/omarchy/slack/enabled ]]; then
+  exec /usr/bin/python "$OMARCHY_PATH/default/slack/launcher.py" "$@"
+else
+  exec /usr/bin/slack "$@"
+fi

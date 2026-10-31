@@ -5,7 +5,16 @@
 
 set -euo pipefail
 
-[[ -f $HOME/.local/state/omarchy/slack/enabled ]] || exit 0
-[[ -f $HOME/.local/state/omarchy/current/theme/slack.json ]] || exit 0
+state="$HOME/.local/state/omarchy/slack"
+theme="$HOME/.local/state/omarchy/current/theme/slack.json"
+[[ -f $state/enabled && -f $theme ]] || exit 0
 
-python "$OMARCHY_PATH/default/slack/integration.py" theme
+pending=$(mktemp "$state/theme.XXXXXX")
+trap 'rm -f "$pending"' EXIT
+if jq -e 'select(.mode == "light" or .mode == "dark") |
+  select([.background, .accent, .green, .red] | all(type == "string" and test("^#[0-9a-fA-F]{6}$"))) |
+  {mode, background, accent, green, red}' "$theme" >"$pending"; then
+  mv "$pending" "$state/theme.json"
+else
+  echo "Skipping invalid Slack theme." >&2
+fi

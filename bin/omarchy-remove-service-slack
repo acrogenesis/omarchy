@@ -7,4 +7,9 @@
 set -euo pipefail
 
 omarchy-pkg-drop slack-desktop
-python "$OMARCHY_PATH/default/slack/integration.py" remove
+override="$HOME/.local/share/applications/slack.desktop"
+if [[ -f $override ]] && grep -qE '^Exec=omarchy-launch-slack( |$)' "$override"; then
+  rm "$override"
+  update-desktop-database "${override%/*}"
+fi
+rm -rf "$HOME/.local/state/omarchy/slack"
