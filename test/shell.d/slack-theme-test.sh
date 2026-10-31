@@ -4,6 +4,8 @@ set -euo pipefail
 
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/base-test.sh"
 
+node "$ROOT/test/shell.d/fixtures/slack-loader.cjs"
+
 # Exercise the real resolver, contrast adjustment, archive writer and cache.
 # No installed Slack or desktop session is needed.
 PATH="$ROOT/bin:$PATH" python - <<'PY'
@@ -172,3 +174,69 @@ printf '{"mode":"dark; invalid CSS"}\n' >"$scratch/.local/state/omarchy/current/
 HOME="$scratch" bash "$ROOT/bin/omarchy-theme-set-slack" 2>"$scratch/skip.log"
 cmp -s "$scratch/before.css" "$scratch/.local/state/omarchy/slack/slack.css" || fail "invalid theme data leaves the last palette intact"
 pass "invalid theme data leaves the last palette intact"
+
+python - <<'PY'
+from pathlib import Path
+import os
+import subprocess
+import tempfile
+import time
+
+root = Path(os.environ['ROOT'])
+with tempfile.TemporaryDirectory() as directory:
+    scratch = Path(directory)
+    home, commands = scratch / 'home', scratch / 'bin'
+    home.mkdir()
+    commands.mkdir()
+    log, launched = scratch / 'packages', scratch / 'launched'
+    for name, body in {
+        'omarchy-pkg-add': 'echo "add:$*" >>"$TEST_PACKAGES"\nexit "${TEST_PACKAGE_EXIT:-0}"',
+        'omarchy-pkg-drop': 'echo "drop:$*" >>"$TEST_PACKAGES"\nexit "${TEST_PACKAGE_EXIT:-0}"',
+        'omarchy-setup-slack': 'exit "${TEST_SETUP_EXIT:-0}"',
+        'uwsm-app': 'printf "%s\\n" "$*" >"$TEST_LAUNCHED"',
+        'update-desktop-database': 'exit 0',
+    }.items():
+        command = commands / name
+        command.write_text('#!/bin/bash\n' + body + '\n')
+        command.chmod(0o755)
+    env = {**os.environ, 'HOME': str(home), 'PATH': str(commands) + ':' + os.environ['PATH'],
+           'TEST_PACKAGES': str(log), 'TEST_LAUNCHED': str(launched)}
+    for setup_exit, expected in [('0', '-- gtk-launch slack'),
+                                 ('1', '-- gio launch /usr/share/applications/slack.desktop')]:
+        launched.unlink(missing_ok=True)
+        subprocess.run([root / 'bin/omarchy-install-service-slack'],
+                       env={**env, 'TEST_SETUP_EXIT': setup_exit}, check=True)
+        deadline = time.monotonic() + 3
+        while not launched.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert launched.read_text().strip() == expected
+    launched.unlink()
+    assert subprocess.run([root / 'bin/omarchy-install-service-slack'],
+                          env={**env, 'TEST_PACKAGE_EXIT': '1'}).returncode != 0
+    assert not launched.exists()
+    assert log.read_text().splitlines() == ['add:slack-desktop'] * 3
+    print('ok - installation opens packaged Slack when theme setup fails, but stops on package failure')
+
+    override = home / '.local/share/applications/slack.desktop'
+    override.parent.mkdir(parents=True)
+    override.write_text('[Desktop Entry]\nExec=omarchy-launch-slack %U\n')
+    backup = override.with_suffix('.desktop.before-omarchy')
+    backup.write_text('original launcher')
+    state, cache, profile = (home / relative for relative in (
+        '.local/state/omarchy/slack', '.cache/omarchy/slack', '.config/Slack'))
+    for target in (state, cache, profile):
+        target.mkdir(parents=True)
+        (target / 'keep').touch()
+    (state / 'enabled').touch()
+    remove = [root / 'bin/omarchy-remove-service-slack']
+    assert subprocess.run(remove, env={**env, 'TEST_PACKAGE_EXIT': '1'}).returncode != 0
+    assert override.exists() and (state / 'enabled').exists() and (cache / 'keep').exists()
+    subprocess.run(remove, env=env, check=True)
+    assert not override.exists() and not state.exists() and not cache.exists()
+    assert (profile / 'keep').exists() and backup.read_text() == 'original launcher'
+    assert log.read_text().splitlines()[-2:] == ['drop:slack-desktop'] * 2
+    override.write_text('[Desktop Entry]\nExec=custom-slack\n')
+    subprocess.run(remove, env=env, check=True)
+    assert 'Exec=custom-slack' in override.read_text()
+    print('ok - uninstall cleans integration only after package success and retains profiles and custom launchers')
+PY

@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# omarchy:summary=Uninstall Slack Desktop and clean up its theme integration
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+set -euo pipefail
+
+omarchy-pkg-drop slack-desktop
+python "$OMARCHY_PATH/default/slack/integration.py" remove

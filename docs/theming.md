@@ -387,6 +387,8 @@ The adapter atomically publishes `~/.local/state/omarchy/slack/slack.css`. Slack
 
 To disable support, remove `~/.local/state/omarchy/slack/enabled` and `~/.local/share/applications/slack.desktop`, then quit and reopen Slack. If setup backed up a custom launcher as `slack.desktop.before-omarchy`, restore it instead.
 
+Uninstalling Slack from the launcher removes `slack-desktop`, then cleans up the generated launcher, theme state and private runtime cache. Slack's profile and any launcher backup are retained. If theme setup fails during installation, Omarchy opens the packaged Slack launcher so the installed app remains usable.
+
 The palette mapping is adapted from [GruperTal/omarchy-slack-theme](https://github.com/GruperTal/omarchy-slack-theme) under its MIT license, retained in `default/slack/LICENSE`.
 
 ## Adding or overriding theme files

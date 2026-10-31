@@ -152,6 +152,18 @@ def setup():
     print("Future Omarchy theme changes will recolor open Slack windows automatically.")
 
 
+def remove():
+    # Called only after package removal succeeds. Keep the Slack profile and
+    # any pre-existing launcher backup; remove only our generated override.
+    override = Path.home() / ".local/share/applications/slack.desktop"
+    if override.is_file() and re.search(r"^Exec=omarchy-launch-slack(?:\s|$)", override.read_text(), re.M):
+        override.unlink()
+        subprocess.run(["update-desktop-database", str(override.parent)], check=True)
+    for directory in (STATE, CACHE):
+        if directory.exists():
+            shutil.rmtree(directory)
+
+
 if __name__ == "__main__":
     try:
         action = sys.argv[1]
@@ -159,6 +171,8 @@ if __name__ == "__main__":
             setup()
         elif action == "theme":
             theme()
+        elif action == "remove":
+            remove()
         elif action == "launch":
             try:
                 binary = runtime()
